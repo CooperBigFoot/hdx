@@ -11,8 +11,11 @@
 //!
 //! - [`newtypes`] — opaque domain newtypes wrapping producer strings.
 //! - [`error`] — the crate-wide [`CoreError`](error::CoreError) thiserror enum.
+//! - [`format_version`] — the single-arm [`FormatVersion`](format_version::FormatVersion)
+//!   hard version cut.
 
 pub mod error;
+pub mod format_version;
 pub mod newtypes;
 
 #[cfg(test)]
