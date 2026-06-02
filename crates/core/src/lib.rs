@@ -21,11 +21,18 @@
 //! - [`scalar_reader`] — the scalar-parquet metadata reader: arrow schema → MS1
 //!   [`Field`](field::Field)s, `basin_id` presence + value, the `time` descriptor,
 //!   and per-basin time extents (row-group statistics with a bounded 1-D fallback).
+//! - [`discovery`] — the **scalar half** of the shared discovery layer: the typed
+//!   [`ScalarDiscovery`](discovery::ScalarDiscovery) model and the single boundary
+//!   function [`discover_scalar`](discovery::discover_scalar) that walks the tree,
+//!   reads every scalar artifact, and returns the basin list + scalar field catalog +
+//!   per-basin time descriptors/extents + folder-vs-in-file `basin_id` pairs +
+//!   root-rollup presence facts both verbs consume (the gridded/geometry half is MS4).
 //! - `parquet_meta` (private) — the crate's single touchpoint into the pure-Rust
 //!   `parquet`/`arrow` stack (R1): opens a parquet byte source and recovers its
 //!   metadata (arrow schema + row-group statistics) only — never a chunk. The scalar
 //!   reader is layered on this metadata path.
 
+pub mod discovery;
 pub mod error;
 pub mod field;
 pub mod format_version;
