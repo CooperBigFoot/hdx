@@ -8,10 +8,20 @@ Thumbs.db
 .claude/workflows/
 
 # Conformance fixture generator: dev-only Python harness artifacts (not source).
-# Only the generator source + the emitted fixture trees are committed.
 conformance/generator/.venv/
 conformance/generator/**/__pycache__/
 conformance/generator/.lock.sha256
 conformance/generator/scratch/
 **/__pycache__/
 *.py[cod]
+
+# Generated conformance fixture DATA is NOT tracked — it is regenerated from the
+# committed deterministic generator (run conformance/generator/regenerate.sh
+# before `cargo test`). Tracked under these trees: ONLY the small *.golden.json
+# assertion baselines (re-included below). The generator source + conformance/README
+# remain tracked (they live outside these two trees).
+conformance/valid/**
+conformance/invalid/**
+!conformance/valid/**/
+!conformance/invalid/**/
+!conformance/**/*.golden.json

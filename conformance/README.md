@@ -10,6 +10,16 @@ on-disk parquet / Zarr / COG / geoparquet bytes to test against. This harness
 fills that gap by *emitting bytes a reader will later read* — it is a test fixture
 tool, **not** part of the shipped contract.
 
+> **Tracking policy (IMPORTANT).** The generated fixture **data** under
+> `valid/` and `invalid/` is **git-ignored, not committed** — it is reproduced
+> deterministically from the committed generator. **Run
+> `conformance/generator/regenerate.sh` before `cargo test`** (the Rust tests read
+> these trees from disk; a fresh checkout has none until you regenerate). What
+> *is* tracked: the generator source, this README, and the small **`*.golden.json`**
+> assertion baselines (the golden is produced by the Rust verb and is the stable,
+> human-reviewable snapshot the tests assert against). This keeps binary fixture
+> blobs out of git history while preserving reproducibility.
+
 The fixture set is **complete** for MS2: one valid four-quadrant dataset and the
 two pinned invalids (`wrong-format-version`, `missing-root-rollup`). The
 exhaustive one-invalid-per-check family is a later milestone (**MS8**), not this
@@ -50,7 +60,8 @@ identical** tree, so a regenerate produces no spurious diff.
 
 ## Layout
 
-Three trees are committed. Each is one mutation (or zero, for the baseline) off a
+Three trees are *generated* (git-ignored — see the tracking policy above; only
+their `*.golden.json` baselines are committed). Each is one mutation (or zero, for the baseline) off a
 known-good four-quadrant dataset.
 
 ```
