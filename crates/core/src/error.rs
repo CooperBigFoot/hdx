@@ -90,6 +90,22 @@ pub enum CoreError {
         has_label: bool,
     },
 
+    /// Fires when a parquet artifact cannot be opened or its metadata fails to
+    /// decode (spec §4/§8, architecture §1): the byte source is not a valid parquet
+    /// file, its footer/metadata is malformed, or the arrow schema cannot be read.
+    /// MS3's scalar reader uses this as its typed surface so a corrupt or
+    /// non-parquet input is reported, never panicked over. The variant stays
+    /// **inert/agnostic**: it carries only the artifact name and an opaque detail
+    /// string from the underlying reader — no domain field, no provenance.
+    #[error("failed to read parquet metadata for {artifact:?}: {detail}")]
+    ParquetRead {
+        /// A name for the artifact that failed (a path or `"<in-memory>"`); used
+        /// only for the diagnostic message, not interpreted.
+        artifact: String,
+        /// The underlying reader's error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
     // --- Reserved for later milestones (skeleton variants) ---
     /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
     /// `basin=<id>` partition folder (spec §3/§14 I2).

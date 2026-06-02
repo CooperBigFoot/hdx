@@ -15,12 +15,23 @@
 //!   hard version cut.
 //! - [`field`] — the field 2×2 quadrant model and the closed [`Dtype`](field::Dtype).
 //! - [`manifest`] — the six-field [`Manifest`](manifest::Manifest) boundary parse.
+//! - `parquet_meta` (private) — the crate's single touchpoint into the pure-Rust
+//!   `parquet`/`arrow` stack (R1): opens a parquet byte source and recovers its
+//!   metadata (arrow schema + row-group count) only — never a chunk. The scalar
+//!   reader (MS3-S3) is layered on this metadata path.
 
 pub mod error;
 pub mod field;
 pub mod format_version;
 pub mod manifest;
 pub mod newtypes;
+
+// The parquet metadata touchpoint lands in MS3-S1 fully tested but not yet wired
+// into a production path — MS3-S3's scalar reader is its first non-test consumer.
+// The scoped allow documents that intent rather than masking a real dead-code bug;
+// it is removed when S3 calls `read_parquet_meta`.
+#[allow(dead_code)]
+mod parquet_meta;
 
 #[cfg(test)]
 mod tests {
