@@ -286,3 +286,71 @@ pub enum CoreError {
         artifact: String,
     },
 }
+
+/// Errors produced by the `describe` boundary verb
+/// ([`describe`](crate::describe::describe), spec §10, architecture §5).
+///
+/// `describe` is the dataset's entry point, so its error surface is **distinct from**
+/// [`CoreError`]: it adds one boundary-IO concern of its own ([`ManifestUnreadable`],
+/// the `manifest.json` file is absent/unreadable) and otherwise **wraps `CoreError`
+/// unchanged**, so the §0 hard-cut [`CoreError::UnknownFormatVersion`] and every
+/// discovery error surface verbatim through this enum. The wrapping is deliberate (a
+/// thin newtype-style enum over `CoreError`, the decision recorded in MS5-S2): the
+/// caller can match on `Manifest(UnknownFormatVersion { .. })` to observe the hard cut
+/// without `describe` having to re-export or re-interpret the inner variant. Library
+/// code never panics; every recoverable failure is one of these variants.
+///
+/// [`ManifestUnreadable`]: DescribeError::ManifestUnreadable
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DescribeError {
+    /// Fires when `<dataset>/manifest.json` itself cannot be read as a file: it is
+    /// absent, is a directory, or the read fails with a filesystem/permissions error
+    /// (spec §0 — the manifest is read **first**, before any other file). This is
+    /// **distinct from a malformed manifest**: a file that *is* read but whose
+    /// contents are not a conformant six-field manifest surfaces through
+    /// [`DescribeError::Manifest`] instead. The variant stays **inert/agnostic**
+    /// (spec §1): it carries only the offending path and an opaque detail string from
+    /// the underlying filesystem error — no domain field, no provenance.
+    #[error("failed to read manifest.json at {path:?}: {detail}")]
+    ManifestUnreadable {
+        /// The `manifest.json` path that could not be read (used only for the
+        /// diagnostic message, never interpreted).
+        path: String,
+        /// The underlying filesystem error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
+    /// Fires when the `manifest.json` file was read but its contents are not a
+    /// conformant six-field manifest — most importantly the §0/§14 M2 **hard version
+    /// cut** ([`CoreError::UnknownFormatVersion`]), which `describe` evaluates
+    /// **before** any discovery (spec §0 entry discipline). Wraps the inner
+    /// [`CoreError`] unchanged so the boundary-parse failure surfaces verbatim (a
+    /// caller can match `Manifest(CoreError::UnknownFormatVersion { .. })`).
+    #[error("manifest boundary-parse failed: {0}")]
+    Manifest(#[source] CoreError),
+
+    /// Fires when discovery (the layout walk + the scalar/gridded metadata readers)
+    /// fails **after** the manifest has been read and the hard version cut has
+    /// passed. Wraps the inner [`CoreError`] unchanged so the underlying structural
+    /// failure (e.g. [`CoreError::LayoutWalk`], [`CoreError::ZarrRead`]) surfaces
+    /// verbatim. A discovery *gap* (a missing root rollup, a basin with no time
+    /// extent) is **not** this error — gaps are recorded as facts in the
+    /// [`Description`](crate::describe::Description), never raised (spec §10).
+    #[error("discovery failed: {0}")]
+    Discovery(#[source] CoreError),
+
+    /// Fires when an assembled [`Description`](crate::describe::Description) cannot be
+    /// serialized to the R4 JSON wire shape. In practice this branch is unreachable:
+    /// the only fallible facet of serialization is the strict RFC 3339 formatting of a
+    /// timestamp, which always succeeds for any `created_at` the manifest parser
+    /// accepted. It is surfaced as a typed boundary error (never an `unwrap`/panic) so
+    /// the no-panic guarantee holds even on a hypothetical serializer fault. The
+    /// variant stays **inert/agnostic** (spec §1): it carries only an opaque detail
+    /// string from `serde_json` — no domain field.
+    #[error("failed to serialize the describe output: {detail}")]
+    Serialize {
+        /// The underlying `serde_json` error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+}

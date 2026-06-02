@@ -69,12 +69,20 @@
 //!   MS3's [`ScalarDiscovery`](discovery::ScalarDiscovery) without reshaping either,
 //!   so both verbs (MS5/MS6) consume one model; [`discover`](gridded_discovery::discover)
 //!   builds both halves in one call. Records facts, never a verdict (enforcement MS6).
-//! - [`describe`] — the `describe` self-description type ([`Description`](describe::Description))
-//!   and its describe-local `#[derive(Serialize)]` DTO layer (the R4 wire shape, spec
-//!   §10). Owns the JSON shape in one place so the inert domain types stay free of
-//!   `serde::Serialize`; the pure mapping `Discovery + Manifest → Description → DTO`
-//!   reports **facts only — no conformance verdict**. Zero IO (the `describe` verb that
-//!   reads the files lands in a later step).
+//! - [`describe`] — the `describe` self-description type ([`Description`](describe::Description)),
+//!   its describe-local `#[derive(Serialize)]` DTO layer (the R4 wire shape, spec §10),
+//!   and the boundary verb [`describe`](describe::describe) /
+//!   [`describe_json`](describe::describe_json) itself. The DTO owns the JSON shape in
+//!   one place so the inert domain types stay free of `serde::Serialize`; the pure
+//!   mapping `Discovery + Manifest → Description → DTO` reports **facts only — no
+//!   conformance verdict**. The verb's entry order is **load-bearing** (spec §0): it
+//!   (1) reads `manifest.json`, (2) hard-cuts `format_version` via
+//!   [`Manifest::from_json`](manifest::Manifest::from_json) — returning on an unknown
+//!   version **before** any other file is touched — (3) runs
+//!   [`discover`](gridded_discovery::discover), then (4) assembles the
+//!   [`Description`](describe::Description). Errors are the boundary
+//!   [`DescribeError`](error::DescribeError) (it wraps [`CoreError`](error::CoreError)
+//!   so the hard cut surfaces unchanged).
 
 pub mod cog_reader;
 pub mod describe;

@@ -1,10 +1,24 @@
 //! The `describe` self-description type and its serializable wire shape (spec §10, R4).
 //!
 //! This module stands up [`Description`] — the full, **facts-only** self-description
-//! `describe` emits — and the describe-local `#[derive(Serialize)]` DTO layer that
-//! defines its JSON shape **in one place** (architecture §3.5/§5, R4). The verb itself
-//! (the IO that reads `manifest.json` + runs `discover`) is a later step; this module is
-//! **pure**: the only mapping it owns is `Discovery + Manifest → Description → DTO`.
+//! `describe` emits — the describe-local `#[derive(Serialize)]` DTO layer that defines
+//! its JSON shape **in one place** (architecture §3.5/§5, R4), and the boundary verb
+//! [`describe`] itself.
+//!
+//! ## The `describe` verb — entry order is load-bearing (spec §0)
+//!
+//! [`describe`] is HDX's first user-facing verb. Its four stages run in a strict,
+//! statically-guaranteed order so the §0 hard cut precedes any other file read:
+//!
+//! 1. read `<path>/manifest.json` (a filesystem failure → [`DescribeError::ManifestUnreadable`]);
+//! 2. [`Manifest::from_json`] — whose **first** act is the §0/§14 M2 `format_version`
+//!    hard cut; an unknown version returns **before [`discover`] is ever called**;
+//! 3. [`discover`] (MS3+MS4) — only now is any other file touched;
+//! 4. [`Description::from_discovery`] — the pure assembler.
+//!
+//! [`describe_json`] is the same verb plus serialization to the stable R4 JSON string.
+//! The pure mapping the [`Description`] type owns is `Discovery + Manifest → Description
+//! → DTO`.
 //!
 //! ## The R4 mini-contract (why a describe-local DTO)
 //!
@@ -56,15 +70,19 @@
 //! | DTO layer | the describe-local `#[derive(Serialize)]` types that own the JSON wire shape (R4); the domain types stay free of `serde::Serialize` |
 //! | R4 mini-contract | the `Description` JSON shape as a downstream contract, versioned implicitly by `format_version` only |
 
+use std::fs;
+use std::path::Path;
+
 use serde::Serialize;
 use serde::ser::Error as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
+use crate::error::DescribeError;
 use crate::field::Field;
 use crate::grid::GridInfo;
-use crate::gridded_discovery::Discovery;
+use crate::gridded_discovery::{Discovery, discover};
 use crate::manifest::Manifest;
 use crate::newtypes::BasinId;
 use crate::scalar_reader::{TimeExtent, TimeExtentSource};
@@ -246,6 +264,101 @@ impl Description {
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&self.to_dto())
     }
+}
+
+/// Describes a dataset: read the manifest (hard-cutting `format_version` **first**),
+/// then discover and assemble the full **facts-only** [`Description`] (spec §10).
+///
+/// This is HDX's first user-facing verb. It reports **facts only — no conformance
+/// verdict** (spec §10); discovery gaps (a basin with no time extent, an absent
+/// outlines rollup) are recorded in the [`Description`] as facts (`None` / empty
+/// lists), never raised. It is the spec's declared **stress test of the manifest
+/// floor** (spec §10/§11): the assembler succeeds using **only** the six manifest
+/// fields + discovered facts.
+///
+/// ## Load-bearing order (spec §0 entry discipline)
+///
+/// The four stages run in a strict, statically-guaranteed order — the §0 hard cut and
+/// the manifest boundary-parse happen **before any other file is touched**:
+///
+/// 1. Read `<path>/manifest.json` to a string. A filesystem failure (the file is
+///    absent/unreadable) is the typed [`DescribeError::ManifestUnreadable`] — distinct
+///    from a *malformed* manifest.
+/// 2. [`Manifest::from_json`] — the boundary parse, whose **first** act is the §0/§14
+///    M2 hard version cut. An unknown `format_version` is rejected here as
+///    [`CoreError::UnknownFormatVersion`](crate::error::CoreError::UnknownFormatVersion),
+///    wrapped in [`DescribeError::Manifest`]. **This stage returns on error before
+///    [`discover`] is called** (the cut precedes discovery by construction — the
+///    `discover` call below is unreachable until `from_json` succeeds).
+/// 3. [`discover`] — the MS3+MS4 layout walk + metadata readers. Any structural
+///    failure surfaces as [`DescribeError::Discovery`].
+/// 4. [`Description::from_discovery`] — the pure assembler (`Manifest ⊕ Discovery →
+///    Description`), which never fails.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |---|---|
+/// | `<path>/manifest.json` is absent or unreadable | [`DescribeError::ManifestUnreadable`] |
+/// | `format_version` is not `"0.1"` (the §0 hard cut, evaluated **before** discovery) | [`DescribeError::Manifest`] wrapping [`CoreError::UnknownFormatVersion`](crate::error::CoreError::UnknownFormatVersion) |
+/// | the manifest is otherwise malformed (extra/missing field, bad timestamp, empty crs/cadence) | [`DescribeError::Manifest`] |
+/// | discovery (layout walk or a metadata reader) fails after the manifest is accepted | [`DescribeError::Discovery`] |
+#[instrument(fields(path = %path.as_ref().display()))]
+pub fn describe(path: impl AsRef<Path>) -> Result<Description, DescribeError> {
+    let path = path.as_ref();
+
+    // Stage 1 — read manifest.json FIRST (spec §0): before any other file is touched.
+    // A filesystem failure here is a *missing/unreadable* manifest, kept distinct from
+    // a *malformed* one (which surfaces from `from_json` below).
+    let manifest_path = path.join("manifest.json");
+    let manifest_json = fs::read_to_string(&manifest_path).map_err(|err| {
+        DescribeError::ManifestUnreadable {
+            path: manifest_path.display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    debug!("read manifest.json");
+
+    // Stage 2 — boundary-parse the manifest. Its FIRST act is the §0/§14 M2 hard
+    // version cut: an unknown `format_version` returns here, BEFORE `discover` is ever
+    // reached. The early `?` makes this ordering a static guarantee.
+    let manifest = Manifest::from_json(&manifest_json).map_err(DescribeError::Manifest)?;
+    debug!("manifest boundary-parse passed (format_version hard cut cleared)");
+
+    // Stage 3 — discovery: only now is any other file in the dataset read.
+    let discovery = discover(path).map_err(DescribeError::Discovery)?;
+    debug!("discovery complete");
+
+    // Stage 4 — pure assembly (facts only, no verdict; never fails).
+    let description = Description::from_discovery(&manifest, &discovery);
+    info!(
+        basins = description.basins().len(),
+        fields = description.fields().len(),
+        "described dataset"
+    );
+    Ok(description)
+}
+
+/// Describes a dataset and serializes the result to the stable JSON string (the R4 wire
+/// shape) the CLI (MS7) and the PyO3 binding (MS9) surface.
+///
+/// A thin wrapper over [`describe`] + [`Description::to_json_string`]; the same §0 entry
+/// discipline and facts-only contract apply.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |---|---|
+/// | [`describe`] fails (unreadable/malformed manifest, or discovery) | the propagated [`DescribeError`] |
+/// | the assembled [`Description`] cannot be serialized (unreachable for a valid manifest) | [`DescribeError::Serialize`] |
+#[instrument(fields(path = %path.as_ref().display()))]
+pub fn describe_json(path: impl AsRef<Path>) -> Result<String, DescribeError> {
+    let description = describe(path)?;
+    description
+        .to_json_string()
+        .map_err(|err| DescribeError::Serialize {
+            detail: err.to_string(),
+        })
 }
 
 /// The serializable top-level `describe` shape (R4). Owns the JSON wire shape.
@@ -503,10 +616,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use serde_json::Value;
+    use time::format_description::well_known::Rfc3339;
 
-    use crate::describe::Description;
+    use crate::describe::{Description, describe, describe_json};
+    use crate::error::{CoreError, DescribeError};
     use crate::gridded_discovery::{Discovery, discover};
     use crate::manifest::Manifest;
+    use crate::newtypes::BasinId;
+    use crate::scalar_reader::TimeExtentSource;
 
     /// Resolves a path under the committed `conformance/` fixture tree.
     ///
@@ -777,5 +894,202 @@ mod tests {
                 Some("statistics")
             );
         }
+    }
+
+    // --- MS5-S2: the `describe` boundary verb ---------------------------------------
+
+    /// §0 entry-discipline test (spec §0/§14 M2 hard cut). `describe` over the
+    /// `invalid/wrong-format-version/` fixture (`format_version:"0.2"`) returns the
+    /// **version** error — NOT a discovery error — proving the hard cut wins and runs
+    /// **before** discovery.
+    ///
+    /// The cut is statically guaranteed to precede discovery by the function order in
+    /// [`describe`]: stage 2 (`Manifest::from_json`) returns via `?` on an unknown
+    /// version, so stage 3 (`discover`) is never reached. This test confirms the
+    /// observable consequence: the error is `Manifest(UnknownFormatVersion{found:"0.2"})`,
+    /// never a `Discovery(..)`.
+    #[test]
+    fn describe_hard_cuts_unknown_format_version_before_discovery() {
+        let err = describe(conformance("invalid/wrong-format-version"))
+            .expect_err("an unknown format_version must be rejected at the boundary");
+
+        match err {
+            DescribeError::Manifest(CoreError::UnknownFormatVersion { found }) => {
+                assert_eq!(found, "0.2", "the raw rejected version surfaces unchanged");
+            }
+            other => panic!("expected the version hard cut, not a discovery error: {other:?}"),
+        }
+    }
+
+    /// Valid-fixture happy path: `describe` of the MS2 valid fixture is `Ok` and every
+    /// fact round-trips (manifest, basins, the five-field unified catalog in order, the
+    /// `era5` grid geometry, the three ragged extents, the delineations).
+    #[test]
+    fn describe_valid_fixture_round_trips_every_fact() {
+        let description = describe(conformance("valid/minimal")).expect("the valid fixture describes");
+
+        // Manifest round-trip (name / crs / cadence / created_at).
+        let manifest = description.manifest();
+        assert_eq!(manifest.name().as_str(), "hdx-conformance-valid-minimal");
+        assert_eq!(manifest.crs().as_str(), "EPSG:4326");
+        assert_eq!(manifest.cadence().as_str(), "daily");
+        assert_eq!(
+            manifest
+                .created_at()
+                .format(&Rfc3339)
+                .expect("created_at formats"),
+            "2026-06-01T00:00:00Z"
+        );
+
+        // Basins.
+        let basins: Vec<&str> = description.basins().iter().map(BasinId::as_str).collect();
+        assert_eq!(basins, vec!["0001", "0002", "0003"]);
+
+        // The five-field unified catalog, in order (scalar ⊕ gridded).
+        let names: Vec<&str> = description
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "drainage_area",
+                "streamflow",
+                "elevation",
+                "era5_precipitation",
+                "era5_precipitation_was_filled"
+            ]
+        );
+
+        // The era5 grid geometry: extent 10.0/50.0/11.5/48.0, 6×8, EPSG:4326. Both the
+        // COG (gridded_static) and the Zarr (gridded_dynamic) report the shared `era5`
+        // grid, so assert every discovered grid carries that geometry.
+        assert!(!description.grids().is_empty(), "the era5 grid is discovered");
+        for grid in description.grids() {
+            assert_eq!(grid.grid_label().as_str(), "era5");
+            let extent = grid.extent();
+            assert_eq!(extent.west(), 10.0);
+            assert_eq!(extent.north(), 50.0);
+            assert_eq!(extent.east(), 11.5);
+            assert_eq!(extent.south(), 48.0);
+            assert_eq!(grid.width(), 6);
+            assert_eq!(grid.height(), 8);
+            assert_eq!(grid.crs().as_str(), "EPSG:4326");
+        }
+
+        // Three ragged extents, all from Statistics (spec §6.1).
+        let extent_basins: Vec<&str> = description
+            .time_extents()
+            .iter()
+            .map(|e| e.basin_id().as_str())
+            .collect();
+        assert_eq!(extent_basins, vec!["0001", "0002", "0003"]);
+        for entry in description.time_extents() {
+            let extent = entry.time_extent().expect("each fixture basin has an extent");
+            assert_eq!(extent.source(), TimeExtentSource::Statistics);
+        }
+
+        // Delineations {grit, merit}.
+        let mut delineations: Vec<&str> = description
+            .delineations()
+            .iter()
+            .map(|d| d.as_str())
+            .collect();
+        delineations.sort_unstable();
+        assert_eq!(delineations, vec!["grit", "merit"]);
+    }
+
+    /// Facts-only / no-verdict: `describe_json` parsed back to a `Value` has **no**
+    /// `conformant` key and no §14 check-outcome list (spec §10). `describe` reports
+    /// facts; the verdict is a later milestone.
+    #[test]
+    fn describe_json_emits_facts_only_no_verdict() {
+        let json = describe_json(conformance("valid/minimal")).expect("describe_json succeeds");
+        let value: Value = serde_json::from_str(&json).expect("output is valid JSON");
+
+        let object = value.as_object().expect("top-level object");
+        assert!(
+            !object.contains_key("conformant"),
+            "describe emits no `conformant` verdict key"
+        );
+        // No §14 check-outcome list under any of the verdict-shaped key names.
+        for verdict_key in ["checks", "violations", "report", "outcomes", "verdict"] {
+            assert!(
+                !object.contains_key(verdict_key),
+                "describe emits no {verdict_key:?} verdict list"
+            );
+        }
+        // The shape is exactly the six facts keys.
+        let keys = object_keys(&value);
+        let expected: BTreeSet<String> = [
+            "manifest",
+            "basins",
+            "fields",
+            "grids",
+            "time_extents",
+            "delineations",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(keys, expected);
+    }
+
+    /// Manifest-unreadable path: `describe` over a directory that has **no**
+    /// `manifest.json` returns the typed [`DescribeError::ManifestUnreadable`] — not a
+    /// panic, and not a discovery error (the manifest is read FIRST, spec §0).
+    #[test]
+    fn describe_missing_manifest_is_typed_manifest_unreadable() {
+        // A fresh empty temp dir: it exists (so it is not a layout-walk failure) but
+        // lacks `manifest.json` (so stage 1 fails before discovery is reached).
+        let dir = std::env::temp_dir().join(format!(
+            "hdx-describe-no-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let err = describe(&dir).expect_err("a dir with no manifest.json must error");
+
+        match &err {
+            DescribeError::ManifestUnreadable { path, .. } => {
+                assert!(
+                    path.ends_with("manifest.json"),
+                    "the error names the manifest path, got {path:?}"
+                );
+            }
+            other => panic!("expected ManifestUnreadable, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Floor stress-test (executable, spec §10/§11). The `describe` result equals a
+    /// [`Description`] rebuilt by parsing the manifest and running `discover`
+    /// **separately** — proving the verb is exactly `Manifest::from_json ⊕ discover`
+    /// folded through the pure assembler, with the manifest contributing only its six
+    /// floor fields and every other datum sourced from discovery.
+    #[test]
+    fn describe_equals_manifest_plus_discover_assembled_separately() {
+        let path = conformance("valid/minimal");
+
+        // Path A — the verb under test.
+        let via_verb = describe(&path).expect("the verb describes");
+
+        // Path B — the six-field manifest + discover, assembled by hand.
+        let manifest_json =
+            std::fs::read_to_string(path.join("manifest.json")).expect("read manifest.json");
+        let manifest = Manifest::from_json(&manifest_json).expect("manifest parses");
+        let discovery = discover(&path).expect("discover succeeds");
+        let rebuilt = Description::from_discovery(&manifest, &discovery);
+
+        assert_eq!(
+            via_verb, rebuilt,
+            "describe == Manifest::from_json ⊕ discover (the floor stress test)"
+        );
     }
 }
