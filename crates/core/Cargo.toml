@@ -12,3 +12,10 @@ serde_json = "1"
 # Pinned to `time` (over `chrono`) for its `well-known::Rfc3339` parser, which is
 # strictly RFC 3339 — it rejects date-only and other non-conformant inputs.
 time = { version = "0.3", features = ["parsing", "formatting"] }
+
+[dev-dependencies]
+# Test-only (never shipped in `hdx-core`): compiles the committed
+# `schemas/manifest.schema.json` and cross-checks it against the S4 boundary
+# parser, pinning the manifest half of R4 (architecture §7). No production path
+# depends on this crate.
+jsonschema = "0.46"

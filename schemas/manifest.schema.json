@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/manifest.schema.json",
+  "title": "HDX manifest",
+  "description": "The irreducible six-field floor of an HDX dataset (spec §11). Mirrors the S4 boundary parser: exactly the six non-derivable fields, nothing more (additionalProperties:false rejects a 7th field, M3 too-many) and nothing less (required lists all six, M3 too-few). Adding any derivable field is a conformance bug, so no seventh property is permitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "name",
+    "created_at",
+    "producer_version",
+    "crs",
+    "cadence"
+  ],
+  "properties": {
+    "format_version": {
+      "description": "Hard version cut, read first (spec §14 M1/M2). Only \"0.1\" is accepted.",
+      "type": "string",
+      "const": "0.1"
+    },
+    "name": {
+      "description": "Dataset identity — generic, not a role label (spec §11).",
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "description": "Dataset creation time as an RFC 3339 timestamp (spec §14 M4).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "producer_version": {
+      "description": "The tool/version that wrote the dataset (spec §11).",
+      "type": "string",
+      "minLength": 1
+    },
+    "crs": {
+      "description": "Dataset-wide CRS; non-empty (spec §14 M4).",
+      "type": "string",
+      "minLength": 1
+    },
+    "cadence": {
+      "description": "Dataset-wide cadence/calendar convention; non-empty (spec §14 M4).",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
