@@ -58,6 +58,17 @@
 //!   `geo` key-value PROJJSON CRS recorded as a comparable `EPSG:<code>` from its
 //!   `id` (the MEDIUM fix; raw PROJJSON + an R3 flag when no EPSG `id` resolves) so
 //!   MS6's M5 receives a value comparable to the manifest's `"EPSG:4326"`.
+//! - [`gridded_discovery`] — the **gridded / geometry half** of the shared discovery
+//!   layer plus the **combined** model (MS4-S5): the typed
+//!   [`GriddedDiscovery`](gridded_discovery::GriddedDiscovery) model and its boundary
+//!   function [`discover_gridded`](gridded_discovery::discover_gridded) that walk the
+//!   tree, read every present COG / Zarr artifact + the outlines schema, and return
+//!   the per-grid geometries + the gridded field catalog + the delineation labels +
+//!   the per-basin observed grid labels (the G2 precondition fact) + the MED-5 Zarr
+//!   path. The [`Discovery`](gridded_discovery::Discovery) struct **pairs** this with
+//!   MS3's [`ScalarDiscovery`](discovery::ScalarDiscovery) without reshaping either,
+//!   so both verbs (MS5/MS6) consume one model; [`discover`](gridded_discovery::discover)
+//!   builds both halves in one call. Records facts, never a verdict (enforcement MS6).
 
 pub mod cog_reader;
 pub mod discovery;
@@ -66,6 +77,7 @@ pub mod field;
 pub mod format_version;
 pub mod geoparquet_reader;
 pub mod grid;
+pub mod gridded_discovery;
 pub mod layout;
 pub mod manifest;
 pub mod newtypes;
