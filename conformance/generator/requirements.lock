@@ -1,0 +1,18 @@
+# HDX fixture generator — exact-version dependency lock (dev-only harness).
+#
+# This is the file regenerate.sh installs into the venv. Pins are EXACT (==) so a
+# fresh checkout resolves the identical dependency closure. Keep this in sync with
+# pyproject.toml's [project.dependencies]; the lock is the installed source of truth.
+#
+# Targets CPython 3.12.x (see pyproject.toml requires-python and the Risks note).
+#
+# Direct dependencies (the nine the steps name):
+numpy==2.1.3
+pandas==2.2.3
+pyarrow==18.1.0
+xarray==2024.11.0
+zarr==3.0.8
+rasterio==1.4.3
+rioxarray==0.18.2
+geopandas==1.0.1
+shapely==2.0.6

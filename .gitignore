@@ -6,3 +6,12 @@ Thumbs.db
 
 # Session orchestration tooling (saved dynamic workflow scripts), not project source
 .claude/workflows/
+
+# Conformance fixture generator: dev-only Python harness artifacts (not source).
+# Only the generator source + the emitted fixture trees are committed.
+conformance/generator/.venv/
+conformance/generator/**/__pycache__/
+conformance/generator/.lock.sha256
+conformance/generator/scratch/
+**/__pycache__/
+*.py[cod]

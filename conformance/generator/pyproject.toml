@@ -1,0 +1,42 @@
+[project]
+name = "hdx-fixtures"
+version = "0.1.0"
+description = "Dev-only HDX conformance fixture generator. NOT an HDX writer; never shipped in hdx-core."
+readme = "../README.md"
+
+# Python interpreter pin. The HARNESS targets CPython 3.12.x.
+#
+# Rationale (see conformance/README.md and planning/MS2/steps.md Risks): some
+# hosts ship CPython 3.14, for which several pinned wheels below (numpy / zarr v3
+# native deps) do not yet publish binaries. regenerate.sh therefore creates its
+# OWN venv from a 3.12 interpreter (PYTHON env override; default `python3.12`)
+# rather than the ambient `python3`, so the pins resolve reproducibly.
+requires-python = ">=3.12,<3.13"
+
+# Exact-version pins (no ranges). Every dependency is frozen so a fresh venv
+# resolves byte-for-byte the same closure. Mirror these in requirements.lock,
+# which regenerate.sh installs.
+#
+# These cover the four physical encodings later MS2 steps emit:
+#   parquet + geoparquet -> pyarrow
+#   Zarr v3 (sharding + consolidated metadata) -> xarray + zarr
+#   COG -> rioxarray + rasterio
+#   geometry -> geopandas + shapely
+#   numerics -> numpy + pandas
+dependencies = [
+  "numpy==2.1.3",
+  "pandas==2.2.3",
+  "pyarrow==18.1.0",
+  "xarray==2024.11.0",
+  "zarr==3.0.8",
+  "rasterio==1.4.3",
+  "rioxarray==0.18.2",
+  "geopandas==1.0.1",
+  "shapely==2.0.6",
+]
+
+[tool.hdx-fixtures]
+# Single source of truth for the dev-only / not-a-writer rule, surfaced to any
+# tool (and any future agent) reading the project metadata.
+dev_only = true
+is_hdx_writer = false
