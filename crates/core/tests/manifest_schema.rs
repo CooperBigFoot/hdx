@@ -57,8 +57,8 @@ const FIVE_FIELD: &str = r#"{
 /// The schema lives at the repository root; `CARGO_MANIFEST_DIR` points at
 /// `crates/core`, so we climb two directories to reach it.
 fn load_schema() -> Validator {
-    let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../schemas/manifest.schema.json");
+    let schema_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas/manifest.schema.json");
     let raw = std::fs::read_to_string(&schema_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", schema_path.display()));
     let schema: Value =

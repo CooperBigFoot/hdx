@@ -3,9 +3,10 @@
 //! This module is the crate's single entry into the pure-Rust `parquet`/`arrow`
 //! stack (the R1 decision; see `architecture.md` Amendments log, R1-parquet). It
 //! opens a parquet **byte source** and recovers its **metadata only** — the arrow
-//! [`SchemaRef`] (column names + types) and the **row-group count** — never any
-//! gridded chunk or data-column values. This is the cheap discovery read that
-//! `validate`/`describe` are built on (architecture §1: read metadata, not chunks).
+//! [`Schema`] (column names + types) and the parquet file metadata (row-group
+//! metadata + per-column statistics) — never any gridded chunk or data-column
+//! values. This is the cheap discovery read that `validate`/`describe` are built
+//! on (architecture §1: read metadata, not chunks).
 //!
 //! MS3-S1 lands this helper plus its tests so the crate **exercises** the pinned
 //! dependency end-to-end before any reader module is built. S3 layers the scalar
@@ -28,9 +29,10 @@ use crate::error::CoreError;
 /// The metadata recovered from a parquet byte source, with no chunk decoded.
 ///
 /// Holds exactly the facts the scalar reader needs from the footer: the arrow
-/// [`Schema`] (column names + types) and the **row-group count**. It is
-/// **inert/agnostic** (spec §1): it carries the physical metadata and nothing
-/// derived — no transform, role, semantic type, or provenance.
+/// [`Schema`] (column names + types) and the parquet [`ParquetMetaData`] (row-group
+/// metadata + per-column statistics). It is **inert/agnostic** (spec §1): it carries
+/// the physical metadata and nothing derived — no transform, role, semantic type, or
+/// provenance.
 #[derive(Debug, Clone)]
 pub(crate) struct ParquetMeta {
     /// The arrow schema decoded from the parquet footer (column names + types).
@@ -46,15 +48,11 @@ impl ParquetMeta {
         &self.schema
     }
 
-    /// Returns the number of row groups recorded in the footer.
-    pub(crate) fn num_row_groups(&self) -> usize {
-        self.file_metadata.num_row_groups()
-    }
-
-    /// Borrows the full parquet file metadata (footer).
+    /// Borrows the full parquet file metadata (footer): row-group metadata and
+    /// per-column statistics.
     ///
-    /// Used by S3 to read row-group `time` statistics for the per-basin time
-    /// extent; it exposes no chunk data.
+    /// Used by the scalar reader to read row-group `time` statistics for the
+    /// per-basin time extent and the `time` sort order; it exposes no chunk data.
     pub(crate) fn file_metadata(&self) -> &ParquetMetaData {
         &self.file_metadata
     }
@@ -129,7 +127,9 @@ mod tests {
         {
             let mut writer = ArrowWriter::try_new(&mut buffer, schema, None)
                 .expect("constructing the arrow parquet writer must succeed");
-            writer.write(&batch).expect("writing the batch must succeed");
+            writer
+                .write(&batch)
+                .expect("writing the batch must succeed");
             writer.close().expect("closing the writer must succeed");
         }
         buffer
@@ -149,7 +149,6 @@ mod tests {
         assert_eq!(fields[0].data_type(), &DataType::Int32);
 
         // Row-group recovery: a single small write lands in one row group.
-        assert_eq!(meta.num_row_groups(), 1);
         assert_eq!(meta.file_metadata().num_row_groups(), 1);
     }
 

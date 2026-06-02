@@ -18,10 +18,13 @@
 //! - [`layout`] — the basin-first hive walk into a typed
 //!   [`LayoutModel`](layout::LayoutModel): root-rollup presence + enumerated
 //!   `basin=<id>` dirs with per-basin artifact paths (filesystem-only, no reads).
+//! - [`scalar_reader`] — the scalar-parquet metadata reader: arrow schema → MS1
+//!   [`Field`](field::Field)s, `basin_id` presence + value, the `time` descriptor,
+//!   and per-basin time extents (row-group statistics with a bounded 1-D fallback).
 //! - `parquet_meta` (private) — the crate's single touchpoint into the pure-Rust
 //!   `parquet`/`arrow` stack (R1): opens a parquet byte source and recovers its
-//!   metadata (arrow schema + row-group count) only — never a chunk. The scalar
-//!   reader (MS3-S3) is layered on this metadata path.
+//!   metadata (arrow schema + row-group statistics) only — never a chunk. The scalar
+//!   reader is layered on this metadata path.
 
 pub mod error;
 pub mod field;
@@ -29,12 +32,10 @@ pub mod format_version;
 pub mod layout;
 pub mod manifest;
 pub mod newtypes;
+pub mod scalar_reader;
 
-// The parquet metadata touchpoint lands in MS3-S1 fully tested but not yet wired
-// into a production path — MS3-S3's scalar reader is its first non-test consumer.
-// The scoped allow documents that intent rather than masking a real dead-code bug;
-// it is removed when S3 calls `read_parquet_meta`.
-#[allow(dead_code)]
+// The parquet metadata touchpoint (MS3-S1): the scalar reader is its first non-test
+// consumer, so it is a live private module — no dead-code allow needed.
 mod parquet_meta;
 
 #[cfg(test)]
@@ -89,12 +90,16 @@ mod tests {
                 path: "/no/such/dir".to_string(),
                 detail: "No such file or directory".to_string(),
             },
+            CoreError::MissingScalarColumn {
+                artifact: "scalar_dynamic.parquet".to_string(),
+                column: "time".to_string(),
+            },
         ];
 
         // Every variant must render a non-empty Display string.
         for variant in &variants {
             assert!(!variant.to_string().is_empty());
         }
-        assert_eq!(variants.len(), 14);
+        assert_eq!(variants.len(), 15);
     }
 }

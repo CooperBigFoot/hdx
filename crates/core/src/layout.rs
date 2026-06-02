@@ -409,9 +409,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::error::CoreError;
-    use crate::layout::{
-        RootRollupKind, is_ignored_entry, parse_basin_dir_name, walk_layout,
-    };
+    use crate::layout::{RootRollupKind, is_ignored_entry, parse_basin_dir_name, walk_layout};
     use crate::newtypes::BasinId;
 
     /// Resolves a path under the committed `conformance/` fixture tree.
@@ -438,7 +436,14 @@ mod tests {
 
     #[test]
     fn parse_basin_dir_name_rejects_non_matching_names() {
-        for name in ["basinx", "basin", "basin=", "scalar_static.parquet", ".DS_Store", ""] {
+        for name in [
+            "basinx",
+            "basin",
+            "basin=",
+            "scalar_static.parquet",
+            ".DS_Store",
+            "",
+        ] {
             assert_eq!(
                 parse_basin_dir_name(name),
                 None,
@@ -449,7 +454,14 @@ mod tests {
 
     #[test]
     fn is_ignored_entry_skips_dot_and_os_cruft() {
-        for name in [".DS_Store", ".gitkeep", ".git", ".ipynb_checkpoints", ".hidden", ""] {
+        for name in [
+            ".DS_Store",
+            ".gitkeep",
+            ".git",
+            ".ipynb_checkpoints",
+            ".hidden",
+            "",
+        ] {
             assert!(is_ignored_entry(name), "{name:?} must be ignored");
         }
     }
@@ -497,18 +509,8 @@ mod tests {
             // for MS4 to parse — the walk does not descend into them.
             assert!(basin.gridded_static().is_present());
             assert!(basin.gridded_dynamic().is_present());
-            assert!(
-                basin
-                    .gridded_static()
-                    .path()
-                    .ends_with("gridded_static")
-            );
-            assert!(
-                basin
-                    .gridded_dynamic()
-                    .path()
-                    .ends_with("gridded_dynamic")
-            );
+            assert!(basin.gridded_static().path().ends_with("gridded_static"));
+            assert!(basin.gridded_dynamic().path().ends_with("gridded_dynamic"));
         }
     }
 
@@ -618,10 +620,8 @@ mod tests {
     #[test]
     fn walk_on_a_file_returns_layout_walk() {
         // A file (not a directory) is a structural failure of the walk.
-        let file = std::env::temp_dir().join(format!(
-            "hdx-layout-notadir-{}.tmp",
-            std::process::id()
-        ));
+        let file =
+            std::env::temp_dir().join(format!("hdx-layout-notadir-{}.tmp", std::process::id()));
         fs::write(&file, b"not a directory").expect("write temp file");
 
         let result = walk_layout(&file);

@@ -304,7 +304,10 @@ mod tests {
         }"#;
         match Manifest::from_json(json) {
             Err(CoreError::UnknownFormatVersion { found }) => {
-                assert_eq!(found, "0.2", "the version error must win over the empty crs");
+                assert_eq!(
+                    found, "0.2",
+                    "the version error must win over the empty crs"
+                );
             }
             other => panic!("expected UnknownFormatVersion (read first), got {other:?}"),
         }

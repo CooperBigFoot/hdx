@@ -14,15 +14,17 @@ serde_json = "1"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 # Pure-Rust Apache Arrow / Parquet stack — the R1 reader choice for the scalar
 # physical encoding (spec §4/§8), pinned to major 58. NO GDAL system dependency.
-# Features are deliberately minimal: `parquet` carries only the `arrow` integration
-# (it surfaces the schema as an arrow `Schema`) — no `async`, no `object_store`,
-# no compression codecs beyond the defaults. v0.1 reads parquet *metadata* and 1-D
-# coordinate/key columns from the local filesystem only (architecture §1) — never
-# gridded chunks. `arrow` is held to `arrow-schema`/`arrow-array` types via the
+# Features are deliberately minimal: `parquet` carries the `arrow` integration (it
+# surfaces the schema as an arrow `Schema`) plus `zstd` — the spec mandates scalar
+# parquet is zstd-compressed (spec §8), so the bounded 1-D `time`/`basin_id` column
+# reads (architecture §1) must be able to decompress zstd data pages. No `async`,
+# no `object_store`, and no other compression codecs. v0.1 reads parquet *metadata*
+# and 1-D coordinate/key columns from the local filesystem only (architecture §1) —
+# never gridded chunks. `arrow` is held to `arrow-schema`/`arrow-array` types via the
 # default features kept by `parquet`. The Zarr/COG/geoparquet R1 decision is
 # deferred to MS4 (see architecture.md Amendments log, R1-parquet).
 arrow = { version = "58", default-features = false }
-parquet = { version = "58", default-features = false, features = ["arrow"] }
+parquet = { version = "58", default-features = false, features = ["arrow", "zstd"] }
 # `bytes::Bytes` is parquet's zero-copy `ChunkReader` for an in-memory byte source
 # (the reader feeds metadata from a `&[u8]` slice without touching the filesystem).
 # Pinned to the same major `parquet` itself depends on.

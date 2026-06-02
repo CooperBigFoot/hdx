@@ -355,7 +355,10 @@ mod tests {
         assert_eq!(parse_dtype("int64").expect("int64"), Dtype::I64);
         assert_eq!(parse_dtype("bool").expect("bool"), Dtype::Bool);
         assert_eq!(parse_dtype("boolean").expect("boolean"), Dtype::Bool);
-        assert_eq!(parse_dtype("timestamp").expect("timestamp"), Dtype::Timestamp);
+        assert_eq!(
+            parse_dtype("timestamp").expect("timestamp"),
+            Dtype::Timestamp
+        );
         assert_eq!(parse_dtype("datetime").expect("datetime"), Dtype::Timestamp);
     }
 

@@ -123,6 +123,24 @@ pub enum CoreError {
         detail: String,
     },
 
+    /// Fires when the scalar reader cannot find a column the parquet artifact is
+    /// *structurally* required to carry: the `time` column in a per-basin
+    /// `scalar_dynamic.parquet` (spec §6), or the `basin_id` column where a read of
+    /// its value is requested (spec §3). This is a schema-level absence detected
+    /// from the arrow schema — distinct from [`CoreError::ParquetRead`], which fires
+    /// when the file or its metadata cannot be decoded at all. The reader surfaces
+    /// the typed error instead of panicking. The variant stays **inert/agnostic**
+    /// (spec §1): it carries only the artifact name and the missing column name —
+    /// no domain field, no provenance.
+    #[error("scalar artifact {artifact:?} is missing required column {column:?}")]
+    MissingScalarColumn {
+        /// A name for the artifact that lacked the column (a path or in-memory
+        /// label); used only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The name of the structurally required column that was absent.
+        column: String,
+    },
+
     // --- Reserved for later milestones (skeleton variants) ---
     /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
     /// `basin=<id>` partition folder (spec §3/§14 I2).
