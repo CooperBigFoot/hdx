@@ -36,6 +36,15 @@ G2 precondition (the COG and Zarr extents now coincide at `10.0`/`50.0`) but **r
 facts, never a verdict** (G2 enforcement is MS6). The `validate` / `describe` verbs
 themselves land in later milestones, built on these types.
 
+As of milestone MS5, the crate adds the **`describe` self-description type and its
+serializable wire shape** (spec §10, R4): [`describe`](src/describe.rs) stands up
+`Description` (manifest + basins + fields + grids + per-basin ragged time extents +
+delineations, architecture §3.5) and a describe-local `#[derive(Serialize)]` DTO layer
+that owns the JSON shape **in one place**, leaving the inert domain types free of
+`serde::Serialize`. The pure mapping `Discovery + Manifest → Description → DTO` is
+**zero IO** (the verb that reads the files lands in a later step) and reports **facts
+only — no conformance verdict** (no `conformant` key, spec §10).
+
 ## Inert and agnostic (load-bearing discipline)
 
 > **HDX describes the *shape* of data, never *what was done to it*** (spec §1).
@@ -84,6 +93,7 @@ graph TD
     cog_reader[cog_reader — COG/GeoTIFF tag reader]
     geoparquet_reader[geoparquet_reader — outlines schema + delineation/basin_id + CRS]
     gridded_discovery[gridded_discovery — gridded half + combined Discovery]
+    describe[describe — Description type + R4 serializable DTO layer]
 
     format_version --> error
     field --> error
@@ -126,6 +136,13 @@ graph TD
     gridded_discovery --> zarr_reader
     gridded_discovery --> cog_reader
     gridded_discovery --> geoparquet_reader
+
+    describe --> newtypes
+    describe --> field
+    describe --> grid
+    describe --> manifest
+    describe --> scalar_reader
+    describe --> gridded_discovery
 ```
 
 The three MS3 modules (`layout` → `scalar_reader` → `discovery`) form the **scalar half
@@ -205,6 +222,16 @@ layered on.
   scalar ⊕ gridded` / `grids` / `delineations` view). [`discover`](src/gridded_discovery.rs)
   builds both halves in one call. It **observes** the G2 precondition (the COG and
   Zarr extents coincide); it renders **no verdict** (enforcement is MS6).
+- **`describe`** (MS5) — the `describe` self-description type and its serializable wire
+  shape (spec §10, R4): the [`Description`](src/describe.rs) domain struct (composed
+  only from the six manifest floor fields + discovered facts) and the describe-local
+  `#[derive(Serialize)]` DTO layer (`DescriptionDto` and friends) that **owns the JSON
+  shape**, so the inert domain types never derive `serde::Serialize`. The pure
+  `Description::from_discovery(&Manifest, &Discovery)` assembler reads through the
+  documented `Discovery` accessors only (no reshaping), and `to_json_string` /
+  `to_json_pretty` emit the R4 shape. **Facts only — no verdict**: a basin with no
+  extent serializes a `null` extent (the §6.1 ragged gap), an absent outlines rollup an
+  empty `delineations` array.
 
 The committed `schemas/manifest.schema.json` (at the repo root) mirrors the `manifest`
 floor; a `jsonschema` dev-dependency test (`tests/manifest_schema.rs`) asserts the
@@ -240,3 +267,6 @@ Domain terms an agent would not infer from the code alone. Spec section in paren
 | **time-extent provenance** (§8, arch §7 R3) | Which path produced an extent, recorded on it as an enum (never a `bool`): `Statistics` (the `time` column's row-group min/max from the parquet footer — the primary, no-data-read path, §8) vs `BoundedColumnScan` (the LOW-1 fallback). Downstream (`describe` MS5, `validate` MS6 R3 classification) reports which tier produced each extent. |
 | **LOW-1 bounded fallback** (§8, arch §1/§7 R3) | When the `time` column carries **no** row-group statistics, the reader recovers `[min, max]` by reading **exactly one column — `time`, selected by name** (never a data column, never a gridded chunk). It is classified under **R3** as a **metadata/index-tier, architecture-§1-compliant 1-D coordinate read** (the same tier as reading a Zarr `time` coordinate array), **NOT** a gridded-chunk value decode. The bound is hard and stated in [`scalar_reader`](src/scalar_reader.rs)'s `//!`. |
 | **MED-5 hand-off** (§8) | The MS2→MS3 writer/reader hand-off: MS2 self-asserted (pyarrow side) that the valid fixture's `time` column carries usable row-group statistics; MS3 **confirms it Rust-side** (a test asserts the statistics are readable by the `parquet` crate **and** that the extent comes from `Statistics`, not the fallback). **The rule:** if Rust ever cannot surface the statistics pyarrow wrote, the fix is to **regenerate the MS2 fixture**, **never** a reader workaround — a mismatch is a generator bug. Stated canonically in [`scalar_reader`](src/scalar_reader.rs)'s `//!`. |
+| **Description** (§10, arch §3.5) | The full self-description `describe` emits ([`Description`](src/describe.rs)): the parsed `Manifest` plus the discovered `basins`, `fields` (`scalar ⊕ gridded`), `grids`, per-basin ragged `time_extents`, and `delineations`. Composed **only** from the six manifest floor fields + discovered facts (the §10/§11 floor stress test) and **records facts, never a verdict** (no `conformant` key — that is `validate`). A discovery gap is a fact: a basin with no extent has a `null` extent (the §6.1 ragged gap), an absent outlines rollup an empty list. |
+| **describe verb** (§10) | The first contract verb (spec §10): emit the full self-description discovered from a dataset's files, **facts only — no conformance verdict**. MS5-S1 freezes its output *type* + JSON shape; the verb's IO (read `manifest.json` → hard-cut `format_version` → `discover`) lands in a later step. `describe` is the declared **stress test of the manifest floor**: if assembling the `Description` is hard, the floor is too thin (spec §10/§11). |
+| **R4 mini-contract** (arch §7 R4) | The `Description` JSON shape is itself a downstream contract (the CLI + the PyO3 binding consume it), so it is **owned by the `describe` boundary**, not the inert domain types: a describe-local `#[derive(Serialize)]` DTO layer ([`describe`](src/describe.rs)) defines the wire shape in one reviewable place, mirroring the manifest parser's two-stage `ManifestDto` discipline. The domain types (`Field`, `GridInfo`, `Manifest`, `TimeExtent`) carry **no** `serde::Serialize` derive, so the wire shape cannot silently drift with internal type changes. Versioned **implicitly by `format_version` only** (no separate schema-version field). |

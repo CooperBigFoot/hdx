@@ -69,8 +69,15 @@
 //!   MS3's [`ScalarDiscovery`](discovery::ScalarDiscovery) without reshaping either,
 //!   so both verbs (MS5/MS6) consume one model; [`discover`](gridded_discovery::discover)
 //!   builds both halves in one call. Records facts, never a verdict (enforcement MS6).
+//! - [`describe`] — the `describe` self-description type ([`Description`](describe::Description))
+//!   and its describe-local `#[derive(Serialize)]` DTO layer (the R4 wire shape, spec
+//!   §10). Owns the JSON shape in one place so the inert domain types stay free of
+//!   `serde::Serialize`; the pure mapping `Discovery + Manifest → Description → DTO`
+//!   reports **facts only — no conformance verdict**. Zero IO (the `describe` verb that
+//!   reads the files lands in a later step).
 
 pub mod cog_reader;
+pub mod describe;
 pub mod discovery;
 pub mod error;
 pub mod field;
