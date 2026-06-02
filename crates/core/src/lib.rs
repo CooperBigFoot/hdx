@@ -13,8 +13,10 @@
 //! - [`error`] — the crate-wide [`CoreError`](error::CoreError) thiserror enum.
 //! - [`format_version`] — the single-arm [`FormatVersion`](format_version::FormatVersion)
 //!   hard version cut.
+//! - [`field`] — the field 2×2 quadrant model and the closed [`Dtype`](field::Dtype).
 
 pub mod error;
+pub mod field;
 pub mod format_version;
 pub mod newtypes;
 
@@ -45,6 +47,11 @@ mod tests {
             CoreError::UnknownDtype {
                 found: "complex128".to_string(),
             },
+            CoreError::MismatchedGridLabel {
+                field: "elevation".to_string(),
+                gridded: true,
+                has_label: false,
+            },
             CoreError::BasinIdFolderMismatch {
                 in_file: "a".to_string(),
                 folder: "b".to_string(),
@@ -67,6 +74,6 @@ mod tests {
         for variant in &variants {
             assert!(!variant.to_string().is_empty());
         }
-        assert_eq!(variants.len(), 12);
+        assert_eq!(variants.len(), 13);
     }
 }

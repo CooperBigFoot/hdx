@@ -71,6 +71,25 @@ pub enum CoreError {
         found: String,
     },
 
+    /// Fires when [`Field::new`] is handed a `grid_label` that disagrees with the
+    /// field's shape axis: a `gridded` field MUST carry a grid label and a
+    /// `scalar` field MUST NOT (spec §2/§8, architecture §3.3). This keeps the
+    /// `grid_label.is_some()` ⇔ `Shape::Gridded` invariant a construction-time
+    /// guarantee rather than a runtime hazard.
+    ///
+    /// [`Field::new`]: crate::field::Field::new
+    #[error(
+        "field {field:?}: grid_label presence ({has_label}) does not match shape (gridded={gridded})"
+    )]
+    MismatchedGridLabel {
+        /// The name of the field whose shape and grid label disagreed.
+        field: String,
+        /// `true` if the field's shape axis is `gridded` (so a label is required).
+        gridded: bool,
+        /// `true` if a grid label was supplied.
+        has_label: bool,
+    },
+
     // --- Reserved for later milestones (skeleton variants) ---
     /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
     /// `basin=<id>` partition folder (spec §3/§14 I2).
