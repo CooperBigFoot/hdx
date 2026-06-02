@@ -106,6 +106,23 @@ pub enum CoreError {
         detail: String,
     },
 
+    /// Fires when the dataset path handed to the layout walk is not a readable
+    /// directory: it does not exist, is a file rather than a directory, or its
+    /// entries cannot be listed (a permissions/IO failure). The walk reports this
+    /// typed error instead of panicking; it is a structural failure of the walk
+    /// itself, distinct from the *facts* the walk records (a missing root rollup is
+    /// recorded as absent, never raised — L1 enforcement is MS6). The variant stays
+    /// **inert/agnostic** (spec §1): it carries only the offending path and an
+    /// opaque detail string from the underlying filesystem error — no domain field.
+    #[error("failed to walk dataset layout at {path:?}: {detail}")]
+    LayoutWalk {
+        /// The dataset path that could not be walked (used only for the diagnostic
+        /// message, never interpreted).
+        path: String,
+        /// The underlying filesystem error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
     // --- Reserved for later milestones (skeleton variants) ---
     /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
     /// `basin=<id>` partition folder (spec §3/§14 I2).

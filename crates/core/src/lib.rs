@@ -15,6 +15,9 @@
 //!   hard version cut.
 //! - [`field`] — the field 2×2 quadrant model and the closed [`Dtype`](field::Dtype).
 //! - [`manifest`] — the six-field [`Manifest`](manifest::Manifest) boundary parse.
+//! - [`layout`] — the basin-first hive walk into a typed
+//!   [`LayoutModel`](layout::LayoutModel): root-rollup presence + enumerated
+//!   `basin=<id>` dirs with per-basin artifact paths (filesystem-only, no reads).
 //! - `parquet_meta` (private) — the crate's single touchpoint into the pure-Rust
 //!   `parquet`/`arrow` stack (R1): opens a parquet byte source and recovers its
 //!   metadata (arrow schema + row-group count) only — never a chunk. The scalar
@@ -23,6 +26,7 @@
 pub mod error;
 pub mod field;
 pub mod format_version;
+pub mod layout;
 pub mod manifest;
 pub mod newtypes;
 
@@ -81,12 +85,16 @@ mod tests {
             CoreError::NonMonotonicTime {
                 artifact: "scalar_dynamic.parquet".to_string(),
             },
+            CoreError::LayoutWalk {
+                path: "/no/such/dir".to_string(),
+                detail: "No such file or directory".to_string(),
+            },
         ];
 
         // Every variant must render a non-empty Display string.
         for variant in &variants {
             assert!(!variant.to_string().is_empty());
         }
-        assert_eq!(variants.len(), 13);
+        assert_eq!(variants.len(), 14);
     }
 }
