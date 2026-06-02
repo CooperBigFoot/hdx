@@ -14,10 +14,12 @@
 //! - [`format_version`] — the single-arm [`FormatVersion`](format_version::FormatVersion)
 //!   hard version cut.
 //! - [`field`] — the field 2×2 quadrant model and the closed [`Dtype`](field::Dtype).
+//! - [`manifest`] — the six-field [`Manifest`](manifest::Manifest) boundary parse.
 
 pub mod error;
 pub mod field;
 pub mod format_version;
+pub mod manifest;
 pub mod newtypes;
 
 #[cfg(test)]
