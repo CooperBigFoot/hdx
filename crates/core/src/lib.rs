@@ -35,6 +35,13 @@
 //!   `parquet`/`arrow` stack (R1): opens a parquet byte source and recovers its
 //!   metadata (arrow schema + row-group statistics) only — never a chunk. The scalar
 //!   reader is layered on this metadata path.
+//! - [`zarr_reader`] — the Zarr v3 **metadata** reader (MS4): reads a
+//!   `gridded_dynamic/<label>.zarr` store via the §8 inline consolidated-metadata
+//!   path (one read of the root `zarr.json`), classifies its arrays, reads the 1-D
+//!   `lat`/`lon`/`time` coordinate chunks, and builds a [`GridInfo`](grid::GridInfo)
+//!   with the S1 center→edge conversion plus an ordinary `GriddedDynamic`
+//!   [`Field`](field::Field) per data variable. Metadata + 1-D coordinate reads only
+//!   — never a `c/0/0/0` data chunk (LOW-3).
 
 pub mod discovery;
 pub mod error;
@@ -45,6 +52,7 @@ pub mod layout;
 pub mod manifest;
 pub mod newtypes;
 pub mod scalar_reader;
+pub mod zarr_reader;
 
 // The parquet metadata touchpoint (MS3-S1): the scalar reader is its first non-test
 // consumer, so it is a live private module — no dead-code allow needed.

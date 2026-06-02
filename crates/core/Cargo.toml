@@ -29,6 +29,30 @@ parquet = { version = "58", default-features = false, features = ["arrow", "zstd
 # (the reader feeds metadata from a `&[u8]` slice without touching the filesystem).
 # Pinned to the same major `parquet` itself depends on.
 bytes = "1"
+# Pure-Rust Zarr-v3 *metadata* crate — the R1 Zarr reader choice (MS4-S2; spec §7/§8,
+# architecture §7 R1, MED-5), pinned to major 0 / minor 7. This is the metadata-only
+# sub-crate of `zarrs` (NOT the full `zarrs` store crate): its dependency closure is
+# `serde`/`serde_json`/`thiserror`/`derive_more`/`half`/`monostate` — **no** async, no
+# `object_store`, no cloud, no chunk-IO. We use only its `v3::ArrayMetadataV3` type to
+# parse each member of the §8 inline consolidated-metadata map; the root `zarr.json`
+# is read once with `serde_json` (already present) and each array entry is deserialized
+# into `ArrayMetadataV3`. NO GDAL. v0.1 reads `zarr.json` + the 1-D `lat`/`lon`/`time`
+# coordinate chunks only (architecture §1) — never a `c/0/0/0` data chunk (LOW-3).
+# LOW contingency (architecture §7 R1 amendment, "covers the Zarr crate … and any
+# decompressor"): if this crate's metadata API differs at implementation time (it
+# cannot be confirmed offline), pin the working adjacent major and record a follow-up
+# amendment — a version surprise is a recorded pin-bump, never an ad-hoc red commit.
+# If the crate could not parse the inline consolidated metadata at all, the documented
+# fallback is to read the root `zarr.json` directly with `serde_json` (the consolidated
+# metadata is plain JSON), preserving the no-network/no-GDAL guarantee.
+zarrs_metadata = "0.7"
+# Pure-Rust zstd decoder for the 1-D coordinate chunks (`lat`/`lon`/`time` `c/0`),
+# which the fixture stores `bytes` (little-endian) + `zstd`-framed. Pinned to major
+# 0 / minor 7. Pure Rust (no `zstd-sys` C bindings), keeping the no-GDAL/no-C-toolchain
+# guarantee for the Zarr coordinate path. Only the 1-D coordinate chunks are ever
+# decompressed; the sharded `c/0/0/0` data chunks are never read (LOW-3). This is the
+# "any decompressor" the S1 R1 LOW contingency anticipates.
+ruzstd = "0.7"
 
 [dev-dependencies]
 # Test-only (never shipped in `hdx-core`): compiles the committed
