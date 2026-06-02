@@ -1,0 +1,47 @@
+[package]
+name = "hdx-python"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# PyO3 with the **abi3-py312** floor so a single, forward-compatible abi3 wheel is
+# built against the CPython 3.12 stable ABI (one wheel imports on 3.12+; spec §10,
+# requires-python = ">=3.12" in pyproject.toml). `default-features = false` is the
+# load-bearing macOS-link decision (HIGH-1): PyO3's default feature set pulls in
+# `extension-module`, which tells the linker to leave the `_Py*` symbols UNDEFINED
+# (resolved by the host interpreter at import time). That is correct for the
+# shipped `cdylib` wheel, but it BREAKS linking of every non-cdylib target on macOS
+# (the `rlib` unit-test executable, doctests, examples) because there is no Python
+# interpreter to resolve those symbols against. So we keep `extension-module` OUT of
+# the default set and re-introduce it only as the optional feature below — `cargo
+# build/test/clippy --all-targets` link with it OFF; `maturin` turns it ON for the
+# wheel via `[tool.maturin] features`.
+# `macros` is re-added explicitly because `default-features = false` (the
+# macOS-link decision above) drops PyO3's default feature set — which includes both
+# `extension-module` (we WANT it gone) and `macros` (we still NEED it, for the
+# `#[pymodule]`/`#[pyfunction]`/`wrap_pyfunction!` proc macros). Enumerating
+# `macros` here keeps the proc macros while leaving `extension-module` opt-in.
+pyo3 = { version = "0.24", default-features = false, features = ["abi3-py312", "macros"] }
+# The crate this binding mirrors. v0.1 exposes a single trivial `__core_version()`
+# (this step is the link/import proof); the `validate`/`describe` mirrors land in
+# MS9-S2. `hdx-core` carries ALL contract logic — this crate adds none.
+hdx-core = { path = "../core" }
+
+[lib]
+# The importable Python module is `import hdx` (the package is `hdx-python`).
+name = "hdx"
+# Two crate types, deliberately (HIGH-2):
+#   - `cdylib` — the actual Python extension module maturin packages into the wheel.
+#   - `rlib`   — a normal Rust library target so `cargo test`/`clippy --all-targets`
+#     have something to build the `#[cfg(test)]` unit tests against. A `cdylib`-only
+#     crate has NO buildable unit-test target, so the Rust-level link proof here
+#     (and the error-mapping unit tests in MS9-S2) would be unrealizable.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `extension-module` is OPTIONAL and NON-DEFAULT (HIGH-1, paired with the
+# `default-features = false` above). Enabling it unconditionally is the canonical
+# PyO3 macOS gotcha that breaks linking of every non-cdylib target. `cargo` never
+# enables it; `[tool.maturin] features = ["extension-module"]` in pyproject.toml
+# turns it ON for the wheel build only.
+extension-module = ["pyo3/extension-module"]

@@ -15,6 +15,14 @@ conformance/generator/scratch/
 **/__pycache__/
 *.py[cod]
 
+# PyO3 binding (crates/python) build/test artifacts: the dedicated binding venv
+# (MS9-S3 creates it via `maturin develop`), bytecode caches, and the maturin wheel
+# output dir. None of these are source; mirrors the conformance generator's
+# venv-ignore discipline so no venv/wheel artifact is ever committed.
+crates/python/.venv/
+crates/python/**/__pycache__/
+target/wheels/
+
 # Generated conformance fixture DATA is NOT tracked — it is regenerated from the
 # committed deterministic generator (run conformance/generator/regenerate.sh
 # before `cargo test`). Nothing under these two trees is tracked: the goldens now
