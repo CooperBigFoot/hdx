@@ -9,10 +9,15 @@
 //!   the load-bearing distinction asserted against the committed fixtures: a
 //!   `conformant: false` **report** (exit 1) vs a structural / entry **error**
 //!   (exit 2, including the §0 hard cut, a nonexistent path, and a usage error).
+//! - **S3 schema conformance** — the binary's stdout, parsed through the real
+//!   process boundary, validates against the committed `schemas/describe.schema.json`
+//!   / `schemas/validate.schema.json` (R4), proving the CLI is a faithful,
+//!   non-reshaping surface over the MS5/MS6 wire shape and never re-derives it.
 
 use std::path::PathBuf;
 use std::process::Command;
 
+use jsonschema::Validator;
 use serde_json::Value;
 
 /// Resolve a fixture dir relative to the bin crate root (the workspace root).
@@ -222,4 +227,94 @@ fn validate_without_path_exits_two_usage_error() {
         code, 2,
         "validate with no path is a usage error (missing required arg, exit 2)"
     );
+}
+
+// --- MS7-S3: schema conformance through the process boundary (R4) ------------------
+//
+// The CLI must honor the MS5/MS6 wire contract *verbatim* — it serializes the verb's
+// returned value and prints it; it never re-derives the shape (architecture §2). These
+// tests run the real binary, parse its stdout as JSON, compile the committed schema with
+// the test-only `jsonschema` dev-dep (the same mechanism the `hdx-core` tests use), and
+// assert the stdout validates. Validation failures panic with the `jsonschema` error so a
+// drift between the verb's serializer and the committed schema is debuggable.
+
+/// Resolve a committed schema path relative to the bin crate root (the workspace root).
+fn schema(rel: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("schemas").join(rel)
+}
+
+/// Load and compile a committed JSON Schema with `jsonschema`.
+///
+/// Panics if the schema file is unreadable, is not valid JSON, or does not compile as a
+/// JSON Schema — each is a broken committed contract, not a flaky test.
+fn load_schema(file: &str) -> Validator {
+    let path = schema(file);
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let document: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{file} must be valid JSON: {e}"));
+    jsonschema::validator_for(&document)
+        .unwrap_or_else(|e| panic!("{file} must compile as a JSON Schema: {e}"))
+}
+
+/// Parse a process's stdout bytes as a JSON `Value`, panicking with context on failure.
+fn stdout_as_json(stdout: &[u8], what: &str) -> Value {
+    serde_json::from_slice(stdout).unwrap_or_else(|e| panic!("{what} stdout is not valid JSON: {e}"))
+}
+
+/// `describe` stdout validates against the committed `describe.schema.json` (R4).
+///
+/// The CLI prints the MS5 `Description` JSON verbatim; this asserts the surface does not
+/// reshape it on the way to stdout.
+#[test]
+fn describe_stdout_validates_against_describe_schema() {
+    let validator = load_schema("describe.schema.json");
+    let stdout = run_hdx(&["describe", &fixture_arg("conformance/valid/minimal")]);
+    let value = stdout_as_json(&stdout, "describe");
+
+    if let Err(error) = validator.validate(&value) {
+        panic!("describe stdout must validate against describe.schema.json: {error}");
+    }
+}
+
+/// `validate` stdout (conformant case) validates against `validate.schema.json` (R4).
+///
+/// The CLI prints the MS6 `ValidationReport` JSON verbatim; this asserts the surface does
+/// not reshape it on the way to stdout.
+#[test]
+fn validate_stdout_validates_against_validate_schema() {
+    let validator = load_schema("validate.schema.json");
+    let stdout = run_hdx(&["validate", &fixture_arg("conformance/valid/minimal")]);
+    let value = stdout_as_json(&stdout, "validate");
+
+    if let Err(error) = validator.validate(&value) {
+        panic!("validate stdout must validate against validate.schema.json: {error}");
+    }
+}
+
+/// A `conformant: false` report still validates against `validate.schema.json` (R4).
+///
+/// `validate conformance/invalid/missing-root-rollup` exits 1 with a non-conformant
+/// report — but a non-conformant verdict is still a *well-formed report*, so its stdout
+/// must validate against the same schema. This pins that exit-1 output is schema-faithful,
+/// not a degraded shape.
+#[test]
+fn nonconformant_validate_stdout_still_validates_against_schema() {
+    let validator = load_schema("validate.schema.json");
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/missing-root-rollup"),
+    ]);
+
+    assert_eq!(code, 1, "the missing-root-rollup fixture is non-conformant (exit 1)");
+    let value = stdout_as_json(&stdout, "validate (non-conformant)");
+    assert_eq!(
+        value.get("conformant").and_then(Value::as_bool),
+        Some(false),
+        "this fixture's report must carry conformant: false"
+    );
+
+    if let Err(error) = validator.validate(&value) {
+        panic!("a conformant:false report must still validate against validate.schema.json: {error}");
+    }
 }

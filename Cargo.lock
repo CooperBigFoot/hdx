@@ -805,11 +805,12 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hdx"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "anyhow",
  "clap",
  "hdx-core",
+ "jsonschema",
  "serde_json",
  "tracing",
  "tracing-subscriber",

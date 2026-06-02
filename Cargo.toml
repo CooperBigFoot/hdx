@@ -3,7 +3,7 @@ members = ["crates/*"]
 
 [package]
 name = "hdx"
-version = "0.1.41"
+version = "0.1.42"
 edition = "2024"
 
 [dependencies]
@@ -15,3 +15,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 serde_json = "1"
+# Test-only (never shipped in the `hdx` bin): compiles the committed
+# `schemas/describe.schema.json` / `schemas/validate.schema.json` and asserts the
+# binary's stdout validates against them through the process boundary — the same
+# `jsonschema` mechanism the `hdx-core` tests use, pinned to the same major.minor
+# (R4; architecture §7). No production path depends on this crate.
+jsonschema = "0.46"
