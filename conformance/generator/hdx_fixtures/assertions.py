@@ -35,6 +35,11 @@ from hdx_fixtures.grids import (
     zarr_path,
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS, build_manifest
+from hdx_fixtures.mutate import (
+    MISSING_ROOT_ROLLUP,
+    WRONG_FORMAT_VERSION,
+    Invalid,
+)
 from hdx_fixtures.outlines import DELINEATION_ALT, DELINEATION_PRIMARY
 from hdx_fixtures.scalar import (
     BASINS,
@@ -710,3 +715,141 @@ def run_scalar_assertions(dataset_root: Path) -> None:
     assert_dynamic_field_present(dataset_root)
     assert_outlines(dataset_root)
     log.info("all scalar self-assertions passed")
+
+
+# --- invalid-side self-assertion (LOW-2: differs in exactly one way) ----------
+
+
+def _relative_files(tree_root: Path) -> set[str]:
+    """Return every file in ``tree_root`` as POSIX paths relative to the root.
+
+    Walks the whole tree (Zarr stores are directories of many chunk/metadata
+    files, so a recursive walk is required) and returns only files — directories
+    are implied by their contents. Used to diff the file *set* of two trees.
+    """
+    return {
+        p.relative_to(tree_root).as_posix()
+        for p in tree_root.rglob("*")
+        if p.is_file()
+    }
+
+
+def _changed_files(baseline_root: Path, invalid_root: Path) -> set[str]:
+    """Return relative paths present in BOTH trees whose bytes differ.
+
+    Only inspects files common to both trees; added/removed files are reported
+    separately by the file-set diff. Byte comparison is exact so a single mutated
+    value (e.g. ``format_version``) surfaces as exactly one changed file.
+    """
+    common = _relative_files(baseline_root) & _relative_files(invalid_root)
+    changed: set[str] = set()
+    for rel in common:
+        base_bytes = (baseline_root / rel).read_bytes()
+        inv_bytes = (invalid_root / rel).read_bytes()
+        if base_bytes != inv_bytes:
+            changed.add(rel)
+    return changed
+
+
+def assert_differs_in_exactly_one_way(
+    baseline_root: Path, invalid_root: Path, invalid: Invalid
+) -> None:
+    """Confirm ``invalid_root`` is exactly one surgical mutation off the baseline.
+
+    Enforces the LOW-2 one-mutation invariant at generation time via a recursive
+    tree diff against the valid baseline (spec §10 / R2; see
+    ``conformance/README.md`` Rule 2):
+
+    * :attr:`Invalid.WRONG_FORMAT_VERSION` — the trees have the **same file set**;
+      exactly **one** file (``manifest.json``) differs, and it differs **only** in
+      the ``format_version`` value (``"0.1"`` → ``"0.2"``), every other manifest
+      field byte-identical (pins **M2**).
+    * :attr:`Invalid.MISSING_ROOT_ROLLUP` — the invalid tree is missing **exactly
+      one** file (``outlines.geoparquet``), adds nothing, and **no** shared file's
+      bytes differ — the rest of the tree is byte-identical (pins **L1**).
+    """
+    log = get_logger("assert.invalid")
+    base_files = _relative_files(baseline_root)
+    inv_files = _relative_files(invalid_root)
+
+    added = inv_files - base_files
+    removed = base_files - inv_files
+    _require(
+        not added,
+        f"{invalid_root}: invalid adds files not in baseline {sorted(added)} "
+        f"(LOW-2: one surgical mutation only)",
+    )
+
+    if invalid is Invalid.WRONG_FORMAT_VERSION:
+        _require(
+            not removed,
+            f"{invalid_root}: wrong-format-version removed files {sorted(removed)}; "
+            f"the only change must be the manifest value (LOW-2)",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            changed == {"manifest.json"},
+            f"{invalid_root}: differs in {sorted(changed)}, expected only "
+            f"{{'manifest.json'}} (LOW-2 one mutation)",
+        )
+
+        base_manifest = json.loads(
+            (baseline_root / "manifest.json").read_text(encoding="utf-8")
+        )
+        inv_manifest = json.loads(
+            (invalid_root / "manifest.json").read_text(encoding="utf-8")
+        )
+        _require(
+            set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
+            f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
+            f"six floor fields (the mutation must not add/remove fields)",
+        )
+        _require(
+            inv_manifest["format_version"] == WRONG_FORMAT_VERSION,
+            f"{invalid_root}: format_version {inv_manifest['format_version']!r} "
+            f"!= {WRONG_FORMAT_VERSION!r} (M2 hard cut)",
+        )
+        differing_keys = {
+            key
+            for key in MANIFEST_FIELDS
+            if base_manifest.get(key) != inv_manifest.get(key)
+        }
+        _require(
+            differing_keys == {"format_version"},
+            f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
+            f"expected only {{'format_version'}} (LOW-2 one mutation)",
+        )
+    else:  # Invalid.MISSING_ROOT_ROLLUP
+        _require(
+            removed == {MISSING_ROOT_ROLLUP},
+            f"{invalid_root}: missing files {sorted(removed)}, expected exactly "
+            f"{{{MISSING_ROOT_ROLLUP!r}}} (LOW-2 one mutation, pins L1)",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            not changed,
+            f"{invalid_root}: shared files differ {sorted(changed)}; removing one "
+            f"rollup must leave the rest byte-identical (LOW-2)",
+        )
+
+    log.info(
+        "invalid OK name=%s pins=%s added=%d removed=%d (one surgical mutation)",
+        invalid.value,
+        invalid.pinned_check,
+        len(added),
+        len(removed),
+    )
+
+
+def run_invalid_assertions(baseline_root: Path, invalid_root: Path, invalid: Invalid) -> None:
+    """Run the invalid-side self-assertion; raise on failure.
+
+    Invoked by ``regenerate.sh`` (via :mod:`hdx_fixtures.build`) after each
+    invalid is derived (MS2-S4). Any :class:`AssertionFailed` propagates so
+    generation aborts with a non-zero exit (the assertion is load-bearing): an
+    invalid that differs from the baseline in more than the one intended way is
+    never committed.
+    """
+    log = get_logger("assert")
+    assert_differs_in_exactly_one_way(baseline_root, invalid_root, invalid)
+    log.info("invalid self-assertion passed for %s", invalid.value)

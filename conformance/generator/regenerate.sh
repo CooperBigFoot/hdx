@@ -2,16 +2,20 @@
 #
 # regenerate.sh — HDX conformance fixture generator entry point (dev-only).
 #
-# MS2-S3: idempotently creates the pinned venv, installs the exact-version
+# MS2-S4: idempotently creates the pinned venv, installs the exact-version
 # dependency closure, smoke-imports every pinned dep (proving the pins resolve),
-# then emits the FOUR-QUADRANT valid baseline into conformance/valid/minimal/ and
-# runs the load-bearing self-assertions, ABORTING on any failure (non-zero exit):
+# then emits the FOUR-QUADRANT valid baseline into conformance/valid/minimal/,
+# DERIVES the two minimal invalids from it, and runs the load-bearing
+# self-assertions, ABORTING on any failure (non-zero exit):
 #   * SCALAR half (S2): manifest.json, scalar_static.parquet, per-basin
 #     scalar_dynamic.parquet, outlines.geoparquet  -> run_scalar_assertions().
 #   * GRIDDED half (S3): per basin gridded_static/<label>.tif (multiband COG) +
 #     gridded_dynamic/<label>.zarr (Zarr v3, sharded + consolidated), sharing one
 #     aligned grid label, Zarr time == scalar time  -> run_gridded_assertions().
-# The two derived invalids (S4) are wired into this script in a later MS2 step.
+#   * INVALIDS (S4): conformance/invalid/wrong-format-version/ (pins M2) and
+#     conformance/invalid/missing-root-rollup/ (pins L1), each copied from the
+#     baseline and changed by EXACTLY ONE surgical mutation (LOW-2), confirmed by
+#     the "differs in exactly one way" self-assertion  -> run_invalid_assertions().
 #
 # This generator is DEV-ONLY and is NOT an HDX writer: it lives only under
 # conformance/, is never shipped in or imported by hdx-core, and only emits bytes
@@ -92,11 +96,13 @@ fi
 cd "${SCRIPT_DIR}"
 "${VENV_PY}" -m hdx_fixtures
 
-# --- emit the four-quadrant valid baseline + run all self-assertions ---------
+# --- emit the four-quadrant baseline, derive invalids, run all assertions ----
 # build.py writes the scalar half (manifest.json + scalar_static.parquet +
 # per-basin scalar_dynamic.parquet + outlines.geoparquet) then the gridded half
 # (per-basin gridded_static COG + gridded_dynamic Zarr) into
-# conformance/valid/minimal/, running run_scalar_assertions() and
-# run_gridded_assertions(); any AssertionFailed aborts with a non-zero exit.
-echo "regenerate.sh: emitting four-quadrant valid baseline -> ${VALID_MINIMAL}" >&2
+# conformance/valid/minimal/, then DERIVES both invalids under
+# conformance/invalid/ via one surgical mutation each, running
+# run_scalar_assertions(), run_gridded_assertions() and run_invalid_assertions();
+# any AssertionFailed aborts with a non-zero exit.
+echo "regenerate.sh: emitting baseline + deriving invalids -> ${VALID_MINIMAL}" >&2
 exec "${VENV_PY}" -m hdx_fixtures.build --dataset-root "${VALID_MINIMAL}"
