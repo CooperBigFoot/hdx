@@ -148,6 +148,10 @@ when the describe shape legitimately changes (a `format_version` bump). A drift 
 by the snapshot test that is **not** an intended shape change is a bug, not a
 golden-refresh. (MS8 extends this golden-output discipline to the wider fixture family.)
 
+> **MS8 adds no field.** The exhaustive-invalids milestone introduces no new domain
+> field and mutates no manifest floor field, so this baseline `describe.golden.json` is
+> **byte-unchanged** across MS8 — the green floor every MS8 invalid fixture builds on.
+
 ### `valid/minimal/validate.golden.json` — the pinned `validate` report (R4)
 
 A single committed golden file holds the exact `validate` report JSON for the valid
@@ -186,6 +190,10 @@ when the report shape legitimately changes (a `format_version` bump). A drift ca
 snapshot test that is **not** an intended shape change is a bug, not a golden-refresh.
 (MS8 extends this golden-output discipline to the wider invalid fixture family — the
 exhaustive one-violation-per-check golden report matrix.)
+
+> **MS8 adds no field.** The exhaustive-invalids milestone introduces no new domain
+> field and mutates no manifest floor field, so this baseline `validate.golden.json` is
+> **byte-unchanged** across MS8 — the green floor every MS8 invalid fixture builds on.
 
 ### `invalid/wrong-format-version/` — pins **M2**
 

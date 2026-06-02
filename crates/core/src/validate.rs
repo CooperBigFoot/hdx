@@ -1370,6 +1370,9 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
             // M1–M4 are folded into the entry gate: reaching this point means the manifest
             // parsed, so each cleared its boundary check (a violation would have returned
             // `Err` before discovery). Entry-gate checks are `MetadataDeep`.
+            // This `ran_pass` is the already-cleared-at-the-entry-gate convention, NOT a
+            // second enforcement site — the only M1–M4 enforcement is `Manifest::from_json`
+            // (the early `?` at validate.rs:1275); this arm is never reached on a violation.
             CheckId::M1 | CheckId::M2 | CheckId::M3 | CheckId::M4 => {
                 CheckOutcome::ran_pass(id, DepthClass::MetadataDeep)
             }
