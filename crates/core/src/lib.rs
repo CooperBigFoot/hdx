@@ -50,12 +50,21 @@
 //!   `GeoKeyDirectory` EPSG) into an edge-based [`GridInfo`](grid::GridInfo) plus an
 //!   ordinary `GriddedStatic` [`Field`](field::Field). Never decodes a pixel
 //!   raster (LOW-3); the edge extent matches the Zarr reader's at `10.0`/`50.0`.
+//! - [`geoparquet_reader`] — the `outlines.geoparquet` **metadata + 1-D column**
+//!   reader (MS4): reuses the same private `parquet`/`arrow` touchpoint (R1, no new
+//!   crate) to read the arrow schema (the `basin_id`/`delineation`/`geometry`
+//!   presence check — Geo1), a bounded 1-D read of the `delineation` labels +
+//!   `basin_id` values (the I1 input; the `geometry` blob is never decoded), and the
+//!   `geo` key-value PROJJSON CRS recorded as a comparable `EPSG:<code>` from its
+//!   `id` (the MEDIUM fix; raw PROJJSON + an R3 flag when no EPSG `id` resolves) so
+//!   MS6's M5 receives a value comparable to the manifest's `"EPSG:4326"`.
 
 pub mod cog_reader;
 pub mod discovery;
 pub mod error;
 pub mod field;
 pub mod format_version;
+pub mod geoparquet_reader;
 pub mod grid;
 pub mod layout;
 pub mod manifest;

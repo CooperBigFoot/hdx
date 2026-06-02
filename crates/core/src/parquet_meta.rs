@@ -56,6 +56,22 @@ impl ParquetMeta {
     pub(crate) fn file_metadata(&self) -> &ParquetMetaData {
         &self.file_metadata
     }
+
+    /// Returns the value of a file-level key-value metadata entry by key, if present.
+    ///
+    /// Geoparquet stores its dataset metadata (the `geo` key) as a JSON string in the
+    /// parquet footer's key-value metadata (the geoparquet spec). The geoparquet
+    /// reader uses this to recover the `geo` block from the same footer read — still
+    /// metadata only, no chunk decoded. Returns `None` when the file carries no such
+    /// key (or no key-value metadata at all).
+    pub(crate) fn key_value(&self, key: &str) -> Option<&str> {
+        self.file_metadata
+            .file_metadata()
+            .key_value_metadata()?
+            .iter()
+            .find(|kv| kv.key == key)
+            .and_then(|kv| kv.value.as_deref())
+    }
 }
 
 /// Opens a parquet byte source and recovers its metadata (schema + row groups).

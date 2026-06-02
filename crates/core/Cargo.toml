@@ -17,14 +17,20 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 # Features are deliberately minimal: `parquet` carries the `arrow` integration (it
 # surfaces the schema as an arrow `Schema`) plus `zstd` — the spec mandates scalar
 # parquet is zstd-compressed (spec §8), so the bounded 1-D `time`/`basin_id` column
-# reads (architecture §1) must be able to decompress zstd data pages. No `async`,
-# no `object_store`, and no other compression codecs. v0.1 reads parquet *metadata*
-# and 1-D coordinate/key columns from the local filesystem only (architecture §1) —
-# never gridded chunks. `arrow` is held to `arrow-schema`/`arrow-array` types via the
-# default features kept by `parquet`. The Zarr/COG/geoparquet R1 decision is
-# deferred to MS4 (see architecture.md Amendments log, R1-parquet).
+# reads (architecture §1) must be able to decompress zstd data pages — and `snap`:
+# the `outlines.geoparquet` artifact (MS4-S4) stores its `basin_id`/`delineation`
+# columns SNAPPY-compressed (geoparquet writers default to Snappy), so the bounded
+# 1-D `delineation`/`basin_id` column reads must be able to decompress snappy data
+# pages too. `snap` is a **codec feature of the already-present `parquet` crate**, not
+# a new dependency, and it is pure Rust (its `build.rs` only generates a CRC table —
+# no C toolchain), preserving the no-GDAL / no-C guarantee. No `async`, no
+# `object_store`, and no other compression codecs. v0.1 reads parquet *metadata* and
+# 1-D coordinate/key columns from the local filesystem only (architecture §1) — never
+# gridded chunks (and never the geoparquet `geometry` blob). `arrow` is held to
+# `arrow-schema`/`arrow-array` types via the default features kept by `parquet`. The
+# Zarr/COG/geoparquet R1 decision is recorded in architecture.md Amendments (R1).
 arrow = { version = "58", default-features = false }
-parquet = { version = "58", default-features = false, features = ["arrow", "zstd"] }
+parquet = { version = "58", default-features = false, features = ["arrow", "zstd", "snap"] }
 # `bytes::Bytes` is parquet's zero-copy `ChunkReader` for an in-memory byte source
 # (the reader feeds metadata from a `&[u8]` slice without touching the filesystem).
 # Pinned to the same major `parquet` itself depends on.

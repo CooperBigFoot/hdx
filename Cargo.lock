@@ -709,7 +709,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hdx"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "anyhow",
  "hdx-core",
@@ -1406,6 +1406,7 @@ dependencies = [
  "num-traits",
  "paste",
  "seq-macro",
+ "snap",
  "thrift",
  "twox-hash 2.1.2",
  "zstd",
@@ -1857,6 +1858,12 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "socket2"
