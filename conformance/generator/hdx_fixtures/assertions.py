@@ -36,6 +36,9 @@ from hdx_fixtures.grids import (
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS, build_manifest
 from hdx_fixtures.mutate import (
+    EMPTY_CADENCE,
+    EXTRA_MANIFEST_FIELD,
+    EXTRA_MANIFEST_FIELD_VALUE,
     MISSING_ROOT_ROLLUP,
     WRONG_FORMAT_VERSION,
     Invalid,
@@ -721,16 +724,22 @@ def run_scalar_assertions(dataset_root: Path) -> None:
 
 
 def _relative_files(tree_root: Path) -> set[str]:
-    """Return every file in ``tree_root`` as POSIX paths relative to the root.
+    """Return every dataset file in ``tree_root`` as POSIX paths relative to root.
 
     Walks the whole tree (Zarr stores are directories of many chunk/metadata
     files, so a recursive walk is required) and returns only files — directories
     are implied by their contents. Used to diff the file *set* of two trees.
+
+    Golden artifacts (``*.golden.json`` — the committed ``describe``/``validate``
+    outputs that live *alongside* a dataset) are excluded: they are verb outputs,
+    not part of the dataset bytes, and the valid baseline carries them while a
+    freshly-derived invalid does not (LOW-2 mutations are dataset-byte mutations).
+    Excluding them keeps the "differs in exactly one way" diff about the dataset.
     """
     return {
         p.relative_to(tree_root).as_posix()
         for p in tree_root.rglob("*")
-        if p.is_file()
+        if p.is_file() and not p.name.endswith(".golden.json")
     }
 
 
@@ -764,6 +773,18 @@ def assert_differs_in_exactly_one_way(
       exactly **one** file (``manifest.json``) differs, and it differs **only** in
       the ``format_version`` value (``"0.1"`` → ``"0.2"``), every other manifest
       field byte-identical (pins **M2**).
+    * :attr:`Invalid.EXTRA_MANIFEST_FIELD` — the trees have the **same file set**;
+      exactly **one** file (``manifest.json``) differs, and its key set is the six
+      floor fields **plus** the one extra :data:`EXTRA_MANIFEST_FIELD` key (whose
+      value is :data:`EXTRA_MANIFEST_FIELD_VALUE`); the six floor values are
+      byte-identical to the baseline (pins **M3**, the six-field floor, spec
+      §0/§11).
+    * :attr:`Invalid.EMPTY_CADENCE` — the trees have the **same file set**;
+      exactly **one** file (``manifest.json``) differs, its key set is exactly the
+      six floor fields, and only the ``cadence`` value differs (now the empty
+      string :data:`EMPTY_CADENCE`); the other five floor values are byte-identical
+      (pins **M4**, ``cadence`` non-empty, spec §6.4 / §11 — an entry-gate ``Err``
+      that rejects the empty cadence before ``check_m6`` rule (a)).
     * :attr:`Invalid.MISSING_ROOT_ROLLUP` — the invalid tree is missing **exactly
       one** file (``outlines.geoparquet``), adds nothing, and **no** shared file's
       bytes differ — the rest of the tree is byte-identical (pins **L1**).
@@ -780,11 +801,20 @@ def assert_differs_in_exactly_one_way(
         f"(LOW-2: one surgical mutation only)",
     )
 
-    if invalid is Invalid.WRONG_FORMAT_VERSION:
+    # The three manifest-mutation invalids share the same shape invariant: the file
+    # set is unchanged and exactly `manifest.json` differs. Their per-key checks
+    # then diverge below (M2 value / M3 extra key / M4 empty cadence).
+    manifest_only = {
+        Invalid.WRONG_FORMAT_VERSION,
+        Invalid.EXTRA_MANIFEST_FIELD,
+        Invalid.EMPTY_CADENCE,
+    }
+
+    if invalid in manifest_only:
         _require(
             not removed,
-            f"{invalid_root}: wrong-format-version removed files {sorted(removed)}; "
-            f"the only change must be the manifest value (LOW-2)",
+            f"{invalid_root}: {invalid.value} removed files {sorted(removed)}; "
+            f"the only change must be the manifest (LOW-2)",
         )
         changed = _changed_files(baseline_root, invalid_root)
         _require(
@@ -799,26 +829,77 @@ def assert_differs_in_exactly_one_way(
         inv_manifest = json.loads(
             (invalid_root / "manifest.json").read_text(encoding="utf-8")
         )
-        _require(
-            set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
-            f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
-            f"six floor fields (the mutation must not add/remove fields)",
-        )
-        _require(
-            inv_manifest["format_version"] == WRONG_FORMAT_VERSION,
-            f"{invalid_root}: format_version {inv_manifest['format_version']!r} "
-            f"!= {WRONG_FORMAT_VERSION!r} (M2 hard cut)",
-        )
-        differing_keys = {
-            key
-            for key in MANIFEST_FIELDS
-            if base_manifest.get(key) != inv_manifest.get(key)
-        }
-        _require(
-            differing_keys == {"format_version"},
-            f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
-            f"expected only {{'format_version'}} (LOW-2 one mutation)",
-        )
+
+        if invalid is Invalid.WRONG_FORMAT_VERSION:
+            _require(
+                set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
+                f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
+                f"six floor fields (the mutation must not add/remove fields)",
+            )
+            _require(
+                inv_manifest["format_version"] == WRONG_FORMAT_VERSION,
+                f"{invalid_root}: format_version {inv_manifest['format_version']!r} "
+                f"!= {WRONG_FORMAT_VERSION!r} (M2 hard cut)",
+            )
+            differing_keys = {
+                key
+                for key in MANIFEST_FIELDS
+                if base_manifest.get(key) != inv_manifest.get(key)
+            }
+            _require(
+                differing_keys == {"format_version"},
+                f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
+                f"expected only {{'format_version'}} (LOW-2 one mutation)",
+            )
+        elif invalid is Invalid.EXTRA_MANIFEST_FIELD:
+            # M3: the key set is the six floor fields PLUS exactly one extra key.
+            _require(
+                set(inv_manifest.keys())
+                == set(MANIFEST_FIELDS) | {EXTRA_MANIFEST_FIELD},
+                f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
+                f"six floor fields + {{{EXTRA_MANIFEST_FIELD!r}}} (M3 7th field)",
+            )
+            _require(
+                inv_manifest.get(EXTRA_MANIFEST_FIELD) == EXTRA_MANIFEST_FIELD_VALUE,
+                f"{invalid_root}: extra field {EXTRA_MANIFEST_FIELD!r} = "
+                f"{inv_manifest.get(EXTRA_MANIFEST_FIELD)!r} != "
+                f"{EXTRA_MANIFEST_FIELD_VALUE!r} (M3)",
+            )
+            # The six floor values are unchanged: the ONLY difference is the added
+            # key (one surgical mutation, LOW-2).
+            differing_floor = {
+                key
+                for key in MANIFEST_FIELDS
+                if base_manifest.get(key) != inv_manifest.get(key)
+            }
+            _require(
+                not differing_floor,
+                f"{invalid_root}: floor fields {sorted(differing_floor)} changed; "
+                f"the only change must be the added key {EXTRA_MANIFEST_FIELD!r} "
+                f"(LOW-2 one mutation)",
+            )
+        else:  # Invalid.EMPTY_CADENCE
+            # M4: the key set is exactly the six floor fields; only `cadence` differs.
+            _require(
+                set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
+                f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
+                f"six floor fields (the mutation must not add/remove fields)",
+            )
+            _require(
+                inv_manifest["cadence"] == EMPTY_CADENCE,
+                f"{invalid_root}: cadence {inv_manifest['cadence']!r} != "
+                f"{EMPTY_CADENCE!r} (M4 non-empty cadence)",
+            )
+            differing_keys = {
+                key
+                for key in MANIFEST_FIELDS
+                if base_manifest.get(key) != inv_manifest.get(key)
+            }
+            _require(
+                differing_keys == {"cadence"},
+                f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
+                f"expected only {{'cadence'}} (LOW-2 one mutation)",
+            )
     else:  # Invalid.MISSING_ROOT_ROLLUP
         _require(
             removed == {MISSING_ROOT_ROLLUP},

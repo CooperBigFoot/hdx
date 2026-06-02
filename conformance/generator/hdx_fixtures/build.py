@@ -13,10 +13,14 @@ after each step and aborting on any failure:
   multiband COG and a ``gridded_dynamic/<label>.zarr`` Zarr v3 store sharing one
   aligned grid label, the Zarr time axis identical to the scalar ``time`` —
   confirmed by :func:`hdx_fixtures.assertions.run_gridded_assertions`.
-* the **two derived invalids** (MS2-S4) — ``invalid/wrong-format-version/`` (pins
-  M2) and ``invalid/missing-root-rollup/`` (pins L1), each copied from the
-  baseline and changed by exactly one surgical mutation (LOW-2), confirmed by
-  :func:`hdx_fixtures.assertions.run_invalid_assertions`.
+* the **derived invalids** (MS2-S4 / MS8-S2) — ``invalid/wrong-format-version/``
+  (pins M2), ``invalid/extra-manifest-field/`` (pins M3),
+  ``invalid/empty-cadence/`` (pins M4), and ``invalid/missing-root-rollup/``
+  (pins L1), each copied from the baseline and changed by exactly one surgical
+  mutation (LOW-2), confirmed by
+  :func:`hdx_fixtures.assertions.run_invalid_assertions`. Iterating the
+  :class:`~hdx_fixtures.mutate.Invalid` enum, this loop derives every invalid the
+  enum declares, so widening the enum (as MS8-S2 did) needs no change here.
 
 The gridded half is emitted **after** the scalar half so the Zarr time axis can
 align to the already-written scalar ``time`` (T2); the invalids are derived
@@ -65,13 +69,14 @@ def build_gridded_baseline(dataset_root: Path) -> None:
 
 
 def derive_invalids(dataset_root: Path) -> None:
-    """Derive both invalids from the baseline + self-assert each (MS2-S4 / LOW-2).
+    """Derive every invalid from the baseline + self-assert each (MS2-S4 / LOW-2).
 
     The repo root is recovered from ``dataset_root`` (``<repo>/conformance/valid/
     minimal``) so each invalid lands under ``<repo>/conformance/invalid/<name>/``.
     For every :class:`Invalid`, the baseline is copied and exactly one surgical
     mutation is applied, then the "differs in exactly one way" self-assertion runs
-    (aborting on failure) before the next invalid.
+    (aborting on failure) before the next invalid. The loop iterates the
+    :class:`Invalid` enum, so a widened enum (MS8-S2 added M3/M4) needs no edit.
     """
     log = get_logger("build")
     # dataset_root == <repo>/conformance/valid/minimal -> repo is three up.
@@ -82,7 +87,7 @@ def derive_invalids(dataset_root: Path) -> None:
         run_invalid_assertions(
             dataset_root, invalid_root(repo_root, invalid), invalid
         )
-    log.info("both invalids derived + self-assertions passed")
+    log.info("all invalids derived + self-assertions passed")
 
 
 def main(argv: list[str] | None = None) -> int:

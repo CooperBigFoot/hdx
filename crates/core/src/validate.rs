@@ -1591,6 +1591,52 @@ mod tests {
         }
     }
 
+    // --- M3 / M4 on-disk entry-gate negatives (Bucket-A, MS8-S2) ----------------------
+    //
+    // These exercise the committed conformance fixtures `invalid/extra-manifest-field/`
+    // (M3: a 7th manifest field) and `invalid/empty-cadence/` (M4: an empty cadence),
+    // each one surgical mutation off the valid baseline (LOW-2; the generator's
+    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at
+    // generation time). Their negative is an ENTRY-GATE `Err`, NOT a `conformant:false`
+    // report: `validate` reads `manifest.json` then `Manifest::from_json` (the early
+    // `?`), whose M3/M4 boundary checks fire BEFORE `discover` is ever called — so the
+    // verb returns `Err(ValidateError::Manifest(..))` and `build_report` (where M1–M4
+    // are listed `ran:pass` by the entry-gate convention) is never reached. The CLI
+    // (MS7) maps this `Err` to a distinct exit code from a `conformant:false` verdict.
+
+    #[test]
+    fn m3_extra_field_fixture_errs_at_entry_gate() {
+        // The on-disk `extra-manifest-field` fixture adds one derivable key
+        // (`content_hash`) to the six-field floor (spec §0/§11). M3 rejects it at the
+        // entry gate — an `Err(Manifest(ExtraManifestField { field: "content_hash" }))`,
+        // never a report. (The 7th-field form is the M3 "too-many" direction; the
+        // "too-few" direction is covered by the in-memory missing-field test.)
+        match validate(conformance("invalid/extra-manifest-field")) {
+            Err(ValidateError::Manifest(CoreError::ExtraManifestField { field })) => {
+                assert_eq!(field, "content_hash", "M3 names the offending extra key");
+            }
+            other => panic!("expected Err(Manifest(ExtraManifestField)) at the entry gate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn m4_empty_cadence_fixture_errs_at_entry_gate() {
+        // The on-disk `empty-cadence` fixture sets `cadence: ""` (spec §6.4/§11). M4
+        // requires `crs`/`cadence` to be non-empty, so the entry gate returns
+        // `Err(Manifest(EmptyCadence))` BEFORE discovery.
+        //
+        // THIS PINS M4, NOT M6 (load-bearing). `check_m6` rule (a) would `ran:fail` on
+        // an empty cadence, but the M4 boundary check in `Manifest::from_json` rejects
+        // the empty cadence FIRST — the early `?` in `validate` returns before
+        // `build_report` (and thus before `check_m6`) ever runs. M6 rule (a)'s fail leg
+        // is therefore unreachable-by-construction on the validate path: an empty-cadence
+        // tree is an M4 entry-gate `Err`, so no spurious M6 empty-cadence negative exists.
+        match validate(conformance("invalid/empty-cadence")) {
+            Err(ValidateError::Manifest(CoreError::EmptyCadence)) => {}
+            other => panic!("expected Err(Manifest(EmptyCadence)) at the entry gate (M4, not M6), got {other:?}"),
+        }
+    }
+
     // --- H1 in-memory negative --------------------------------------------------------
 
     #[test]
