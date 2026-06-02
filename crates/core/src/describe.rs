@@ -1092,4 +1092,153 @@ mod tests {
             "describe == Manifest::from_json ⊕ discover (the floor stress test)"
         );
     }
+
+    // --- MS5-S3: the R4 contract lock (describe.schema.json + golden snapshot) -------
+
+    /// Resolves a path under the repository-root `schemas/` directory.
+    ///
+    /// `CARGO_MANIFEST_DIR` is `crates/core`; the committed schemas live two levels up.
+    fn schema_path(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas")
+            .join(rel)
+    }
+
+    /// Loads and compiles the committed `schemas/describe.schema.json`.
+    ///
+    /// Uses the test-only `jsonschema` dev-dependency (never shipped in `hdx-core`).
+    fn describe_validator() -> jsonschema::Validator {
+        let path = schema_path("describe.schema.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let schema: Value =
+            serde_json::from_str(&raw).expect("describe.schema.json must be valid JSON");
+        jsonschema::validator_for(&schema)
+            .expect("describe.schema.json must compile as a JSON Schema")
+    }
+
+    /// Reads the committed golden describe output as a parsed `Value`.
+    ///
+    /// Regeneration workflow (when the shape legitimately changes — a `format_version`
+    /// bump only): run `describe_json(conformance("valid/minimal"))`, pretty-print it
+    /// (`Description::to_json_pretty`), and overwrite
+    /// `conformance/valid/minimal/describe.golden.json`. See `conformance/README.md`.
+    fn golden_value() -> Value {
+        let path = conformance("valid/minimal/describe.golden.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the golden must be valid JSON")
+    }
+
+    /// R4 schema test (jsonschema dev-dep). The committed golden describe output of the
+    /// MS2 valid fixture **validates** against the committed `describe.schema.json`,
+    /// pinning the describe half of R4 (architecture §7).
+    #[test]
+    fn golden_validates_against_describe_schema() {
+        let validator = describe_validator();
+        let golden = golden_value();
+        if let Err(error) = validator.validate(&golden) {
+            panic!("the golden describe output must validate against describe.schema.json: {error}");
+        }
+    }
+
+    /// Golden snapshot test. `describe_json` of the valid fixture, parsed to a `Value`,
+    /// equals the committed golden parsed to a `Value` (compared as parsed JSON so
+    /// whitespace/trailing-newline differences are not brittle while every key/value is
+    /// pinned). This is the snapshot that locks the R4 wire shape to a committed artifact.
+    #[test]
+    fn describe_json_equals_committed_golden() {
+        let produced: Value = serde_json::from_str(
+            &describe_json(conformance("valid/minimal")).expect("describe_json succeeds"),
+        )
+        .expect("describe output is valid JSON");
+
+        assert_eq!(
+            produced,
+            golden_value(),
+            "describe of the valid fixture must equal the committed golden \
+             (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+    }
+
+    /// Companion-mask / `{source}_{variable}` ordinariness in the GOLDEN (spec §2). The
+    /// golden's entries for `era5_precipitation` (the `{source}_{variable}` pattern) and
+    /// `era5_precipitation_was_filled` (the companion-mask `{field}_was_filled` pattern)
+    /// each carry **exactly** the ordinary field key set — no `mask` / `companion` /
+    /// `source` / `variable` / `belongs_to` or any suffix/prefix-derived key. This pins,
+    /// in the committed artifact, that the patterns get no special handling.
+    #[test]
+    fn golden_companion_mask_and_source_variable_fields_are_ordinary() {
+        let golden = golden_value();
+        let fields = golden
+            .get("fields")
+            .and_then(Value::as_array)
+            .expect("golden fields array");
+
+        let ordinary_keys: BTreeSet<String> =
+            ["name", "quadrant", "dtype", "units", "grid_label"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+
+        // Each of the forbidden, name-pattern-derived keys must be absent everywhere.
+        let forbidden = ["mask", "companion", "source", "variable", "belongs_to"];
+
+        for target in ["era5_precipitation", "era5_precipitation_was_filled"] {
+            let entry = fields
+                .iter()
+                .find(|f| f.get("name").and_then(Value::as_str) == Some(target))
+                .unwrap_or_else(|| panic!("{target} present in the golden catalog"));
+            assert_eq!(
+                object_keys(entry),
+                ordinary_keys,
+                "{target} carries exactly the ordinary field key set in the golden"
+            );
+            let object = entry.as_object().expect("field object");
+            for key in forbidden {
+                assert!(
+                    !object.contains_key(key),
+                    "{target} must not carry a {key:?} key (no name-pattern magic, spec §2)"
+                );
+            }
+        }
+    }
+
+    /// Negative schema test. A golden mutated with (a) an injected extra top-level key
+    /// and (b) a `conformant` verdict key each **fails** schema validation
+    /// (`additionalProperties:false`), proving the schema catches a shape drift or an
+    /// accidental verdict field — the facts-only contract is enforced by the schema, not
+    /// just by convention (spec §10).
+    #[test]
+    fn mutated_golden_with_extra_or_verdict_key_is_rejected_by_schema() {
+        let validator = describe_validator();
+
+        // Sanity: the unmutated golden validates.
+        assert!(
+            validator.is_valid(&golden_value()),
+            "the unmutated golden must validate"
+        );
+
+        // (a) An arbitrary injected extra top-level key.
+        let mut with_extra = golden_value();
+        with_extra
+            .as_object_mut()
+            .expect("golden object")
+            .insert("schema_version".to_string(), Value::from("9.9"));
+        assert!(
+            !validator.is_valid(&with_extra),
+            "an extra top-level key must be rejected (additionalProperties:false catches drift)"
+        );
+
+        // (b) An accidental conformance verdict key.
+        let mut with_verdict = golden_value();
+        with_verdict
+            .as_object_mut()
+            .expect("golden object")
+            .insert("conformant".to_string(), Value::Bool(true));
+        assert!(
+            !validator.is_valid(&with_verdict),
+            "a `conformant` verdict key must be rejected (describe is facts-only, spec §10)"
+        );
+    }
 }

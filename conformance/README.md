@@ -62,6 +62,7 @@ conformance/
     regenerate.sh                         # the single deterministic end-to-end target
     hdx_fixtures/                         # generator package (manifest/scalar/outlines/grids/mutate/assertions)
   valid/minimal/                          # the one valid four-quadrant dataset
+  valid/minimal/describe.golden.json      # pinned `describe` output (R4); produced by hdx-core, not the generator
   invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline
   invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline
 ```
@@ -112,6 +113,39 @@ Annotated, engineered properties:
   rectangular over the basin bbox — never clipped or NaN'd to an outline.
   `outlines.geoparquet` carries **plural** delineations (`merit`, plus a `grit`
   for `basin=0001`) as neutral labels, in a single non-partitioned root file.
+
+### `valid/minimal/describe.golden.json` — the pinned `describe` output (R4)
+
+A single committed golden file holds the exact `describe` JSON output for the valid
+fixture: [`valid/minimal/describe.golden.json`](valid/minimal/describe.golden.json).
+
+It is **produced by `hdx-core`'s `describe` verb — NOT by the Python generator.** The
+generator emits the on-disk dataset bytes; `describe` reads them and assembles the
+self-description (manifest + discovered facts, no verdict). The golden is the
+pretty-printed output of `describe_json(valid/minimal)` and is pinned by two Rust tests
+in `crates/core/src/describe.rs`:
+
+1. it **validates** against [`schemas/describe.schema.json`](../schemas/describe.schema.json)
+   (via the test-only `jsonschema` dev-dep) — the R4 describe-half lock;
+2. `describe` of the valid fixture, parsed to JSON, **equals** the golden — the snapshot.
+
+The golden is where the companion-mask (`era5_precipitation_was_filled`) and the
+`{source}_{variable}` (`era5_precipitation`) fields are pinned as **ordinary** catalog
+entries: each carries exactly `{name, quadrant, dtype, units, grid_label}`, with no
+`mask` / `companion` / `source` / `variable` / `belongs_to` key (spec §2 — no special
+handling).
+
+**Versioned implicitly by `format_version` only.** The describe shape carries no
+schema-version field; its only version is the manifest `format_version` hard cut (spec
+§0/§11). A shape change is therefore a `format_version` bump, and the golden is
+refreshed in the same change.
+
+**Golden-update workflow.** The golden is regenerated **from the Rust verb**, never
+hand-edited: run `describe` over `valid/minimal`, pretty-print it
+(`Description::to_json_pretty`), and overwrite `describe.golden.json`. Do this **only**
+when the describe shape legitimately changes (a `format_version` bump). A drift caught
+by the snapshot test that is **not** an intended shape change is a bug, not a
+golden-refresh. (MS8 extends this golden-output discipline to the wider fixture family.)
 
 ### `invalid/wrong-format-version/` — pins **M2**
 

@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/describe.schema.json",
+  "title": "HDX describe output",
+  "description": "The full, facts-only self-description the `describe` verb emits (spec §10, R4). Mirrors the describe-local DTO 1:1: exactly {manifest, basins, fields, grids, time_extents, delineations}, additionalProperties:false at every level. It reports FACTS ONLY — there is no `conformant` key, no §14 check-outcome list, anywhere in this shape (that verdict is `validate`, a later milestone, spec §10). The manifest sub-object is EXACTLY the six floor fields (spec §11): no transform/role/semantic/provenance/derivable field is permitted (additionalProperties:false catches a 7th). Every `fields` entry — including the companion-mask `{field}_was_filled` and the `{source}_{variable}` patterns — carries the SAME ordinary key set {name, quadrant, dtype, units, grid_label}; the schema gives those name patterns no special key (spec §2). Discovery gaps are reported as facts: a basin with no extent has `time_extent: null`, an absent outlines rollup yields an empty `delineations` array. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest",
+    "basins",
+    "fields",
+    "grids",
+    "time_extents",
+    "delineations"
+  ],
+  "properties": {
+    "manifest": {
+      "$ref": "#/$defs/manifest"
+    },
+    "basins": {
+      "description": "The discovered basin ids, in stable sorted order (spec §5).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fields": {
+      "description": "The unified field catalog (scalar ⊕ gridded, concatenated, no merge; spec §2/§5).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/field"
+      }
+    },
+    "grids": {
+      "description": "The per-grid representative geometries (spec §7), one entry per discovered grid artifact.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/grid"
+      }
+    },
+    "time_extents": {
+      "description": "The per-basin ragged time-extent entries (spec §6.1), one per basin, in basin order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/time_extent_entry"
+      }
+    },
+    "delineations": {
+      "description": "The distinct neutral delineation labels (spec §9); an empty array is a recorded gap, never a verdict.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "manifest": {
+      "title": "HDX manifest (describe view)",
+      "description": "EXACTLY the six floor fields (spec §11). additionalProperties:false rejects a 7th (derivable / role / provenance) field; required lists all six. Mirrors `schemas/manifest.schema.json` but does not re-constrain values (describe reports the parsed manifest, it does not re-validate it).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "name",
+        "created_at",
+        "producer_version",
+        "crs",
+        "cadence"
+      ],
+      "properties": {
+        "format_version": {
+          "description": "The hard version cut (spec §0/§14 M2); always \"0.1\" for a described dataset. The describe shape is versioned by this value only.",
+          "type": "string",
+          "const": "0.1"
+        },
+        "name": {
+          "description": "Dataset identity — a generic producer string, not a role label (spec §11).",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Dataset creation time as the verbatim RFC 3339 string (spec §14 M4).",
+          "type": "string",
+          "format": "date-time"
+        },
+        "producer_version": {
+          "description": "The tool/version that wrote the dataset (spec §11).",
+          "type": "string"
+        },
+        "crs": {
+          "description": "Dataset-wide CRS string (spec §14 M4).",
+          "type": "string"
+        },
+        "cadence": {
+          "description": "Dataset-wide cadence/calendar convention (spec §14 M4).",
+          "type": "string"
+        }
+      }
+    },
+    "field": {
+      "title": "HDX field",
+      "description": "An ordinary field catalog entry — EXACTLY {name, quadrant, dtype, units, grid_label} (spec §2). additionalProperties:false forbids any name-pattern-derived key (no mask / companion / source / variable / belongs_to). `units` and `grid_label` are nullable (string | null): absent → JSON null. `grid_label` is present (non-null) iff the field is gridded.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "quadrant",
+        "dtype",
+        "units",
+        "grid_label"
+      ],
+      "properties": {
+        "name": {
+          "description": "The verbatim producer field name (opaque; no role/semantic meaning attached).",
+          "type": "string"
+        },
+        "quadrant": {
+          "$ref": "#/$defs/quadrant"
+        },
+        "dtype": {
+          "description": "The canonical physical dtype string (spec §2, closed set).",
+          "type": "string",
+          "enum": [
+            "f32",
+            "f64",
+            "i32",
+            "i64",
+            "bool",
+            "timestamp"
+          ]
+        },
+        "units": {
+          "description": "The recorded units string, or null when absent (never invented).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grid_label": {
+          "description": "The grid label this field lives on (gridded fields only), or null for scalar fields.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "quadrant": {
+      "title": "HDX field quadrant",
+      "description": "The explicit 2×2 classification (spec §2): two independent axes emitted verbatim so a consumer never re-derives them from a packed string.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "temporal",
+        "shape"
+      ],
+      "properties": {
+        "temporal": {
+          "description": "The temporal axis.",
+          "type": "string",
+          "enum": [
+            "static",
+            "dynamic"
+          ]
+        },
+        "shape": {
+          "description": "The shape axis.",
+          "type": "string",
+          "enum": [
+            "scalar",
+            "gridded"
+          ]
+        }
+      }
+    },
+    "grid": {
+      "title": "HDX grid geometry",
+      "description": "A per-grid representative geometry (spec §7): label, cell-edge extent, signed per-axis resolution, pixel dimensions, recorded CRS.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grid_label",
+        "extent",
+        "resolution",
+        "width",
+        "height",
+        "crs"
+      ],
+      "properties": {
+        "grid_label": {
+          "description": "The grid label (the same neutral string the fields reference).",
+          "type": "string"
+        },
+        "extent": {
+          "$ref": "#/$defs/grid_extent"
+        },
+        "resolution": {
+          "$ref": "#/$defs/grid_resolution"
+        },
+        "width": {
+          "description": "The x / column pixel count.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "description": "The y / row pixel count.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "crs": {
+          "description": "The CRS string recorded by the grid artifact.",
+          "type": "string"
+        }
+      }
+    },
+    "grid_extent": {
+      "title": "HDX grid extent",
+      "description": "The four cell-edge coordinates (spec §7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "west",
+        "north",
+        "east",
+        "south"
+      ],
+      "properties": {
+        "west": {
+          "description": "The west cell-edge coordinate (the NW origin's x).",
+          "type": "number"
+        },
+        "north": {
+          "description": "The north cell-edge coordinate (the NW origin's y).",
+          "type": "number"
+        },
+        "east": {
+          "description": "The east cell-edge coordinate (the far x).",
+          "type": "number"
+        },
+        "south": {
+          "description": "The south cell-edge coordinate (the far y).",
+          "type": "number"
+        }
+      }
+    },
+    "grid_resolution": {
+      "title": "HDX grid resolution",
+      "description": "The signed per-axis cell steps (spec §7); the y step is typically negative for a north-up grid.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x_res",
+        "y_res"
+      ],
+      "properties": {
+        "x_res": {
+          "description": "The signed x-axis (east-west) resolution.",
+          "type": "number"
+        },
+        "y_res": {
+          "description": "The signed y-axis (north-south) resolution.",
+          "type": "number"
+        }
+      }
+    },
+    "time_extent_entry": {
+      "title": "HDX per-basin time-extent entry",
+      "description": "A basin id paired with its time extent (spec §6.1). `time_extent` is null when the basin has no recorded extent — a reported GAP, never a verdict.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basin_id",
+        "time_extent"
+      ],
+      "properties": {
+        "basin_id": {
+          "description": "The basin folder id this entry belongs to.",
+          "type": "string"
+        },
+        "time_extent": {
+          "description": "The basin's [start, end] span + its provenance, or null for a recorded gap.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/time_extent"
+            }
+          ]
+        }
+      }
+    },
+    "time_extent": {
+      "title": "HDX time extent",
+      "description": "A [start, end] span with the read-tier provenance that produced it (spec §6.1/§8).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "source"
+      ],
+      "properties": {
+        "start": {
+          "description": "The extent start as an RFC 3339 string.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "description": "The extent end as an RFC 3339 string.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "description": "Which read tier produced the extent (provenance fact, not a verdict).",
+          "type": "string",
+          "enum": [
+            "statistics",
+            "bounded_column_scan"
+          ]
+        }
+      }
+    }
+  }
+}
