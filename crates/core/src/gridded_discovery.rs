@@ -211,6 +211,7 @@ pub struct GriddedDiscovery {
     gridded_fields: Vec<Field>,
     delineations: Vec<DelineationLabel>,
     per_basin: Vec<BasinGridded>,
+    outlines: Option<OutlinesInfo>,
 }
 
 impl GriddedDiscovery {
@@ -242,6 +243,20 @@ impl GriddedDiscovery {
     /// in basin order (the G2 precondition + the MED-5 Zarr path).
     pub fn per_basin(&self) -> &[BasinGridded] {
         &self.per_basin
+    }
+
+    /// Borrows the discovered `outlines.geoparquet` facts, or `None` when the outlines
+    /// rollup is absent (a recorded gap; L1 is the absence's concern, not Geo1).
+    ///
+    /// **Additive accessor (the MS6-S2 Geo1 / I1-outlines / M5-outlines seam).** The
+    /// full [`OutlinesInfo`] (column presence, the not-partitioned fact, the recorded
+    /// [`Crs`](crate::newtypes::Crs)) is read inside [`discover_gridded`] but only its
+    /// `delineations()` were surfaced until MS6 needed the rest. This accessor only
+    /// **exposes** the already-read facts — it is **never** a reshape of the MS4
+    /// contract (the four original accessors, including [`delineations`](Self::delineations),
+    /// are untouched and still populated identically).
+    pub fn outlines(&self) -> Option<&OutlinesInfo> {
+        self.outlines.as_ref()
     }
 }
 
@@ -480,20 +495,26 @@ pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, Core
     // The homogeneous gridded field catalog (representative one-basin read, spec §5).
     let gridded_fields = assemble_gridded_field_catalog(&layout, &per_basin)?;
 
-    // The outlines geometry, read once at the root when present (gaps-as-facts).
-    let delineations: Vec<DelineationLabel> = if layout.outlines().is_present() {
-        let outlines: OutlinesInfo = read_outlines(layout.outlines().path())?;
-        outlines.delineations().to_vec()
+    // The outlines geometry, read once at the root when present (gaps-as-facts). The
+    // full `OutlinesInfo` is now retained on the model (additively) so MS6's Geo1 /
+    // I1-outlines / M5-outlines legs can read its column-presence + CRS facts.
+    let outlines: Option<OutlinesInfo> = if layout.outlines().is_present() {
+        Some(read_outlines(layout.outlines().path())?)
     } else {
-        debug!("outlines.geoparquet absent; recorded empty delineations (gap-as-fact)");
-        Vec::new()
+        debug!("outlines.geoparquet absent; recorded as a gap-as-fact (no outlines info)");
+        None
     };
+    let delineations: Vec<DelineationLabel> = outlines
+        .as_ref()
+        .map(|o| o.delineations().to_vec())
+        .unwrap_or_default();
 
     info!(
         basins = per_basin.len(),
         grids = grids.len(),
         gridded_fields = gridded_fields.len(),
         delineations = delineations.len(),
+        outlines = outlines.is_some(),
         "assembled the gridded/geometry half of the discovery model"
     );
 
@@ -502,6 +523,7 @@ pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, Core
         gridded_fields,
         delineations,
         per_basin,
+        outlines,
     })
 }
 
@@ -568,6 +590,12 @@ impl Discovery {
     /// Borrows the distinct delineation labels (the gridded half's `delineations`).
     pub fn delineations(&self) -> &[DelineationLabel] {
         self.gridded.delineations()
+    }
+
+    /// Borrows the discovered `outlines.geoparquet` facts (the gridded half's
+    /// `outlines`), or `None` when the outlines rollup is absent.
+    pub fn outlines(&self) -> Option<&OutlinesInfo> {
+        self.gridded.outlines()
     }
 }
 

@@ -97,9 +97,11 @@
 //!   returned `Err`; a [`ValidateError`](error::ValidateError) is reserved for
 //!   **structural / entry** failures (an unreadable manifest, the §0 hard cut, an
 //!   undecodable present artifact) so the CLI (MS7) can map the two to distinct exit
-//!   codes. As of MS6-S1 the report carries real outcomes for the in-memory-falsifiable
-//!   checks (M1–M4 via the entry gate; H1, H2, I3, T1, G1) and `skipped` placeholders for
-//!   the cross-file checks (wired in MS6-S2), so the report already lists all 20 §14 ids.
+//!   codes. As of MS6-S2 every §14 id reaches a real outcome: the in-memory checks (M1–M4
+//!   via the entry gate; H1, H2, I3, T1, G1) and the cross-file checks (L1, L2, I1, I2,
+//!   M5, G2, G3) `ran` (pass/fail), with the byte-deep / on-disk-shape-dependent legs
+//!   (L3, M6 rule (b), T2, Geo1-when-outlines-absent) honest R3 `Skipped`-with-reason.
+//!   The report lists all 20 §14 ids; the on-disk negative matrix is MS8.
 
 pub mod cog_reader;
 pub mod describe;

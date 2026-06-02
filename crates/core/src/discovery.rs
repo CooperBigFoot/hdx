@@ -172,6 +172,7 @@ pub struct ScalarDiscovery {
     scalar_fields: Vec<Field>,
     per_basin: Vec<BasinScalar>,
     root_rollups: RootRollupPresence,
+    scalar_static_has_basin_id: Option<bool>,
 }
 
 impl ScalarDiscovery {
@@ -199,6 +200,21 @@ impl ScalarDiscovery {
     /// Returns the root-rollup presence facts (spec §4/§14 L1).
     pub fn root_rollups(&self) -> RootRollupPresence {
         self.root_rollups
+    }
+
+    /// Returns whether `scalar_static.parquet`'s `basin_id` column is present
+    /// (spec §3/§14 I1), or `None` when the static rollup is absent.
+    ///
+    /// **Additive accessor (the MS6-S2 I1 static-rollup seam).** The presence fact is
+    /// read inside [`discover_scalar`] via
+    /// [`ScalarStaticTable::has_basin_id`](crate::scalar_reader::ScalarStaticTable::has_basin_id)
+    /// but was not surfaced on this model until MS6 needed it for I1. This accessor only
+    /// **exposes** the already-read fact — it is **never** a reshape of the MS3 contract
+    /// (the four original accessors are untouched). `None` distinguishes "the rollup was
+    /// absent, so the column-presence question does not apply here" (that absence is an
+    /// L1 concern) from `Some(false)` ("the rollup is present but lacks the column").
+    pub fn scalar_static_has_basin_id(&self) -> Option<bool> {
+        self.scalar_static_has_basin_id
     }
 }
 
@@ -308,14 +324,16 @@ pub fn discover_scalar(path: impl AsRef<Path>) -> Result<ScalarDiscovery, CoreEr
     };
 
     // The dataset-level static rollup: read its fields if present, else an empty
-    // catalog (its absence is a fact in `root_rollups`; L1 is MS6).
-    let static_fields: Vec<Field> = if layout.scalar_static().is_present() {
-        read_scalar_static(layout.scalar_static().path())?
-            .fields()
-            .to_vec()
-    } else {
-        Vec::new()
-    };
+    // catalog (its absence is a fact in `root_rollups`; L1 is MS6). The `basin_id`
+    // column-presence fact (the MS6 I1 static-rollup leg) is captured here when the
+    // rollup is present, and surfaced additively on the model — `None` when absent.
+    let (static_fields, scalar_static_has_basin_id): (Vec<Field>, Option<bool>) =
+        if layout.scalar_static().is_present() {
+            let table = read_scalar_static(layout.scalar_static().path())?;
+            (table.fields().to_vec(), Some(table.has_basin_id()))
+        } else {
+            (Vec::new(), None)
+        };
 
     let basins: Vec<BasinId> = layout
         .basins()
@@ -343,6 +361,7 @@ pub fn discover_scalar(path: impl AsRef<Path>) -> Result<ScalarDiscovery, CoreEr
         scalar_fields,
         per_basin,
         root_rollups,
+        scalar_static_has_basin_id,
     })
 }
 

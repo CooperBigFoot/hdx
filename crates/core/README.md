@@ -55,14 +55,18 @@ failed**"; a skip never flips it). The verb's **entry order mirrors `describe`**
 discovery → `discover` → run the §14 rules. The **report-vs-error split is load-bearing**:
 a violated `MUST` that ran is a recorded fail outcome (⇒ `conformant: false`), **never** a
 returned `Err`; a `ValidateError` is reserved for **structural / entry** failures (an
-unreadable manifest, the §0 hard cut, an undecodable present artifact). MS6-S1 freezes the
-report wire shape + the per-check rule-function surface and implements the
+unreadable manifest, the §0 hard cut, an undecodable present artifact). MS6-S1 froze the
+report wire shape + the per-check rule-function surface and implemented the
 **in-memory-falsifiable** checks (M1–M4 via the entry gate; H1, H2, I3, T1, G1 as pure
-rule functions, each with a mandatory in-memory negative test); the cross-file checks
-(M5, M6, L1–L3, I1, I2, T2, G2, G3, Geo1) are honest `skipped("not yet wired")`
-placeholders, wired in MS6-S2. The verb adds **no reader** and decodes **no gridded chunk
-/ pixel raster** (LOW-3) — it runs over the discovery layer + the 1-D index reads MS3/MS4
-already do.
+rule functions, each with a mandatory in-memory negative test). **MS6-S2** completes the
+checklist with the cross-file / cross-basin checks (L1, L2, I1, I2, M5, G2, G3 `ran`
+pass/fail; L3, M6 rule (b), T2, and Geo1-when-outlines-absent as honest R3
+`Skipped`-with-reason), wires the reserved `CoreError` variants as the fail-outcome detail
+vocabulary, and proves the three milestone verdicts: `conformant:true` on the valid
+fixture (incl. G2's positive path on the shared aligned `era5` label) and
+`conformant:false` on both MS2 invalids (M2/entry-gate; L1). The verb adds **no reader**
+and decodes **no gridded chunk / pixel raster** (LOW-3) — it runs over the discovery
+layer + the 1-D index reads MS3/MS4 already do. The on-disk negative matrix is MS8.
 
 ## Inert and agnostic (load-bearing discipline)
 
@@ -265,9 +269,11 @@ layered on.
   `CheckStatus` `Ran`/`Skipped`; `CheckResult` `Pass`/`Fail`; `DepthClass`
   `MetadataDeep`/`ByteDeep`; `CheckOutcome`; `ValidationReport`), the pure in-memory rule
   functions (`check_h1` / `check_h2` / `check_i3` / `check_t1` / `check_g1`; M3/M4 folded
-  into the entry gate via `Manifest::from_json`), and the boundary verb
-  [`validate`](src/validate.rs) whose first act is the §0 hard-cut entry gate (mirroring
-  `describe`). The inert domain types and the report types gain **no** `serde::Serialize`
+  into the entry gate via `Manifest::from_json`), the cross-file rule functions
+  (`check_l1` / `check_l2` / `check_l3` / `check_i1` / `check_i2` / `check_m5` /
+  `check_m6` / `check_t2` / `check_g2` / `check_g3` / `check_geo1`, MS6-S2), and the
+  boundary verb [`validate`](src/validate.rs) whose first act is the §0 hard-cut entry
+  gate (mirroring `describe`). The inert domain types and the report types gain **no** `serde::Serialize`
   derive (the wire shape lands in MS6-S3) and the report carries only id / ran-skip /
   pass-fail / depth / opaque detail — **no derived domain field**.
 
@@ -313,4 +319,4 @@ Domain terms an agent would not infer from the code alone. Spec section in paren
 | **CheckOutcome** (§14) | One check's recorded result: its `CheckId`, whether it `Ran` or was `Skipped` (an enum, never a bool), its `Pass`/`Fail` result (`Some` iff it ran), its R3 `DepthClass`, and an opaque detail/reason string. Built only through `ran_pass` / `ran_fail` / `skipped`, so a `Skipped` check can never carry a result. **Inert** — no derived domain field. |
 | **ValidationReport** (§10, §14) | The full report: the per-check `CheckOutcome`s + `conformant`, where `conformant` is computed **by construction** as "**no check that `Ran` has `result == Fail`**" — a `Skipped` check never flips it (fail-closed applies only to a `MUST` that ran). `find(id)` accesses a single outcome. The inert report types carry **no** `serde::Serialize` derive (MS6-S3 owns the wire shape). |
 | **R3 depth class** (arch §7 R3) | How deep into the bytes a check reached: `MetadataDeep` (decided from metadata + 1-D index reads only — every MS6-S1 check) vs `ByteDeep` (would need a chunk / pixel / full-axis read — the legs v0.1 honestly *skips*, e.g. the MS6-S2 per-basin axis-regularity leg). Recorded on every `CheckOutcome` so the report states its enforcement depth (the §14 note). |
-| **ran / skipped** (§14 note) | The §14 enforcement-depth note requires the validator to **clearly report which checks ran**. A `Skipped` check is an *honest deferral*, always paired with a reason string; it never makes a dataset non-conformant on its own. MS6-S1 runs M1–M4 (entry gate) + H1/H2/I3/T1/G1 and skips the cross-file checks as `"not yet wired"` until MS6-S2. |
+| **ran / skipped** (§14 note) | The §14 enforcement-depth note requires the validator to **clearly report which checks ran**. A `Skipped` check is an *honest deferral*, always paired with a reason string; it never makes a dataset non-conformant on its own. As of MS6-S2 every §14 id reaches a real outcome: M1–M4 (entry gate) + H1/H2/I3/T1/G1/L1/L2/I1/I2/M5/G2/G3 `ran` (pass/fail), and the genuinely byte-deep / on-disk-shape-dependent legs (L3, M6 rule (b) axis-regularity, T2 cross-artifact axis, Geo1 when outlines is absent) are honest R3 `Skipped`-with-reason. |
