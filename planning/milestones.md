@@ -593,17 +593,23 @@ invalids (critique H-3).
   - **Manifest M1–M6.** M5 (`crs` matches the CRS carried in every georeferenced
     file) cross-checks the manifest CRS against the per-file CRS read in MS4.
     **spec-check M6 (cadence consistent with realized `time` axes) — defined and
-    R3-classified (critique MS6 cadence):** because HDX **parses no cadence
-    semantics** (cadence is an opaque string, §1/§6.4), MS6 implements a concrete
-    **non-semantic** rule: `cadence` is a non-empty string (already M4) **and** the
-    realized per-basin `time` axes are **uniformly spaced** (constant step within
-    each basin) and **consistent across basins** (same step). It does **not**
-    interpret the string `"daily"` as 1-day spacing (that would be semantic
-    interpretation HDX must avoid). The documented limit: HDX verifies *axis
-    regularity*, not that the spacing *matches the cadence word*. If even
-    axis-regularity cannot be determined cheaply for a fixture, spec-check M6 is
-    reported **skipped with a stated reason** under R3 rather than silently passing.
-    The no-cadence-semantics tension is documented in the check's doc comment.
+    R3-classified (critique MS6 cadence; CORRECTED per STEP-2 MED-1):** because HDX
+    **parses no cadence semantics** (cadence is an opaque string, §1/§6.4) and §6.1
+    explicitly permits **ragged per-basin time extents**, MS6 implements a concrete
+    **non-semantic** rule with exactly two parts: `cadence` is a non-empty string
+    (already M4) **and** each basin's realized `time` axis is **internally regular**
+    (the §6.2 consequence that gaps are NaN-filled, never dropped). The earlier
+    cross-basin "same step" clause is **DROPPED** as a hard failure — the spec does
+    not support it (§6.1 ragged extents); if reported at all it is the **first R3
+    skip-with-reason, never a hard fail**. It does **not** interpret the string
+    `"daily"` as 1-day spacing. The documented limit: HDX verifies *axis
+    regularity*, not that the spacing *matches the cadence word*. In v0.1 the
+    realized `TimeExtent` carries only `{start, end}` (two points cannot prove a
+    constant interior step without a full column read), so the regularity leg is
+    **reported `skipped` with a stated reason** under R3 rather than silently
+    passing — a SKIP never flips `conformant`. The no-cadence-semantics tension is
+    documented in the check's doc comment, and the MS8 M6 negative fixture's
+    expectation matches this surviving rule.
   - **Layout L1–L3.** Rollups at root (L1); `basin=<id>` shape + required
     per-basin artifacts derived from the field set, gridded subtrees present iff
     gridded fields declared (L2); no stray/ragged files, absence = NaN not missing
