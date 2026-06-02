@@ -539,16 +539,21 @@ mod tests {
 
     /// Writes a synthetic geoparquet to a temp file and returns its path.
     fn write_outlines_tempfile(columns: &[&str], geo: Option<&str>) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // A process-wide counter guarantees a unique name even when two calls land
+        // in the same nanosecond under parallel test execution; pid + nanos alone
+        // collide (the test suite ran flaky without this).
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let bytes = write_outlines(columns, geo);
         let mut path = std::env::temp_dir();
         let unique = format!(
-            "hdx_outlines_{}_{}.geoparquet",
+            "hdx_outlines_{}_{}_{}.geoparquet",
             std::process::id(),
-            // A monotone-ish suffix so concurrent tests do not collide.
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         path.push(unique);
         std::fs::write(&path, bytes).expect("writing the temp geoparquet must succeed");
