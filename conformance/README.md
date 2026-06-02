@@ -251,11 +251,16 @@ one surgical mutation** (LOW-2) and pins **exactly one** spec §14 check.
 |---|---|---|
 | **M2** — `format_version == "0.1"`; any other value is rejected outright (hard cut). | `invalid/wrong-format-version/` | `manifest.json` `format_version`: `"0.1"` → `"0.2"` (all other fields unchanged). |
 | **L1** — `scalar_static.parquet` and `outlines.geoparquet` exist at the root. | `invalid/missing-root-rollup/` | Delete the root **`outlines.geoparquet`** (the other rollup, `scalar_static.parquet`, is kept). |
+| **M5** — the manifest `crs` matches every georeferenced file's recorded CRS (§7/§11). | `invalid/crs-mismatch/` | `manifest.json` `crs`: `"EPSG:4326"` → `"EPSG:3857"` (the files keep `EPSG:4326`; all other floor fields unchanged). |
+| **G2** — a grid label shared across the COG and Zarr subtrees implies cell-for-cell alignment (§8). | `invalid/misaligned-shared-label/` | Re-emit one basin's `gridded_static/era5.tif` under the **same** `era5` label at a half-cell-shifted geometry (`west` `10.0` → `10.5`); its Zarr stays at the baseline geometry, so the shared label no longer coincides. |
+| **H2** — the grid-label set is identical across basins (§8). | `invalid/divergent-grid-label-set/` | Re-emit one basin's COG **and** Zarr under a divergent `era5b` label (`era5.*` → `era5b.*`); that basin's label set becomes `{era5b}` while every other basin's is `{era5}`. |
 
-> **The exhaustive one-invalid-per-check family is MS8, not MS2.** MS2 ships only
-> these two pinned invalids. Adding more invalids is an MS8 task — and is done the
-> same way: add a mutation to the generator and regenerate (never hand-edit a
-> tree).
+> **The exhaustive one-invalid-per-check family is MS8.** MS2 shipped the first
+> two pinned invalids (M2, L1); MS8 adds the rest (the entry-gate M3/M4, the
+> Bucket-B I1/I2/H1/T1/L2 parquet/layout negatives, and the M5/G2/H2 georef /
+> grid-label negatives shown above). The full classification matrix is finalized
+> in MS8-S4. Every invalid is added the same way: add a mutation to the generator
+> and regenerate (never hand-edit a tree).
 
 ---
 

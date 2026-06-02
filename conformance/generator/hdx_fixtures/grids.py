@@ -64,6 +64,15 @@ from hdx_fixtures.scalar import BASINS, BasinSpec, _time_axis
 # grid *family*; the literal per-basin extent/affine lives in each file.
 GRID_LABEL = "era5"
 
+# A DIVERGENT grid label one basin's COG+Zarr can be re-emitted under so that
+# basin's grid-label set becomes ``{era5b}`` while every other basin's is
+# ``{era5}`` — the H2 cross-basin label-set negative (MS8-S2,
+# divergent-grid-label-set). Renaming BOTH subtrees keeps the shared-label
+# COG+Zarr coinciding under ``era5b`` (G2 stays pass for that basin); only H2
+# (cross-basin label-set equality) fires. See
+# :func:`hdx_fixtures.mutate._mutate_divergent_grid_label_set`.
+DIVERGENT_GRID_LABEL = "era5b"
+
 # Opaque producer-chosen gridded field names (spec §2). Distinct quadrants:
 GRIDDED_STATIC_FIELD = "elevation"  # gridded·static COG band, f32
 # gridded·dynamic Zarr variable, f32, using the {source}_{variable} pattern:
@@ -91,6 +100,16 @@ GRID_RES = 0.25  # degrees per cell (square cells)
 # immaterial to HDX; only that the COG and Zarr agree on it cell-for-cell.
 GRID_WEST = 10.0
 GRID_NORTH = 50.0
+
+# A MISALIGNED west origin (a half-cell shift east of :data:`GRID_WEST`) used by
+# the misaligned-shared-label negative (MS8-S2, G2). Re-emitting ONLY one basin's
+# COG at this origin — leaving its Zarr at the baseline geometry — keeps the
+# shared ``era5`` label in both subtrees (H2 stays pass: the label set is still
+# ``{era5}``) but breaks cell-for-cell alignment (extent/bounds diverge), so
+# check_g2 ran:fails for that basin. The width/res/height are unchanged so the
+# COG stays a valid, georeferenced raster (G3 stays pass). See
+# :func:`hdx_fixtures.mutate._mutate_misaligned_shared_label`.
+MISALIGNED_GRID_WEST = 10.5
 
 # COG internal tiling block size. Kept small so the tiny fixture raster still
 # tiles and supports overviews (spec §8: internal tiling + overviews).
@@ -207,28 +226,45 @@ def gridded_dynamic_dir(basin_dir_path: Path) -> Path:
     return basin_dir_path / "gridded_dynamic"
 
 
-def cog_path(basin_dir_path: Path) -> Path:
-    """Return the ``gridded_static/<label>.tif`` COG path (spec §4/§8)."""
-    return gridded_static_dir(basin_dir_path) / f"{GRID_LABEL}.tif"
+def cog_path(basin_dir_path: Path, label: str = GRID_LABEL) -> Path:
+    """Return the ``gridded_static/<label>.tif`` COG path (spec §4/§8).
+
+    ``label`` defaults to the shared :data:`GRID_LABEL`; the MS8-S2
+    divergent-grid-label mutation overrides it with
+    :data:`DIVERGENT_GRID_LABEL` to relocate one basin's artifact.
+    """
+    return gridded_static_dir(basin_dir_path) / f"{label}.tif"
 
 
-def zarr_path(basin_dir_path: Path) -> Path:
-    """Return the ``gridded_dynamic/<label>.zarr`` store path (spec §4/§8)."""
-    return gridded_dynamic_dir(basin_dir_path) / f"{GRID_LABEL}.zarr"
+def zarr_path(basin_dir_path: Path, label: str = GRID_LABEL) -> Path:
+    """Return the ``gridded_dynamic/<label>.zarr`` store path (spec §4/§8).
+
+    ``label`` defaults to the shared :data:`GRID_LABEL`; the MS8-S2
+    divergent-grid-label mutation overrides it with
+    :data:`DIVERGENT_GRID_LABEL` to relocate one basin's artifact.
+    """
+    return gridded_dynamic_dir(basin_dir_path) / f"{label}.zarr"
 
 
-def write_gridded_static(basin_dir_path: Path, geom: GridGeometry) -> Path:
+def write_gridded_static(
+    basin_dir_path: Path, geom: GridGeometry, label: str = GRID_LABEL
+) -> Path:
     """Write one basin's multiband ``gridded_static`` COG and return its path.
 
     Emits ``gridded_static/<label>.tif``: a tiled, overview-bearing GeoTIFF with
     the ``elevation`` field as a single band whose **description is the field
     name** (G1), standard georeferencing tags (CRS + affine, G3), units in band
     metadata (§7.3), dense ``[Y,X]`` over the bbox and delineation-neutral (§9).
+
+    ``label`` (default :data:`GRID_LABEL`) names the artifact file; the MS8-S2
+    divergent-grid-label mutation overrides it. ``geom`` likewise carries the
+    grid's affine — the misaligned-shared-label mutation passes a shifted
+    geometry to break G2 alignment while keeping the label shared.
     """
     log = get_logger("grids.cog")
     static_dir = gridded_static_dir(basin_dir_path)
     static_dir.mkdir(parents=True, exist_ok=True)
-    path = cog_path(basin_dir_path)
+    path = cog_path(basin_dir_path, label)
 
     # Deterministic, finite elevation surface over the grid (values opaque).
     elevation = np.arange(geom.height * geom.width, dtype="float32").reshape(
@@ -261,7 +297,7 @@ def write_gridded_static(basin_dir_path: Path, geom: GridGeometry) -> Path:
 
     log.info(
         "wrote gridded_static COG label=%s band=%s shape=%dx%d",
-        GRID_LABEL,
+        label,
         GRIDDED_STATIC_FIELD,
         geom.height,
         geom.width,
@@ -295,7 +331,10 @@ def _write_cf_coord(
 
 
 def write_gridded_dynamic(
-    basin_dir_path: Path, geom: GridGeometry, times: list[dt.datetime]
+    basin_dir_path: Path,
+    geom: GridGeometry,
+    times: list[dt.datetime],
+    label: str = GRID_LABEL,
 ) -> Path:
     """Write one basin's ``gridded_dynamic`` Zarr v3 store and return its path.
 
@@ -310,11 +349,14 @@ def write_gridded_dynamic(
     *identical* instants as the basin's scalar ``time`` (T2 / §6.2). The first
     timestep of ``era5_precipitation`` is **NaN-filled** to exercise the §6.2
     gap convention, and the companion mask marks exactly that timestep.
+
+    ``label`` (default :data:`GRID_LABEL`) names the artifact file; the MS8-S2
+    divergent-grid-label mutation overrides it.
     """
     log = get_logger("grids.zarr")
     dynamic_dir = gridded_dynamic_dir(basin_dir_path)
     dynamic_dir.mkdir(parents=True, exist_ok=True)
-    path = zarr_path(basin_dir_path)
+    path = zarr_path(basin_dir_path, label)
 
     n_t = len(times)
     lat = geom.lat_centers()
@@ -420,7 +462,7 @@ def write_gridded_dynamic(
 
     log.info(
         "wrote gridded_dynamic Zarr label=%s vars=%s T=%d shape=%dx%d sharded",
-        GRID_LABEL,
+        label,
         [GRIDDED_DYNAMIC_FIELD, COMPANION_MASK_FIELD],
         n_t,
         geom.height,
@@ -453,3 +495,84 @@ def write_grids(dataset_root: Path) -> list[Path]:
         cog, store = write_gridded_for_basin(dataset_root, basin)
         written.extend((cog, store))
     return written
+
+
+# --- MS8-S2 re-emit seam: one basin's grids under a different label/geometry ---
+#
+# These helpers let a single mutation (mutate.py) re-emit ONE basin's gridded
+# artifacts under a divergent LABEL and/or a MISALIGNED GEOMETRY, reusing the
+# baseline writers above so the in-file artifact naming/serialization stays
+# consistent (never a raw dir rename). They never touch the baseline writers' own
+# behaviour: the default-argument writers above are unchanged for the baseline.
+
+
+def misaligned_geometry() -> GridGeometry:
+    """Return a geometry half-cell-shifted east of the baseline (G2 negative).
+
+    Identical to :func:`_basin_geometry` except ``west`` is
+    :data:`MISALIGNED_GRID_WEST` (a half-cell shift). Re-emitting ONLY a basin's
+    COG at this geometry — its Zarr left at the baseline — keeps the shared
+    ``era5`` label present in both subtrees (H2 stays pass) while their extents no
+    longer coincide cell-for-cell, so check_g2 ran:fails for that basin. The
+    width/res/height are unchanged so the COG stays a georeferenced raster (G3
+    stays pass) and the label is still ``era5`` (H2 stays pass).
+    """
+    return GridGeometry(
+        height=GRID_HEIGHT,
+        width=GRID_WIDTH,
+        res=GRID_RES,
+        west=MISALIGNED_GRID_WEST,
+        north=GRID_NORTH,
+    )
+
+
+def reemit_basin_grids_under_label(
+    dataset_root: Path, basin: BasinSpec, label: str
+) -> tuple[Path, Path]:
+    """Re-emit a basin's COG **and** Zarr under ``label`` (divergent-label seam).
+
+    Removes the basin's baseline ``gridded_static``/``gridded_dynamic`` artifacts
+    (so only the relabelled pair remains) and re-writes both under ``label`` at
+    the **baseline** geometry/time axis. Because BOTH subtrees move to ``label``,
+    the basin's shared-label COG+Zarr still coincide (G2 stays pass) while its
+    grid-label SET becomes ``{label}`` — the H2 cross-basin negative.
+    """
+    from hdx_fixtures.scalar import basin_dir
+
+    basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+    geom = _basin_geometry()
+    times = _time_axis(basin)
+
+    # Drop the baseline-labelled artifacts so the basin carries ONLY the relabelled
+    # pair (the divergent label set is {label}, not {era5, label}).
+    cog_path(basin_dir_path).unlink()
+    _rmtree(zarr_path(basin_dir_path))
+
+    cog = write_gridded_static(basin_dir_path, geom, label)
+    store = write_gridded_dynamic(basin_dir_path, geom, times, label)
+    return cog, store
+
+
+def reemit_basin_cog_with_geometry(
+    dataset_root: Path, basin: BasinSpec, geom: GridGeometry
+) -> Path:
+    """Re-emit ONLY a basin's COG (same :data:`GRID_LABEL`) at ``geom`` (G2 seam).
+
+    Removes the basin's baseline COG and re-writes it under the shared
+    :data:`GRID_LABEL` at ``geom`` (a misaligned geometry), leaving the basin's
+    Zarr at the baseline geometry. The shared ``era5`` label now appears in both
+    subtrees but their extents diverge, so check_g2 ran:fails for that basin while
+    H2 (label set still ``{era5}``) and G3 (georef intact) stay pass.
+    """
+    from hdx_fixtures.scalar import basin_dir
+
+    basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+    cog_path(basin_dir_path).unlink()
+    return write_gridded_static(basin_dir_path, geom, GRID_LABEL)
+
+
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree (a Zarr store is a directory of many files)."""
+    import shutil
+
+    shutil.rmtree(path)

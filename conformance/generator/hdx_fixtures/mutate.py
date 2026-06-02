@@ -36,6 +36,20 @@ exactly one §14 check ``ran:fail`` (every other check passes or honestly skips)
 * ``invalid/missing-gridded-dynamic-subtree/`` — delete one basin's
   ``gridded_dynamic/`` subtree. Pins **L2** (per-basin artifacts, §4).
 
+The **MS8-S2** georef / grid-label negatives each copy the baseline, then apply
+one surgical georef/grid mutation that yields a clean ``conformant:false`` report
+with exactly one §14 check ``ran:fail``:
+
+* ``invalid/crs-mismatch/`` — manifest-only rewrite of ``crs`` to a different
+  valid EPSG (``EPSG:3857``); the files keep ``EPSG:4326``. Pins **M5** (manifest
+  crs vs file CRS, §7/§11).
+* ``invalid/misaligned-shared-label/`` — re-emit one basin's ``gridded_static``
+  COG under the SAME ``era5`` label at a shifted geometry (its Zarr left at the
+  baseline). Pins **G2** (shared-label cell-for-cell alignment, §8).
+* ``invalid/divergent-grid-label-set/`` — re-emit one basin's COG+Zarr under a
+  divergent ``era5b`` label so that basin's label set is ``{era5b}``. Pins **H2**
+  (cross-basin grid-label-set equality, §8).
+
 **I3 (duplicate basin_id) is NOT in this set** — an I3-only on-disk negative is not
 representable in v0.1 (see the I3 finding below): ``check_i3`` reads
 the per-basin ``scalar_dynamic`` in-file ids, the ``scalar_static`` rollup values are
@@ -74,7 +88,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from hdx_fixtures import get_logger
-from hdx_fixtures.grids import GRID_LABEL, gridded_dynamic_dir
+from hdx_fixtures.grids import (
+    DIVERGENT_GRID_LABEL,
+    GRID_LABEL,
+    gridded_dynamic_dir,
+    misaligned_geometry,
+    reemit_basin_cog_with_geometry,
+    reemit_basin_grids_under_label,
+)
 from hdx_fixtures.manifest import MANIFEST_FIELDS
 from hdx_fixtures.scalar import BASINS, DYNAMIC_FIELD, basin_dir
 
@@ -101,6 +122,14 @@ EXTRA_MANIFEST_FIELD_VALUE: str = "deadbeef"
 # docstring: M4 rejects this BEFORE check_m6 rule (a) could fire.)
 EMPTY_CADENCE: str = ""
 
+# The mutated manifest ``crs`` value for the crs-mismatch invalid (M5). A
+# DIFFERENT *valid* EPSG code (Web Mercator) so M4 still passes (crs is a
+# non-empty string) and discovery still succeeds — only M5 (manifest crs vs the
+# CRS carried in each georeferenced file) fires, because the files keep EPSG:4326.
+# Web Mercator (EPSG:3857) is a plausible, well-known alternative the producer
+# could have declared by mistake.
+CRS_MISMATCH_VALUE: str = "EPSG:3857"
+
 # --- Bucket-B scalar/identity/homogeneity/time/layout mutation targets (MS8-S3) -
 
 # The single basin every Bucket-B parquet/layout mutation surgically targets. The
@@ -108,7 +137,8 @@ EMPTY_CADENCE: str = ""
 # byte-identical baseline; the other two basins stay conformant, which is what
 # makes each negative a CLEAN one-check ``ran:fail`` (the rule fires on the one
 # divergent basin and every other check still passes/skips).
-_MUTATED_BASIN: str = BASINS[-1].basin_id  # "0003"
+_MUTATED_BASIN_SPEC = BASINS[-1]  # the BasinSpec the grids re-emit seam needs
+_MUTATED_BASIN: str = _MUTATED_BASIN_SPEC.basin_id  # "0003"
 
 # I2 (basin-id/folder mismatch): the value the mutated basin's in-file ``basin_id``
 # is rewritten to. It MUST (a) differ from the basin's ``basin=<id>`` folder so I2
@@ -173,13 +203,25 @@ class Invalid(Enum):
     RAGGED_FIELD_SCHEMA = "ragged-field-schema"
     NON_MONOTONIC_TIME = "non-monotonic-time"
     MISSING_GRIDDED_DYNAMIC_SUBTREE = "missing-gridded-dynamic-subtree"
+    # MS8-S2 georef/grid-label negatives. Each is a clean ``conformant:false``
+    # report with exactly one §14 check ``ran:fail`` (every other check
+    # pass-or-skip), derived by exactly one surgical mutation off the baseline:
+    #   * crs-mismatch (M5) — manifest-only rewrite of ``crs`` to a different EPSG.
+    #   * misaligned-shared-label (G2) — one basin's COG re-emitted at a shifted
+    #     geometry under the SAME ``era5`` label (its Zarr left at the baseline).
+    #   * divergent-grid-label-set (H2) — one basin's COG+Zarr re-emitted under a
+    #     divergent ``era5b`` label so that basin's label set is ``{era5b}``.
+    CRS_MISMATCH = "crs-mismatch"
+    MISALIGNED_SHARED_LABEL = "misaligned-shared-label"
+    DIVERGENT_GRID_LABEL_SET = "divergent-grid-label-set"
 
     @property
     def pinned_check(self) -> str:
         """Return the single spec §14 check this invalid pins.
 
         Bucket-A entry-gate ``Err`` negatives: M2/M3/M4/L1. Bucket-B
-        ``conformant:false`` negatives: I1/I2/I3/H1/T1/L2 (MS8-S3).
+        ``conformant:false`` negatives: I1/I2/I3/H1/T1/L2 (MS8-S3). MS8-S2
+        georef/grid-label negatives: M5/G2/H2.
         """
         if self is Invalid.WRONG_FORMAT_VERSION:
             return "M2"
@@ -197,7 +239,13 @@ class Invalid(Enum):
             return "H1"
         if self is Invalid.NON_MONOTONIC_TIME:
             return "T1"
-        return "L2"
+        if self is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
+            return "L2"
+        if self is Invalid.CRS_MISMATCH:
+            return "M5"
+        if self is Invalid.MISALIGNED_SHARED_LABEL:
+            return "G2"
+        return "H2"
 
 
 def invalid_root(repo_root: Path, invalid: Invalid) -> Path:
@@ -447,6 +495,82 @@ def _mutate_missing_gridded_dynamic_subtree(target_root: Path) -> None:
     shutil.rmtree(subtree)
 
 
+# --- MS8-S2 georef / grid-label mutations (M5 / G2 / H2) ----------------------
+
+
+def _mutate_crs_mismatch(target_root: Path) -> None:
+    """Rewrite ``manifest.json``'s ``crs`` to a different valid EPSG (M5).
+
+    Manifest-only rewrite: the single ``crs`` value is replaced with
+    :data:`CRS_MISMATCH_VALUE` (``EPSG:3857``), the other five floor fields left
+    byte-identical, and the file re-emitted with the baseline serialization
+    (2-space indent, trailing newline, key order). The on-disk files keep
+    ``EPSG:4326``, so:
+
+    * M4 still passes — ``crs`` is a non-empty string;
+    * discovery succeeds (no file changed);
+    * ``check_m5`` compares each ``GridInfo.crs()`` (and the outlines
+      ``EpsgFromProjjsonId`` leg) against the manifest ``crs`` and ran:fails —
+      every divergence is reported under the SINGLE check id M5, so
+      exactly-one-check-fails holds.
+
+    REJECTED ALTERNATIVE (noted, not committed): mutating a *file's* CRS instead
+    of the manifest's — feasible, but multi-byte and per-format (rewrite the COG
+    GeoTIFF CRS tags AND the Zarr CF ``crs`` variable AND the geoparquet CRS) and
+    touches several files; the manifest-only rewrite is the surgical single-file
+    change that keeps "differs in exactly one way" trivially true.
+    """
+    manifest_path = target_root / "manifest.json"
+    obj = json.loads(manifest_path.read_text(encoding="utf-8"))
+    obj["crs"] = CRS_MISMATCH_VALUE
+    ordered = {field: obj[field] for field in MANIFEST_FIELDS}
+    manifest_path.write_text(json.dumps(ordered, indent=2) + "\n", encoding="utf-8")
+
+
+def _mutate_misaligned_shared_label(target_root: Path) -> None:
+    """Re-emit ONE basin's COG at a misaligned geometry, same label (G2).
+
+    For :data:`_MUTATED_BASIN`, re-emit ONLY its ``gridded_static`` COG under the
+    SAME shared :data:`~hdx_fixtures.grids.GRID_LABEL` (``era5``) but at a
+    half-cell-shifted geometry (:func:`~hdx_fixtures.grids.misaligned_geometry`),
+    leaving its ``gridded_dynamic`` Zarr at the baseline geometry. The shared
+    ``era5`` label now appears in both subtrees but their extent/bounds no longer
+    coincide, so ``check_g2`` ran:fails for that basin. The perturbation is chosen
+    so:
+
+    * **H2 does NOT co-trip** — the label is still ``era5``, so every basin's
+      grid-label set stays ``{era5}``;
+    * **G3 does NOT co-trip** — the COG keeps its CRS + affine georeferencing
+      tags (only the west origin shifted), so the grid is still georeferenced.
+
+    Re-emitting via the grids seam (rather than hand-patching the GeoTIFF) keeps
+    the in-file artifact naming/serialization consistent with the baseline writer.
+    """
+    reemit_basin_cog_with_geometry(
+        target_root, _MUTATED_BASIN_SPEC, misaligned_geometry()
+    )
+
+
+def _mutate_divergent_grid_label_set(target_root: Path) -> None:
+    """Re-emit ONE basin's COG+Zarr under a divergent grid label (H2).
+
+    For :data:`_MUTATED_BASIN`, re-emit BOTH its ``gridded_static`` COG
+    (``era5.tif`` → ``era5b.tif``) AND its ``gridded_dynamic`` Zarr
+    (``era5.zarr`` → ``era5b.zarr``) under the divergent
+    :data:`~hdx_fixtures.grids.DIVERGENT_GRID_LABEL` (``era5b``), at the baseline
+    geometry/time axis. That basin's grid-label set becomes ``{era5b}`` while
+    every other basin's is ``{era5}``, so ``check_h2`` (cross-basin label-set
+    equality) ran:fails. Renaming BOTH keeps the shared-label COG+Zarr coinciding
+    under ``era5b`` (G2 stays pass for that basin), so only H2 fires.
+
+    Re-emitting via the grids seam (rather than a raw dir rename) keeps the
+    in-file artifact naming/serialization consistent with the baseline writer.
+    """
+    reemit_basin_grids_under_label(
+        target_root, _MUTATED_BASIN_SPEC, DIVERGENT_GRID_LABEL
+    )
+
+
 def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Path:
     """Derive one invalid tree from the baseline via exactly one mutation.
 
@@ -474,8 +598,14 @@ def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Pa
         _mutate_ragged_field_schema(target_root)
     elif invalid is Invalid.NON_MONOTONIC_TIME:
         _mutate_non_monotonic_time(target_root)
-    else:
+    elif invalid is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
         _mutate_missing_gridded_dynamic_subtree(target_root)
+    elif invalid is Invalid.CRS_MISMATCH:
+        _mutate_crs_mismatch(target_root)
+    elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
+        _mutate_misaligned_shared_label(target_root)
+    else:
+        _mutate_divergent_grid_label_set(target_root)
 
     log.info(
         "derived invalid=%s pins=%s root=%s",

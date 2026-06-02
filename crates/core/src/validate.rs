@@ -2530,6 +2530,42 @@ mod tests {
         assert_pins_exactly("invalid/missing-gridded-dynamic-subtree", CheckId::L2);
     }
 
+    // --- MS8-S2: georef / grid-label one-violation invalids (M5/G2/H2) ----------------
+    //
+    // Each is one surgical mutation off the valid baseline (the generator's
+    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at generation
+    // time) and produces a CLEAN `conformant:false` report with exactly ONE §14 check
+    // `ran:fail`. The purity legs were confirmed empirically before committing (see each
+    // test's note); `assert_pins_exactly` re-checks purity + snapshots against the golden.
+
+    #[test]
+    fn crs_mismatch_pins_exactly_m5() {
+        // The manifest crs is rewritten to a different valid EPSG (EPSG:3857) while every
+        // file keeps EPSG:4326 (spec §7/§11 / M5). check_m5 compares each GridInfo.crs()
+        // against the manifest crs and ran:fails on the first grid. M4 stays pass (crs is
+        // a non-empty string), M6 stays skip, Geo1/G3 stay pass — confirmed M5-only.
+        assert_pins_exactly("invalid/crs-mismatch", CheckId::M5);
+    }
+
+    #[test]
+    fn misaligned_shared_label_pins_exactly_g2() {
+        // One basin's gridded_static COG is re-emitted under the SAME era5 label at a
+        // half-cell-shifted geometry, its Zarr left at the baseline (spec §8 / G2). The
+        // shared era5 label now appears in both subtrees but their extents diverge, so
+        // check_g2 ran:fails. H2 stays pass (label set still {era5}) and G3 stays pass
+        // (georef intact) — confirmed G2-only.
+        assert_pins_exactly("invalid/misaligned-shared-label", CheckId::G2);
+    }
+
+    #[test]
+    fn divergent_grid_label_set_pins_exactly_h2() {
+        // One basin's COG+Zarr are re-emitted under a divergent era5b label (era5.* →
+        // era5b.*) so that basin's grid-label set is {era5b} while every other basin's is
+        // {era5} (spec §8 / H2) ⇒ check_h2 ran:fails. Renaming BOTH subtrees keeps the
+        // shared era5b label coinciding, so G2 stays pass — confirmed H2-only.
+        assert_pins_exactly("invalid/divergent-grid-label-set", CheckId::H2);
+    }
+
     /// The DTO is the single wire-shape surface (the inert types stay serde-free).
     /// A produced report serializes to exactly `{checks, conformant}` at the top level
     /// and each check entry is exactly `{id, status, result, depth, detail}` — no

@@ -26,6 +26,7 @@ import zarr
 from hdx_fixtures import get_logger
 from hdx_fixtures.grids import (
     COMPANION_MASK_FIELD,
+    DIVERGENT_GRID_LABEL,
     EPSG_CODE,
     GRID_LABEL,
     GRIDDED_DYNAMIC_FIELD,
@@ -36,6 +37,7 @@ from hdx_fixtures.grids import (
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS, build_manifest
 from hdx_fixtures.mutate import (
+    CRS_MISMATCH_VALUE,
     EMPTY_CADENCE,
     EXTRA_MANIFEST_FIELD,
     EXTRA_MANIFEST_FIELD_VALUE,
@@ -841,6 +843,109 @@ def _assert_one_parquet_mutation(
         )
 
 
+def _assert_misaligned_shared_label(
+    baseline_root: Path, invalid_root: Path, removed: set[str]
+) -> None:
+    """Confirm the misaligned-shared-label invalid is one COG re-emit (G2).
+
+    The mutated basin's ``gridded_static/era5.tif`` (and only it) differs from the
+    baseline; nothing is added or removed (the COG keeps the SAME ``era5`` label,
+    so its filename is unchanged — only its bytes/geometry differ). Re-reading the
+    mutated COG confirms its label is still ``era5`` and its grid geometry has
+    diverged from the baseline COG (the west origin shifted to
+    :data:`MISALIGNED_GRID_WEST`), so the shared label is no longer cell-for-cell
+    aligned with that basin's Zarr (check_g2 ran:fails) while H2 (label set still
+    ``{era5}``) and G3 (georef intact) stay pass.
+    """
+    cog_rel = f"basin={_MUTATED_BASIN}/gridded_static/{GRID_LABEL}.tif"
+    _require(
+        not removed,
+        f"{invalid_root}: misaligned-shared-label removed files {sorted(removed)}; "
+        f"re-emitting one COG under the same label must add/remove nothing (LOW-2)",
+    )
+    changed = _changed_files(baseline_root, invalid_root)
+    _require(
+        changed == {cog_rel},
+        f"{invalid_root}: differs in {sorted(changed)}, expected only "
+        f"{{{cog_rel!r}}} (LOW-2 one mutation, pins G2)",
+    )
+
+    # The mutated COG still carries the shared `era5` label (so H2 stays pass) but
+    # its geometry diverged from the baseline COG (so G2 fires).
+    base_grid = _cog_grid(baseline_root / cog_rel)
+    inv_grid = _cog_grid(invalid_root / cog_rel)
+    _require(
+        inv_grid["crs"] == EPSG_CODE,
+        f"{invalid_root}: {cog_rel} CRS EPSG:{inv_grid['crs']} != EPSG:{EPSG_CODE} "
+        f"(G3 georef must stay intact — only the geometry may diverge)",
+    )
+    _require(
+        inv_grid["bounds"] != base_grid["bounds"]
+        or inv_grid["transform"] != base_grid["transform"],
+        f"{invalid_root}: {cog_rel} geometry did not diverge from the baseline COG "
+        f"(G2 needs a misaligned shared label): {inv_grid} == {base_grid}",
+    )
+
+
+def _assert_divergent_grid_label_set(
+    baseline_root: Path, invalid_root: Path, added: set[str], removed: set[str]
+) -> None:
+    """Confirm the divergent-grid-label-set invalid is one basin re-label (H2).
+
+    The mutated basin's ``gridded_static`` COG and ``gridded_dynamic`` Zarr are
+    re-emitted under :data:`DIVERGENT_GRID_LABEL` (``era5b``): every removed path
+    is the baseline ``era5.*`` artifact of that basin and every added path is the
+    ``era5b.*`` artifact of that basin (a Zarr store is many files), all under
+    exactly that one basin's gridded subtrees, and **no** shared file differs.
+    That basin's grid-label set becomes ``{era5b}`` while every other basin's is
+    ``{era5}`` (check_h2 ran:fails); both subtrees moved together so the shared
+    ``era5b`` label still coincides (G2 stays pass).
+    """
+    basin_prefix = f"basin={_MUTATED_BASIN}/"
+    cog_rel = f"{basin_prefix}gridded_static/{GRID_LABEL}.tif"
+    cog_rel_new = f"{basin_prefix}gridded_static/{DIVERGENT_GRID_LABEL}.tif"
+    zarr_prefix = f"{basin_prefix}gridded_dynamic/{GRID_LABEL}.zarr/"
+    zarr_prefix_new = f"{basin_prefix}gridded_dynamic/{DIVERGENT_GRID_LABEL}.zarr/"
+
+    # Removed = the baseline COG + every baseline Zarr file (under era5.*).
+    for rel in removed:
+        _require(
+            rel == cog_rel or rel.startswith(zarr_prefix),
+            f"{invalid_root}: removed {rel!r} is outside the mutated basin's "
+            f"{GRID_LABEL}.* artifacts (LOW-2 one mutation, pins H2)",
+        )
+    _require(
+        cog_rel in removed,
+        f"{invalid_root}: baseline COG {cog_rel!r} was not removed (relabel must "
+        f"move it to {DIVERGENT_GRID_LABEL}.tif)",
+    )
+    # Added = the relabelled COG + every relabelled Zarr file (under era5b.*).
+    for rel in added:
+        _require(
+            rel == cog_rel_new or rel.startswith(zarr_prefix_new),
+            f"{invalid_root}: added {rel!r} is outside the mutated basin's "
+            f"{DIVERGENT_GRID_LABEL}.* artifacts (LOW-2 one mutation, pins H2)",
+        )
+    _require(
+        cog_rel_new in added,
+        f"{invalid_root}: relabelled COG {cog_rel_new!r} was not added (relabel "
+        f"must emit {DIVERGENT_GRID_LABEL}.tif)",
+    )
+    _require(
+        any(rel.startswith(zarr_prefix_new) for rel in added),
+        f"{invalid_root}: relabelled Zarr {zarr_prefix_new!r} was not added (relabel "
+        f"must emit {DIVERGENT_GRID_LABEL}.zarr)",
+    )
+
+    # No shared file differs — only the relabel (add/remove) touched the tree.
+    changed = _changed_files(baseline_root, invalid_root)
+    _require(
+        not changed,
+        f"{invalid_root}: shared files differ {sorted(changed)}; relabelling one "
+        f"basin's grids must leave every other file byte-identical (LOW-2)",
+    )
+
+
 def assert_differs_in_exactly_one_way(
     baseline_root: Path, invalid_root: Path, invalid: Invalid
 ) -> None:
@@ -892,6 +997,24 @@ def assert_differs_in_exactly_one_way(
       **exactly** the mutated basin's ``gridded_dynamic/`` subtree (every removed
       path lies under it), adds nothing, and **no** shared file's bytes differ
       (pins **L2**).
+
+    The **MS8-S2** georef / grid-label negatives:
+
+    * :attr:`Invalid.CRS_MISMATCH` — the trees have the **same file set**; exactly
+      **one** file (``manifest.json``) differs, its key set is exactly the six
+      floor fields, and only the ``crs`` value differs (now
+      :data:`CRS_MISMATCH_VALUE`, ``EPSG:3857``); the files keep ``EPSG:4326``
+      (pins **M5**).
+    * :attr:`Invalid.MISALIGNED_SHARED_LABEL` — exactly **one** file (the mutated
+      basin's ``gridded_static/era5.tif``) differs, adding/removing nothing; the
+      label is still ``era5`` but the COG geometry diverges from the baseline COG
+      (the west origin shifted to :data:`MISALIGNED_GRID_WEST`), so the shared
+      label is no longer aligned with that basin's Zarr (pins **G2**).
+    * :attr:`Invalid.DIVERGENT_GRID_LABEL_SET` — the mutated basin's
+      ``gridded_static`` COG and ``gridded_dynamic`` Zarr are renamed
+      ``era5.*`` → ``era5b.*`` (every removed path is that basin's ``era5.*``
+      artifact, every added path its ``era5b.*`` artifact), and **no** shared file
+      differs; that basin's label set becomes ``{era5b}`` (pins **H2**).
     """
     log = get_logger("assert.invalid")
     base_files = _relative_files(baseline_root)
@@ -899,19 +1022,25 @@ def assert_differs_in_exactly_one_way(
 
     added = inv_files - base_files
     removed = base_files - inv_files
-    _require(
-        not added,
-        f"{invalid_root}: invalid adds files not in baseline {sorted(added)} "
-        f"(LOW-2: one surgical mutation only)",
-    )
+    # Every invalid except divergent-grid-label-set adds NO file (its one mutation
+    # is a rewrite or a deletion). divergent-grid-label-set RElabels one basin's
+    # COG+Zarr (era5.* → era5b.*), so it legitimately both adds and removes files
+    # under exactly that basin — its branch checks the add/remove shape itself.
+    if invalid is not Invalid.DIVERGENT_GRID_LABEL_SET:
+        _require(
+            not added,
+            f"{invalid_root}: invalid adds files not in baseline {sorted(added)} "
+            f"(LOW-2: one surgical mutation only)",
+        )
 
-    # The three manifest-mutation invalids share the same shape invariant: the file
+    # The four manifest-mutation invalids share the same shape invariant: the file
     # set is unchanged and exactly `manifest.json` differs. Their per-key checks
-    # then diverge below (M2 value / M3 extra key / M4 empty cadence).
+    # then diverge below (M2 value / M3 extra key / M4 empty cadence / M5 crs).
     manifest_only = {
         Invalid.WRONG_FORMAT_VERSION,
         Invalid.EXTRA_MANIFEST_FIELD,
         Invalid.EMPTY_CADENCE,
+        Invalid.CRS_MISMATCH,
     }
 
     if invalid in manifest_only:
@@ -982,7 +1111,7 @@ def assert_differs_in_exactly_one_way(
                 f"the only change must be the added key {EXTRA_MANIFEST_FIELD!r} "
                 f"(LOW-2 one mutation)",
             )
-        else:  # Invalid.EMPTY_CADENCE
+        elif invalid is Invalid.EMPTY_CADENCE:
             # M4: the key set is exactly the six floor fields; only `cadence` differs.
             _require(
                 set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
@@ -1003,6 +1132,34 @@ def assert_differs_in_exactly_one_way(
                 differing_keys == {"cadence"},
                 f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
                 f"expected only {{'cadence'}} (LOW-2 one mutation)",
+            )
+        else:  # Invalid.CRS_MISMATCH
+            # M5: the key set is exactly the six floor fields; only `crs` differs,
+            # rewritten to a DIFFERENT valid EPSG while the files keep EPSG:4326.
+            _require(
+                set(inv_manifest.keys()) == set(MANIFEST_FIELDS),
+                f"{invalid_root}: manifest keys {sorted(inv_manifest.keys())} != "
+                f"six floor fields (the mutation must not add/remove fields)",
+            )
+            _require(
+                inv_manifest["crs"] == CRS_MISMATCH_VALUE,
+                f"{invalid_root}: crs {inv_manifest['crs']!r} != "
+                f"{CRS_MISMATCH_VALUE!r} (M5 crs-mismatch)",
+            )
+            _require(
+                inv_manifest["crs"] != base_manifest["crs"],
+                f"{invalid_root}: crs {inv_manifest['crs']!r} equals the baseline "
+                f"crs {base_manifest['crs']!r} (M5 needs a mismatch)",
+            )
+            differing_keys = {
+                key
+                for key in MANIFEST_FIELDS
+                if base_manifest.get(key) != inv_manifest.get(key)
+            }
+            _require(
+                differing_keys == {"crs"},
+                f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
+                f"expected only {{'crs'}} (LOW-2 one mutation)",
             )
     elif invalid is Invalid.MISSING_ROOT_ROLLUP:
         _require(
@@ -1035,6 +1192,10 @@ def assert_differs_in_exactly_one_way(
             f"basin's gridded_dynamic subtree must leave the rest byte-identical "
             f"(LOW-2)",
         )
+    elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
+        _assert_misaligned_shared_label(baseline_root, invalid_root, removed)
+    elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
+        _assert_divergent_grid_label_set(baseline_root, invalid_root, added, removed)
     else:
         # The Bucket-B parquet mutations (I1/I2/I3/H1/T1) each rewrite exactly one
         # parquet file: no file added or removed, exactly one shared file differs.

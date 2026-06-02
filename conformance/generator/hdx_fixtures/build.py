@@ -13,10 +13,13 @@ after each step and aborting on any failure:
   multiband COG and a ``gridded_dynamic/<label>.zarr`` Zarr v3 store sharing one
   aligned grid label, the Zarr time axis identical to the scalar ``time`` —
   confirmed by :func:`hdx_fixtures.assertions.run_gridded_assertions`.
-* the **derived invalids** (MS2-S4 / MS8-S2) — ``invalid/wrong-format-version/``
-  (pins M2), ``invalid/extra-manifest-field/`` (pins M3),
-  ``invalid/empty-cadence/`` (pins M4), and ``invalid/missing-root-rollup/``
-  (pins L1), each copied from the baseline and changed by exactly one surgical
+* the **derived invalids** (MS2-S4 / MS8) — the manifest/layout negatives
+  ``invalid/wrong-format-version/`` (M2), ``invalid/extra-manifest-field/`` (M3),
+  ``invalid/empty-cadence/`` (M4), ``invalid/missing-root-rollup/`` (L1); the
+  MS8-S3 Bucket-B parquet/layout negatives (I1/I2/H1/T1/L2); and the MS8-S2
+  georef/grid-label negatives ``invalid/crs-mismatch/`` (M5),
+  ``invalid/misaligned-shared-label/`` (G2), ``invalid/divergent-grid-label-set/``
+  (H2) — each copied from the baseline and changed by exactly one surgical
   mutation (LOW-2), confirmed by
   :func:`hdx_fixtures.assertions.run_invalid_assertions`. Iterating the
   :class:`~hdx_fixtures.mutate.Invalid` enum, this loop derives every invalid the
