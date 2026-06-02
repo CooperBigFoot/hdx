@@ -108,11 +108,12 @@ def main(argv: list[str] | None = None) -> int:
     run_gridded_assertions(dataset_root)
     derive_invalids(dataset_root)
 
-    log.info("MS2-S4 baseline + two derived invalids complete + self-assertions passed")
+    log.info("baseline + two derived invalids complete + self-assertions passed")
     # User-facing status line (output, not a diagnostic) — see architecture §2.
     print(
-        f"MS2-S4: valid baseline (four quadrants) emitted at {dataset_root}; "
-        "two invalids derived under conformance/invalid/"
+        f"conformance fixtures regenerated: valid baseline (four quadrants) at "
+        f"{dataset_root}; two invalids derived under conformance/invalid/; "
+        "all self-assertions passed"
     )
     return 0
 

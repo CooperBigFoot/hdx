@@ -1,41 +1,190 @@
 # HDX conformance fixtures
 
-This directory holds the on-disk conformance fixtures for HDX v0.1 — one valid
-dataset plus minimal invalid datasets — and the dev-only Python harness that
-generates them under [`generator/`](generator/).
+This directory holds the on-disk conformance fixtures for HDX v0.1 — **one valid
+dataset plus two minimal invalid datasets** — and the dev-only Python harness
+that generates them under [`generator/`](generator/).
 
 There is **no HDX writer in v0.1** (spec §10; architecture §7 **R2**): `validate`
 and `describe` are read-only. Yet MS3/MS4 readers and MS6 `validate` need real
 on-disk parquet / Zarr / COG / geoparquet bytes to test against. This harness
 fills that gap by *emitting bytes a reader will later read* — it is a test fixture
-tool, not part of the shipped contract.
+tool, **not** part of the shipped contract.
 
-> **Status (MS2-S1):** harness only. The pinned generator project, the
-> `regenerate.sh` entry point (currently a stub that exits 0), and these three
-> load-bearing rules are in place **before any fixture exists**. The valid
-> baseline (MS2-S2/S3) and the two derived invalids (MS2-S4) land in later steps.
+The fixture set is **complete** for MS2: one valid four-quadrant dataset and the
+two pinned invalids (`wrong-format-version`, `missing-root-rollup`). The
+exhaustive one-invalid-per-check family is a later milestone (**MS8**), not this
+one.
 
 ## Regenerate
 
 ```sh
 conformance/generator/regenerate.sh
-# or, to pin the interpreter explicitly:
+# or, to pin the interpreter explicitly (recommended on hosts that ship 3.13/3.14):
 PYTHON=python3.12 conformance/generator/regenerate.sh
+# verbose diagnostics:
+HDX_FIXTURES_LOG_LEVEL=DEBUG conformance/generator/regenerate.sh
 ```
 
-The script idempotently creates a pinned venv (CPython **3.12.x**; see
-[`generator/pyproject.toml`](generator/pyproject.toml)), installs the exact-version
-closure from [`generator/requirements.lock`](generator/requirements.lock),
-smoke-imports every pinned dependency to prove the pins resolve, prints one status
-line, and exits 0. At MS2-S1 it emits no fixtures.
+[`generator/regenerate.sh`](generator/regenerate.sh) is **the single end-to-end
+target**. One run:
+
+1. idempotently creates a pinned venv (CPython **3.12.x**; see
+   [`generator/pyproject.toml`](generator/pyproject.toml)) and installs the
+   exact-version closure from
+   [`generator/requirements.lock`](generator/requirements.lock);
+2. smoke-imports every pinned dependency (proving the pins resolve);
+3. emits the valid baseline `valid/minimal/` — the **scalar** half (S2) then the
+   **gridded** half (S3) — and **derives both invalids** (S4) from it;
+4. runs **every** load-bearing self-assertion and **exits non-zero if any
+   fails** — a broken property aborts the whole regenerate, so a non-conformant
+   tree is never produced (milestones.md MS2 exit criterion).
+
+**Determinism.** A run is **byte-deterministic**: `created_at` is a fixed
+constant, every data series is a deterministic function of basin identity, and
+the Zarr root `zarr.json`'s consolidated-metadata members are sorted to a stable
+order (`zarr.consolidate_metadata` otherwise orders them non-deterministically;
+see `grids._stabilize_consolidated_metadata`). Re-running yields a **bit-for-bit
+identical** tree, so a regenerate produces no spurious diff.
+
+---
+
+## Layout
+
+Three trees are committed. Each is one mutation (or zero, for the baseline) off a
+known-good four-quadrant dataset.
+
+```
+conformance/
+  README.md                              # this file
+  generator/                             # dev-only Python harness (NOT shipped in hdx-core)
+    pyproject.toml                        # pinned deps + interpreter (CPython 3.12.x)
+    requirements.lock                     # exact-version lock installed by regenerate.sh
+    regenerate.sh                         # the single deterministic end-to-end target
+    hdx_fixtures/                         # generator package (manifest/scalar/outlines/grids/mutate/assertions)
+  valid/minimal/                          # the one valid four-quadrant dataset
+  invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline
+  invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline
+```
+
+### `valid/minimal/` — the one valid four-quadrant dataset
+
+A basin-first hive (spec §4) over **three basins** (`basin=0001/0002/0003`),
+spanning **all four field quadrants** (spec §2). Field names are opaque producer
+strings — HDX attaches no role, units magic, or belongs-to link to any of them.
+
+```
+valid/minimal/
+  manifest.json                           # EXACTLY the six floor fields (§11); format_version "0.1"
+  scalar_static.parquet                   # ROOT rollup: 1 row/basin; cols (basin_id, drainage_area)   [scalar·static]
+  outlines.geoparquet                     # ROOT rollup: rows (basin_id, delineation, geometry); plural labels (Geo1)
+  basin=0001/
+    scalar_dynamic.parquet                # rows=time; cols (basin_id, time, streamflow)               [scalar·dynamic]
+    gridded_static/
+      era5.tif                            # multiband COG; band description = "elevation"             [gridded·static]
+    gridded_dynamic/
+      era5.zarr/                          # Zarr v3; CF vars "era5_precipitation" (+ companion mask)   [gridded·dynamic]
+  basin=0002/ ...                         # same field schema (H1) + same grid-label set (H2)
+  basin=0003/ ...
+```
+
+Annotated, engineered properties:
+
+- **Four quadrants.** `scalar_static` (`[]`), `scalar_dynamic` (`[T]`),
+  `gridded_static` COG (`[Y,X]`), `gridded_dynamic` Zarr (`[T,Y,X]`).
+- **Shared grid label ⇒ alignment (G2).** The COG and the Zarr in each basin both
+  use the single grid label **`era5`** (`era5.tif` / `era5.zarr`) and are written
+  from the **same affine / extent / resolution**, so they are **cell-for-cell
+  aligned** — the G2 positive-path precondition.
+- **The `time` axis.** Each `scalar_dynamic.parquet` carries a `time` column that
+  is a **full timestamp**, **non-nullable**, **sorted ascending**, written **with
+  row-group statistics** (T1, §8). Within each basin the Zarr `time` is the
+  **identical** axis (T2, §6.2). Across basins the time extents are **ragged**
+  (different periods of record, §6.1).
+- **Field names — ordinary, no magic.** The gridded·dynamic field uses the
+  `{source}_{variable}` pattern (**`era5_precipitation`**) and ships alongside a
+  companion-mask field using the `{field}_was_filled` pattern
+  (**`era5_precipitation_was_filled`**). Both are **ordinary** Zarr variables —
+  the generator attaches no role, belongs-to link, or suffix/prefix magic. They
+  exist only to prove later milestones give them **no** special handling (§2).
+  The §6.2 NaN-fill convention is exercised: the first timestep of
+  `era5_precipitation` is NaN and the mask marks exactly that timestep.
+- **Delineation-neutral grids (§9).** Both gridded artifacts are dense
+  rectangular over the basin bbox — never clipped or NaN'd to an outline.
+  `outlines.geoparquet` carries **plural** delineations (`merit`, plus a `grit`
+  for `basin=0001`) as neutral labels, in a single non-partitioned root file.
+
+### `invalid/wrong-format-version/` — pins **M2**
+
+Byte-identical to the baseline **except** `manifest.json`'s `format_version` is
+`"0.2"` instead of `"0.1"`. M2 is the §0 **hard version cut**: any value other
+than `"0.1"` is rejected outright. Exactly **one** file (`manifest.json`) differs,
+and it differs **only** in that one value — the other five floor fields, and every
+other file in the tree, are byte-identical to the baseline.
+
+### `invalid/missing-root-rollup/` — pins **L1**
+
+Byte-identical to the baseline **except** the root **`outlines.geoparquet`** is
+**deleted**. L1 requires *both* root rollups (`scalar_static.parquet` **and**
+`outlines.geoparquet`) to exist; this removes exactly one of them. Exactly **one**
+file is absent; nothing is added, and no remaining file's bytes differ.
+
+---
+
+## Check-id → invalid-fixture table
+
+Each invalid is **derived programmatically** from the valid baseline via **exactly
+one surgical mutation** (LOW-2) and pins **exactly one** spec §14 check.
+
+| Spec check (§14) | Invalid fixture | The one mutation |
+|---|---|---|
+| **M2** — `format_version == "0.1"`; any other value is rejected outright (hard cut). | `invalid/wrong-format-version/` | `manifest.json` `format_version`: `"0.1"` → `"0.2"` (all other fields unchanged). |
+| **L1** — `scalar_static.parquet` and `outlines.geoparquet` exist at the root. | `invalid/missing-root-rollup/` | Delete the root **`outlines.geoparquet`** (the other rollup, `scalar_static.parquet`, is kept). |
+
+> **The exhaustive one-invalid-per-check family is MS8, not MS2.** MS2 ships only
+> these two pinned invalids. Adding more invalids is an MS8 task — and is done the
+> same way: add a mutation to the generator and regenerate (never hand-edit a
+> tree).
+
+---
+
+## Seeding, not enforcement
+
+MS2 ships **no Rust and enforces nothing.** The valid fixture engineers the
+on-disk **preconditions** for the later-enforced §14 checks; **enforcement is
+MS6.** The table below maps each seeded check to the property the valid fixture
+provides and where it is engineered. This is a **seeding** claim — read "seeds the
+precondition for", never "enforces".
+
+| Check (§14) | Seeded on-disk precondition (the valid fixture provides…) | Where engineered |
+|---|---|---|
+| **L1** | both root rollups (`scalar_static.parquet`, `outlines.geoparquet`) present | scalar + outlines (S2) |
+| **L2** | every basin dir is `basin=<id>` with `scalar_dynamic.parquet` + `gridded_static/`/`gridded_dynamic/` | scalar (S2) + grids (S3) |
+| **L3** | no stray/ragged files; a field's gap is NaN-filled, never a missing file (the Zarr NaN-fill) | grids (S3) |
+| **I1** | `basin_id` is a real in-file column in `scalar_static`, every `scalar_dynamic`, and `outlines` | scalar + outlines (S2) |
+| **I2** | in-file `basin_id` agrees with the `basin=<id>` folder for every basin | scalar (S2) |
+| **I3** | `basin_id` is unique across the dataset (one rollup row per basin) | scalar (S2) |
+| **H1** | every basin carries the identical field schema (same names, dtypes, quadrants) | scalar (S2) + grids (S3) |
+| **H2** | the grid-label set (`{era5}`) is identical across basins | grids (S3) |
+| **T1** | the scalar `time` column is named `time`, full timestamp, non-nullable, sorted ascending | scalar (S2) |
+| **T2** | within each basin the `scalar_dynamic` and Zarr `gridded_dynamic` share the identical time axis; gaps NaN-filled | scalar (S2) + grids (S3) |
+| **G1** | one artifact = one grid; fields self-name (COG band description / CF variable = field name); no positional channel axis | grids (S3) |
+| **G2** | a shared grid label across the static/dynamic subtrees that **does** exhibit cell-for-cell alignment | grids (S3) |
+| **G3** | Zarr CF georef (explicit `lat`/`lon` + `grid_mapping`); COG standard georeferencing tags | grids (S3) |
+| **Geo1** | `outlines.geoparquet` rows `(basin_id, delineation, geometry)`; label column `delineation`; not partitioned | outlines (S2) |
+| **M5** | the manifest `crs` (EPSG:4326) matches the CRS carried in every georeferenced file | manifest (S2) + grids (S3) |
+| **M6** | the manifest `cadence` ("daily") is consistent with the realized daily `time` axes | manifest + scalar (S2) |
+
+> The valid fixture also carries the two **MED-5** at-risk properties — parquet
+> `time` **row-group statistics** (§8) and Zarr **consolidated metadata** (§8) —
+> which §8 mandates and which MS3/MS4 confirm from the Rust side (see Rule 3).
 
 ---
 
 ## The three load-bearing rules
 
-These rules are recorded here **before any fixture exists** so a future agent
-treats them as contract, not afterthought. They are also restated in the
-generator source ([`generator/hdx_fixtures/__init__.py`](generator/hdx_fixtures/__init__.py)).
+These rules are contract, not afterthought. They are also restated in the
+generator source
+([`generator/hdx_fixtures/__init__.py`](generator/hdx_fixtures/__init__.py)).
 
 ### Rule 1 — The generator is DEV-ONLY and is NOT an HDX writer
 
@@ -65,14 +214,15 @@ surgical mutation each**. The generator builds the valid baseline once, then
 derives each invalid by applying one targeted mutation (e.g. overwrite
 `manifest.json`'s `format_version`; delete one root rollup).
 
-> A contributor **MUST NOT** hand-edit a fixture tree. To add or change an invalid
-> fixture, add a mutation to the generator and regenerate.
+> **A contributor MUST NOT hand-edit a fixture tree.** To add or change an
+> invalid fixture, add a mutation to the generator and **regenerate**.
 
 This keeps every fixture exactly one mutation off a known-good baseline, so
 "differs in exactly one way" is true by construction and the whole suite is
 maintainable as one generator rather than N hand-built trees. A generation-time
-self-assertion (added in MS2-S4) confirms each invalid differs from the baseline
-in exactly the one intended way.
+self-assertion (`assertions.assert_differs_in_exactly_one_way`) confirms each
+invalid differs from the baseline in exactly the one intended way, aborting the
+regenerate otherwise.
 
 ### Rule 3 — MED-5: Rust-side confirmation hand-off (MS3 / MS4)
 
@@ -80,16 +230,18 @@ The generator's self-assertions are **Python-side**: they assert what the
 *writer* intended, which cannot prove what a *Rust reader* recovers from the same
 bytes. Two engineered properties are most at risk of a writer/reader mismatch:
 
-1. **Parquet `time` row-group statistics** — pyarrow may or may not emit usable
-   min/max statistics for the timestamp logical type under the chosen settings.
-   The generator self-asserts the *written file* carries them; **MS3 MUST confirm
-   from the Rust side** (`arrow`/`parquet`) that the time extent is sourced from
-   those statistics (not a bounded-scan fallback) on the valid fixture.
-2. **Zarr v3 consolidated metadata** — `zarr-python`'s v3 consolidated-metadata
-   layout must be readable by Rust `zarrs`. The generator self-asserts
-   consolidated metadata is present; **MS4 MUST confirm from the Rust side** that
-   it reads the store's metadata via the §8 consolidated path (or explicitly
-   classify it an R3 byte-deep skip, with a stated reason).
+1. **Parquet `time` row-group statistics → confirmed in MS3 (Rust).** pyarrow may
+   or may not emit usable min/max statistics for the timestamp logical type under
+   the chosen settings. The generator self-asserts the *written file* carries them
+   (`assertions.assert_time_column_and_statistics`); **MS3 MUST confirm from the
+   Rust side** (`arrow`/`parquet`) that the time extent is sourced from those
+   statistics (not a bounded-scan fallback) on the valid fixture.
+2. **Zarr v3 consolidated metadata → confirmed in MS4 (Rust).** `zarr-python`'s v3
+   consolidated-metadata layout must be readable by Rust `zarrs`. The generator
+   self-asserts consolidated metadata is present
+   (`assertions.assert_zarr_consolidated_and_sharded`); **MS4 MUST confirm from
+   the Rust side** that it reads the store's metadata via the §8 consolidated path
+   (or explicitly classify it an R3 byte-deep skip, with a stated reason).
 
 > **The hand-off rule:** if MS3/MS4 find the Rust reader cannot recover a property
 > the generator asserted, the fix is to **REGENERATE the fixture** (adjust the
@@ -100,25 +252,11 @@ bytes. Two engineered properties are most at risk of a writer/reader mismatch:
 
 ## Inert / agnostic discipline
 
-No fixture exists yet, so there is nothing to violate at MS2-S1 — but the rule
-holds for every later step: `manifest.json` is **exactly** the six floor fields
-(spec §11); no content hash, no data-version, no field catalog, no
-transform/role/semantic/provenance key. Field names are opaque producer strings;
-the `{source}_{variable}` and companion-mask `{field}_was_filled` patterns appear
-(in later steps) **only to prove later milestones give them no special handling**.
-`format_version` is a **hard cut** (`"0.1"` here).
-
-## Layout (target, populated by later steps)
-
-```
-conformance/
-  README.md                          # this file
-  generator/                         # dev-only Python harness (NOT shipped in hdx-core)
-    pyproject.toml                    # pinned deps + interpreter (CPython 3.12.x)
-    requirements.lock                 # exact-version lock installed by regenerate.sh
-    regenerate.sh                     # entry point (MS2-S1: stub, exits 0)
-    hdx_fixtures/                     # package: logging-configured generator modules
-  valid/minimal/                      # one valid four-quadrant dataset   (MS2-S2/S3)
-  invalid/wrong-format-version/       # pins M2 — one surgical mutation   (MS2-S4)
-  invalid/missing-root-rollup/        # pins L1 — one surgical mutation   (MS2-S4)
-```
+`manifest.json` is **exactly** the six floor fields (spec §11): `format_version`,
+`name`, `created_at`, `producer_version`, `crs`, `cadence`. No content hash, no
+data-version, no field catalog, no basin list, no transform/role/semantic/
+provenance key. Field names are opaque producer strings; the `{source}_{variable}`
+and companion-mask `{field}_was_filled` patterns appear **only to prove later
+milestones give them no special handling**. `delineation` labels are neutral, not
+trusted "hydrofabric" sources. `format_version` is a **hard cut** (`"0.1"` in the
+baseline).

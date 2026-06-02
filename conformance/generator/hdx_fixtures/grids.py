@@ -42,6 +42,7 @@ properties (including the MED-5 consolidated-metadata hand-off).
 """
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -141,6 +142,32 @@ class GridGeometry:
         index the same cells in the same order.
         """
         return self.north - (np.arange(self.height) + 0.5) * self.res
+
+
+def _stabilize_consolidated_metadata(store_path: Path) -> None:
+    """Sort the consolidated-metadata members in the root ``zarr.json`` (determinism).
+
+    ``zarr.consolidate_metadata`` collects the store's array/group members into the
+    root ``zarr.json``'s ``consolidated_metadata.metadata`` map in an
+    **implementation-defined order** (it iterates members via a set/dict whose
+    iteration order varies run-to-run). That non-determinism would make the
+    committed Zarr ``zarr.json`` differ on every regenerate even though the bytes
+    are otherwise identical. This rewrites the root ``zarr.json`` with the member
+    map re-serialized in a stable, sorted-by-name order so a regenerate is
+    **byte-deterministic** (the milestones.md MS2 determinism criterion). It
+    touches only member *ordering* within the consolidated map — no metadata value
+    is changed — so the store stays equivalent for every reader.
+    """
+    root_meta = store_path / "zarr.json"
+    obj = json.loads(root_meta.read_text(encoding="utf-8"))
+    consolidated = obj.get("consolidated_metadata")
+    if isinstance(consolidated, dict):
+        members = consolidated.get("metadata")
+        if isinstance(members, dict):
+            consolidated["metadata"] = {key: members[key] for key in sorted(members)}
+    # Match the rest of the store's serialization: 2-space indent (zarr-python's
+    # default) so only the member ordering — not whitespace — is normalized.
+    root_meta.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
 
 def _basin_geometry() -> GridGeometry:
@@ -387,6 +414,9 @@ def write_gridded_dynamic(
     # never a reader workaround. See conformance/README.md (Rule 3).
     # ---------------------------------------------------------------------------
     zarr.consolidate_metadata(str(path))
+    # Sort the consolidated-metadata members so the committed root zarr.json is
+    # byte-deterministic across regenerates (see _stabilize_consolidated_metadata).
+    _stabilize_consolidated_metadata(path)
 
     log.info(
         "wrote gridded_dynamic Zarr label=%s vars=%s T=%d shape=%dx%d sharded",

@@ -2,11 +2,9 @@
 #
 # regenerate.sh — HDX conformance fixture generator entry point (dev-only).
 #
-# MS2-S4: idempotently creates the pinned venv, installs the exact-version
-# dependency closure, smoke-imports every pinned dep (proving the pins resolve),
-# then emits the FOUR-QUADRANT valid baseline into conformance/valid/minimal/,
-# DERIVES the two minimal invalids from it, and runs the load-bearing
-# self-assertions, ABORTING on any failure (non-zero exit):
+# THE single end-to-end, BYTE-DETERMINISTIC regenerate target (MS2-S5). One run
+# rebuilds ALL THREE fixture trees and runs EVERY load-bearing self-assertion,
+# ABORTING with a non-zero exit on any failure (milestones.md MS2 exit criterion):
 #   * SCALAR half (S2): manifest.json, scalar_static.parquet, per-basin
 #     scalar_dynamic.parquet, outlines.geoparquet  -> run_scalar_assertions().
 #   * GRIDDED half (S3): per basin gridded_static/<label>.tif (multiband COG) +
@@ -16,6 +14,15 @@
 #     conformance/invalid/missing-root-rollup/ (pins L1), each copied from the
 #     baseline and changed by EXACTLY ONE surgical mutation (LOW-2), confirmed by
 #     the "differs in exactly one way" self-assertion  -> run_invalid_assertions().
+#
+# It idempotently creates the pinned venv, installs the exact-version dependency
+# closure, and smoke-imports every pinned dep (proving the pins resolve) before
+# emitting anything.
+#
+# DETERMINISM. A run is byte-reproducible: created_at is a fixed constant, every
+# data series is a deterministic function of basin identity, and the Zarr root
+# zarr.json's consolidated-metadata members are sorted to a stable order (see
+# grids._stabilize_consolidated_metadata). Re-running yields an identical tree.
 #
 # This generator is DEV-ONLY and is NOT an HDX writer: it lives only under
 # conformance/, is never shipped in or imported by hdx-core, and only emits bytes
@@ -103,6 +110,7 @@ cd "${SCRIPT_DIR}"
 # conformance/valid/minimal/, then DERIVES both invalids under
 # conformance/invalid/ via one surgical mutation each, running
 # run_scalar_assertions(), run_gridded_assertions() and run_invalid_assertions();
-# any AssertionFailed aborts with a non-zero exit.
+# any AssertionFailed aborts with a non-zero exit. `exec` makes that exit status
+# THIS script's exit status, so a broken property aborts the whole regenerate.
 echo "regenerate.sh: emitting baseline + deriving invalids -> ${VALID_MINIMAL}" >&2
 exec "${VENV_PY}" -m hdx_fixtures.build --dataset-root "${VALID_MINIMAL}"
