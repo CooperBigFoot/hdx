@@ -3,3 +3,6 @@
 *.swo
 .DS_Store
 Thumbs.db
+
+# Session orchestration tooling (saved dynamic workflow scripts), not project source
+.claude/workflows/
