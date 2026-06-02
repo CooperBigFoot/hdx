@@ -11,11 +11,30 @@
 //! Output vs. diagnostics: the JSON on **stdout** is *output*. All diagnostics
 //! go through `tracing` to **stderr**; `println!` is used only to emit the JSON
 //! output value, never for diagnostics.
+//!
+//! ## The exit-code contract (spec §0/§10/§14, architecture §2)
+//!
+//! The process exit code is derived **solely** from the verb's `Result` — the
+//! bin adds no contract logic, only result→code routing:
+//!
+//! | Code | Meaning |
+//! |---|---|
+//! | `0` | success — `describe` succeeded, **or** `validate` returned `conformant: true` |
+//! | `1` | non-conformant — `validate` returned a report with `conformant: false` |
+//! | `2` | usage / IO error — bad args, unreadable / nonexistent path, **malformed** manifest, or the §0 hard cut (unknown `format_version`) |
+//!
+//! The load-bearing distinction (spec §0 vs §14): a `conformant: false` **report**
+//! (a violated `MUST` that ran) is exit **1**, *distinct* from a structural / entry
+//! **error** (exit **2**). The §0 hard cut surfaces from the verb as
+//! `Err(_::Manifest(CoreError::UnknownFormatVersion { .. }))` and is **never**
+//! special-cased — it falls into the exit-2 `Err` arm, never softened into a report.
 
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tracing::error;
 
 use hdx_core::describe::describe_json;
 use hdx_core::validate::validate;
@@ -45,7 +64,15 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+/// The exit code for a structural / entry error (spec §0/§10): bad args,
+/// unreadable / nonexistent path, malformed manifest, or the §0 hard cut.
+const EXIT_ERROR: u8 = 2;
+
+/// The exit code for a non-conformant `validate` verdict (spec §14): a report
+/// with `conformant: false` (a violated `MUST` that ran).
+const EXIT_NON_CONFORMANT: u8 = 1;
+
+fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
@@ -54,23 +81,66 @@ fn main() -> Result<()> {
         )
         .init();
 
+    // A bad / missing subcommand or argument exits here with `clap`'s default
+    // usage-error code (2), satisfying the exit-2 usage-error leg of the contract.
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Describe { path } => {
-            let json = describe_json(&path)
-                .with_context(|| format!("describe failed for {}", path.display()))?;
+        Command::Describe { path } => describe_exit(&path),
+        Command::Validate { path } => validate_exit(&path),
+    }
+}
+
+/// Runs `describe` and maps its `Result` to an exit code (no contract logic — only
+/// result→code routing, spec §0/§10).
+///
+/// `Ok(json)` → print the JSON to **stdout**, exit **0**. `Err(_)` (unreadable /
+/// nonexistent path, malformed manifest, the §0 hard cut, or a discovery fault) →
+/// log to **stderr** via `tracing`, exit **2**. The hard cut
+/// (`DescribeError::Manifest(UnknownFormatVersion)`) is **not** special-cased: it is
+/// one of the `Err` variants and falls into the exit-2 arm.
+fn describe_exit(path: &Path) -> ExitCode {
+    match describe_json(path) {
+        Ok(json) => {
             println!("{json}");
+            ExitCode::SUCCESS
         }
-        Command::Validate { path } => {
-            let report = validate(&path)
-                .with_context(|| format!("validate failed for {}", path.display()))?;
-            let json = report
-                .to_json_string()
-                .with_context(|| format!("serializing validation report for {}", path.display()))?;
-            println!("{json}");
+        Err(err) => {
+            error!(path = %path.display(), error = %err, "describe failed");
+            ExitCode::from(EXIT_ERROR)
         }
     }
+}
 
-    Ok(())
+/// Runs `validate` and maps its `Result` to an exit code (no contract logic — only
+/// result→code routing, spec §0/§10/§14).
+///
+/// `Ok(report)` → print `report.to_json_string()` to **stdout**, then exit **0** if
+/// `report.conformant()` else **1** (a `conformant: false` report — a violated
+/// `MUST` that ran — is the load-bearing exit-1 ≠ exit-2 case). `Err(_)`
+/// (unreadable / nonexistent path, malformed manifest, the §0 hard cut, or a
+/// discovery fault) → log to **stderr** via `tracing`, exit **2**. The hard cut
+/// (`ValidateError::Manifest(UnknownFormatVersion)`) is **not** special-cased — the
+/// CLI never softens it into a `conformant: false` report.
+fn validate_exit(path: &Path) -> ExitCode {
+    match validate(path) {
+        Ok(report) => match report.to_json_string() {
+            Ok(json) => {
+                println!("{json}");
+                if report.conformant() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(EXIT_NON_CONFORMANT)
+                }
+            }
+            Err(err) => {
+                error!(path = %path.display(), error = %err, "serializing validation report failed");
+                ExitCode::from(EXIT_ERROR)
+            }
+        },
+        Err(err) => {
+            error!(path = %path.display(), error = %err, "validate failed");
+            ExitCode::from(EXIT_ERROR)
+        }
+    }
 }
