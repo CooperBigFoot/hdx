@@ -1,0 +1,425 @@
+"""Write the gridded half of the valid baseline (COG + Zarr, spec §7/§8).
+
+This emits the two *gridded* artifacts of the basin-first hive (spec §4), per
+basin, into the **same** ``basin=<id>/`` partition the scalar half (S2) wrote:
+
+* ``gridded_static/<label>.tif`` — a multiband COG (quadrant ``[Y,X]``). Each
+  **band description = field name** (no positional channel axis, G1), with
+  standard GeoTIFF georeferencing tags (CRS + affine, G3), internal tiling +
+  overviews (§8). The single ``gridded·static`` field is ``elevation`` (f32).
+* ``gridded_dynamic/<label>.zarr`` — a Zarr **v3** store (quadrant ``[T,Y,X]``).
+  Each **named CF variable = field name** (no positional channel axis, G1), with
+  explicit ``lat``/``lon`` coordinate arrays + a ``grid_mapping``/CRS variable
+  (CF georef, G3), a ``time`` coordinate as CF integer-since-epoch, time-major
+  chunking, **v3 sharding**, **consolidated metadata**, and blosc-zstd
+  compression (§8). The ``gridded·dynamic`` field is ``era5_precipitation``
+  (the ``{source}_{variable}`` pattern) plus an ordinary companion-mask field
+  ``era5_precipitation_was_filled`` (the ``{field}_was_filled`` pattern).
+
+**Shared grid label ⇒ alignment (spec §8).** The COG and the Zarr in each basin
+use **one and the same** ``<label>`` and are written from the **same affine /
+extent / resolution**, so they are **cell-for-cell aligned** (the G2
+positive-path precondition). The literal per-basin extent lives in each file.
+
+**Intra-basin time alignment (spec §6.2 / T2).** The Zarr ``time`` coordinate is
+the *identical* axis (same timestamps) as that basin's
+``scalar_dynamic.parquet`` ``time``. Gaps a field does not natively cover are
+**NaN-filled** (here the first timestep of ``era5_precipitation`` is NaN and the
+companion mask marks it), proving the §6.2 NaN-fill convention without any
+special handling of the suffix.
+
+**Delineation-neutral (spec §9).** Both artifacts are dense rectangular over the
+basin bbox — never clipped or NaN'd to an outline. The grid is delineation
+agnostic; clipping is a downstream op, out of HDX scope (§10).
+
+Field names are opaque producer strings (spec §2). The ``{source}_{variable}``
+and companion-mask patterns appear **only to prove later milestones give them no
+special handling** — this module attaches no role, belongs-to link, or magic.
+
+This module emits only the *writer-intended* bytes; the gridded self-assertions
+in :mod:`hdx_fixtures.assertions` re-open the files and confirm the engineered
+properties (including the MED-5 consolidated-metadata hand-off).
+"""
+
+import datetime as dt
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import rasterio
+import zarr
+from rasterio.crs import CRS as RasterioCRS
+from rasterio.enums import Resampling
+from rasterio.transform import from_origin
+from zarr.codecs import BloscCodec, BloscShuffle
+
+from hdx_fixtures import get_logger
+from hdx_fixtures.manifest import CRS
+from hdx_fixtures.scalar import BASINS, BasinSpec, _time_axis
+
+# One shared grid label used by BOTH the COG and the Zarr in every basin. A
+# shared label across the gridded_static and gridded_dynamic subtrees signals
+# cell-for-cell alignment without opening either file (spec §8). It names the
+# grid *family*; the literal per-basin extent/affine lives in each file.
+GRID_LABEL = "era5"
+
+# Opaque producer-chosen gridded field names (spec §2). Distinct quadrants:
+GRIDDED_STATIC_FIELD = "elevation"  # gridded·static COG band, f32
+# gridded·dynamic Zarr variable, f32, using the {source}_{variable} pattern:
+GRIDDED_DYNAMIC_FIELD = "era5_precipitation"
+# Ordinary companion-mask field ({field}_was_filled). HDX gives the suffix no
+# magic and parses no belongs-to link (spec §2) — it is just another variable.
+COMPANION_MASK_FIELD = "era5_precipitation_was_filled"
+
+# Dataset-wide CRS (spec §7.4 / §11). EPSG:4326, the same value the manifest
+# declares; M5 cross-checks the manifest CRS against the CRS carried in files.
+# Derive the integer EPSG code FROM the manifest CRS string so the two cannot
+# drift (the gridded files and manifest carry one dataset-wide CRS).
+_EPSG_PREFIX = "EPSG:"
+if not CRS.startswith(_EPSG_PREFIX):  # pragma: no cover - guards a constant
+    raise ValueError(f"manifest CRS {CRS!r} is not an EPSG code; spec §7.4")
+EPSG_CODE = int(CRS.removeprefix(_EPSG_PREFIX))
+
+# The shared per-basin grid geometry (spec §7.1: dense rectangular over the
+# bbox). Small dense grids keep the committed fixture tiny while remaining a
+# real, georeferenced raster. Resolution is in CRS units (EPSG:4326 degrees).
+GRID_HEIGHT = 8  # Y (rows)
+GRID_WIDTH = 6  # X (cols)
+GRID_RES = 0.25  # degrees per cell (square cells)
+# North-west origin of the (shared) grid in degrees. The exact location is
+# immaterial to HDX; only that the COG and Zarr agree on it cell-for-cell.
+GRID_WEST = 10.0
+GRID_NORTH = 50.0
+
+# COG internal tiling block size. Kept small so the tiny fixture raster still
+# tiles and supports overviews (spec §8: internal tiling + overviews).
+COG_BLOCK = 16
+
+# Zarr chunking: time-major (a [t-n, t] read is one contiguous range, spec §8).
+# Chunks subdivide the shard so v3 sharding is meaningful (one shard holds many
+# chunks → sane S3 object counts at 50k basins).
+ZARR_TIME_CHUNK = 1
+ZARR_Y_CHUNK = GRID_HEIGHT
+ZARR_X_CHUNK = GRID_WIDTH
+
+# CF time encoding (spec §6.3): integer days since the epoch, proleptic
+# Gregorian — matching the manifest cadence "daily".
+TIME_UNITS = "days since 1970-01-01"
+TIME_CALENDAR = "proleptic_gregorian"
+_EPOCH = dt.datetime(1970, 1, 1)
+
+
+@dataclass(frozen=True)
+class GridGeometry:
+    """The shared affine/extent/resolution of one basin's grid (spec §7/§8).
+
+    Both the COG and the Zarr in a basin are built from this single geometry, so
+    they are cell-for-cell aligned (G2). ``west``/``north`` is the grid's
+    north-west origin; cells march east (+lon) and south (-lat).
+    """
+
+    height: int
+    width: int
+    res: float
+    west: float
+    north: float
+
+    @property
+    def transform(self) -> object:
+        """Return the GeoTIFF affine transform (north-up, square cells)."""
+        return from_origin(self.west, self.north, self.res, self.res)
+
+    def lon_centers(self) -> np.ndarray:
+        """Return the X (lon) cell-center coordinates (CF ``lon`` array)."""
+        return self.west + (np.arange(self.width) + 0.5) * self.res
+
+    def lat_centers(self) -> np.ndarray:
+        """Return the Y (lat) cell-center coordinates (CF ``lat`` array).
+
+        Latitudes descend from ``north`` because the raster is north-up (row 0
+        is the northern edge), so the COG band rows and the Zarr ``lat`` axis
+        index the same cells in the same order.
+        """
+        return self.north - (np.arange(self.height) + 0.5) * self.res
+
+
+def _basin_geometry() -> GridGeometry:
+    """Return the one shared grid geometry every basin uses (spec §8 alignment).
+
+    All basins share the same grid family ``GRID_LABEL`` with an identical
+    affine, so homogeneity (H2: same grid-label set across basins) holds and the
+    COG/Zarr pair is trivially cell-for-cell aligned.
+    """
+    return GridGeometry(
+        height=GRID_HEIGHT,
+        width=GRID_WIDTH,
+        res=GRID_RES,
+        west=GRID_WEST,
+        north=GRID_NORTH,
+    )
+
+
+def _time_since_epoch(times: list[dt.datetime]) -> np.ndarray:
+    """Encode timestamps as CF integer days-since-epoch (spec §6.3).
+
+    The scalar ``time`` axis is one timestamp per day; this maps each to the
+    integer day count from ``_EPOCH``, the Zarr-side twin of the parquet
+    ``time`` column. The mapping is exact (no truncation) for midnight daily
+    stamps, so the two axes describe the *identical* instants (T2).
+    """
+    return np.array([(t - _EPOCH).days for t in times], dtype="int64")
+
+
+def gridded_static_dir(basin_dir_path: Path) -> Path:
+    """Return the ``gridded_static/`` subtree of a basin folder (spec §4)."""
+    return basin_dir_path / "gridded_static"
+
+
+def gridded_dynamic_dir(basin_dir_path: Path) -> Path:
+    """Return the ``gridded_dynamic/`` subtree of a basin folder (spec §4)."""
+    return basin_dir_path / "gridded_dynamic"
+
+
+def cog_path(basin_dir_path: Path) -> Path:
+    """Return the ``gridded_static/<label>.tif`` COG path (spec §4/§8)."""
+    return gridded_static_dir(basin_dir_path) / f"{GRID_LABEL}.tif"
+
+
+def zarr_path(basin_dir_path: Path) -> Path:
+    """Return the ``gridded_dynamic/<label>.zarr`` store path (spec §4/§8)."""
+    return gridded_dynamic_dir(basin_dir_path) / f"{GRID_LABEL}.zarr"
+
+
+def write_gridded_static(basin_dir_path: Path, geom: GridGeometry) -> Path:
+    """Write one basin's multiband ``gridded_static`` COG and return its path.
+
+    Emits ``gridded_static/<label>.tif``: a tiled, overview-bearing GeoTIFF with
+    the ``elevation`` field as a single band whose **description is the field
+    name** (G1), standard georeferencing tags (CRS + affine, G3), units in band
+    metadata (§7.3), dense ``[Y,X]`` over the bbox and delineation-neutral (§9).
+    """
+    log = get_logger("grids.cog")
+    static_dir = gridded_static_dir(basin_dir_path)
+    static_dir.mkdir(parents=True, exist_ok=True)
+    path = cog_path(basin_dir_path)
+
+    # Deterministic, finite elevation surface over the grid (values opaque).
+    elevation = np.arange(geom.height * geom.width, dtype="float32").reshape(
+        geom.height, geom.width
+    )
+
+    profile = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "count": 1,
+        "height": geom.height,
+        "width": geom.width,
+        "crs": RasterioCRS.from_epsg(EPSG_CODE),
+        "transform": geom.transform,
+        "tiled": True,
+        "blockxsize": COG_BLOCK,
+        "blockysize": COG_BLOCK,
+        "compress": "deflate",
+        "nodata": float("nan"),
+    }
+
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(elevation, 1)
+        # Band description == field name (self-naming, no positional axis, G1).
+        dst.set_band_description(1, GRIDDED_STATIC_FIELD)
+        dst.update_tags(1, units="m")
+        # Internal overviews (§8). Powers of two; nearest keeps values finite.
+        dst.build_overviews([2, 4], Resampling.nearest)
+        dst.update_tags(ns="rio_overview", resampling="nearest")
+
+    log.info(
+        "wrote gridded_static COG label=%s band=%s shape=%dx%d",
+        GRID_LABEL,
+        GRIDDED_STATIC_FIELD,
+        geom.height,
+        geom.width,
+    )
+    return path
+
+
+def _write_cf_coord(
+    group: zarr.Group,
+    name: str,
+    values: np.ndarray,
+    attrs: dict[str, object],
+) -> None:
+    """Write a 1-D CF coordinate array into ``group`` (helper, spec §7.3).
+
+    The array is a single-chunk coordinate carrying its CF ``attrs`` and the
+    ``_ARRAY_DIMENSIONS`` xarray/CF dimension label so consumers line the
+    variable axes up with ``lat``/``lon``/``time``.
+    """
+    arr = group.create_array(
+        name,
+        shape=values.shape,
+        dtype=values.dtype,
+        chunks=values.shape,
+        dimension_names=(name,),
+    )
+    arr[:] = values
+    for key, val in attrs.items():
+        arr.attrs[key] = val
+    arr.attrs["_ARRAY_DIMENSIONS"] = [name]
+
+
+def write_gridded_dynamic(
+    basin_dir_path: Path, geom: GridGeometry, times: list[dt.datetime]
+) -> Path:
+    """Write one basin's ``gridded_dynamic`` Zarr v3 store and return its path.
+
+    Emits ``gridded_dynamic/<label>.zarr``: a Zarr v3 group with explicit CF
+    ``time``/``lat``/``lon`` coordinates and a ``crs`` grid-mapping variable
+    (G3), the ``era5_precipitation`` data variable and its ordinary companion
+    mask ``era5_precipitation_was_filled`` as **named CF variables** (G1), all
+    time-major chunked with **v3 sharding** and **blosc-zstd** compression, then
+    **consolidated metadata** written over the store (§8).
+
+    The ``time`` axis is the CF integer-since-epoch encoding of ``times`` — the
+    *identical* instants as the basin's scalar ``time`` (T2 / §6.2). The first
+    timestep of ``era5_precipitation`` is **NaN-filled** to exercise the §6.2
+    gap convention, and the companion mask marks exactly that timestep.
+    """
+    log = get_logger("grids.zarr")
+    dynamic_dir = gridded_dynamic_dir(basin_dir_path)
+    dynamic_dir.mkdir(parents=True, exist_ok=True)
+    path = zarr_path(basin_dir_path)
+
+    n_t = len(times)
+    lat = geom.lat_centers()
+    lon = geom.lon_centers()
+    time_vals = _time_since_epoch(times)
+
+    # Deterministic precipitation field [T,Y,X]; first timestep NaN-filled to
+    # demonstrate the §6.2 gap convention (NaN-fill, not a missing array).
+    precip = np.fromfunction(
+        lambda t, y, x: (t + y * 0.1 + x * 0.01).astype("float32"),
+        (n_t, geom.height, geom.width),
+        dtype="float32",
+    ).astype("float32")
+    was_filled = np.zeros((n_t, geom.height, geom.width), dtype="int8")
+    if n_t > 0:
+        precip[0, :, :] = np.float32("nan")
+        was_filled[0, :, :] = 1
+
+    group = zarr.open_group(str(path), mode="w", zarr_format=3)
+    # Dataset-level CF + CRS attributes (one dataset-wide CRS, spec §7.4).
+    group.attrs["Conventions"] = "CF-1.8"
+
+    _write_cf_coord(
+        group,
+        "time",
+        time_vals,
+        {
+            "units": TIME_UNITS,
+            "calendar": TIME_CALENDAR,
+            "standard_name": "time",
+            "axis": "T",
+        },
+    )
+    _write_cf_coord(
+        group,
+        "lat",
+        lat.astype("float64"),
+        {"units": "degrees_north", "standard_name": "latitude", "axis": "Y"},
+    )
+    _write_cf_coord(
+        group,
+        "lon",
+        lon.astype("float64"),
+        {"units": "degrees_east", "standard_name": "longitude", "axis": "X"},
+    )
+
+    # CF grid_mapping variable carrying the single dataset-wide CRS (G3 / §7.4).
+    crs_var = group.create_array("crs", shape=(), dtype="int32")
+    crs_var[...] = 0
+    crs_var.attrs["grid_mapping_name"] = "latitude_longitude"
+    crs_var.attrs["crs_wkt"] = RasterioCRS.from_epsg(EPSG_CODE).to_wkt()
+    crs_var.attrs["spatial_ref"] = f"EPSG:{EPSG_CODE}"
+
+    chunks = (min(ZARR_TIME_CHUNK, n_t) or 1, ZARR_Y_CHUNK, ZARR_X_CHUNK)
+    # One shard spans the whole [T,Y,X] cube; many time-major chunks per shard
+    # (v3 sharding → sane object counts, spec §8).
+    shards = (n_t or 1, geom.height, geom.width)
+    compressors = [
+        BloscCodec(cname="zstd", clevel=5, shuffle=BloscShuffle.shuffle)
+    ]
+
+    def _write_var(name: str, data: np.ndarray, attrs: dict[str, object]) -> None:
+        var = group.create_array(
+            name,
+            shape=data.shape,
+            dtype=data.dtype,
+            chunks=chunks,
+            shards=shards,
+            compressors=compressors,
+            dimension_names=("time", "lat", "lon"),
+            fill_value=(float("nan") if data.dtype.kind == "f" else 0),
+        )
+        var[:] = data
+        for key, val in attrs.items():
+            var.attrs[key] = val
+        var.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
+
+    # The {source}_{variable} data field — ordinary, no special handling (§2).
+    _write_var(
+        GRIDDED_DYNAMIC_FIELD,
+        precip,
+        {"units": "mm", "grid_mapping": "crs", "standard_name": "precipitation_amount"},
+    )
+    # The {field}_was_filled companion mask — an ordinary variable, no magic.
+    _write_var(
+        COMPANION_MASK_FIELD,
+        was_filled,
+        {"units": "1", "grid_mapping": "crs", "long_name": "was-filled mask"},
+    )
+
+    # --- MED-5 WRITER/READER HAND-OFF (spec §8; planning/MS2/steps.md) ---------
+    # Consolidated metadata is a WRITER-side property. zarr-python writes the
+    # store's consolidated metadata into the root `zarr.json` so a single GET
+    # learns the whole store. MS4 MUST confirm the Rust `zarrs` reader reads via
+    # this §8 consolidated path (or classify it an R3 byte-deep skip with a
+    # reason). A writer/reader mismatch is fixed by REGENERATING the fixture,
+    # never a reader workaround. See conformance/README.md (Rule 3).
+    # ---------------------------------------------------------------------------
+    zarr.consolidate_metadata(str(path))
+
+    log.info(
+        "wrote gridded_dynamic Zarr label=%s vars=%s T=%d shape=%dx%d sharded",
+        GRID_LABEL,
+        [GRIDDED_DYNAMIC_FIELD, COMPANION_MASK_FIELD],
+        n_t,
+        geom.height,
+        geom.width,
+    )
+    return path
+
+
+def write_gridded_for_basin(dataset_root: Path, basin: BasinSpec) -> tuple[Path, Path]:
+    """Write the COG + Zarr for one basin (shared label, aligned) and return both.
+
+    Both artifacts use the single shared :data:`GRID_LABEL` and the same
+    :class:`GridGeometry`, so they are cell-for-cell aligned (G2). The Zarr time
+    axis is the basin's scalar ``time`` axis (T2).
+    """
+    from hdx_fixtures.scalar import basin_dir
+
+    basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+    geom = _basin_geometry()
+    times = _time_axis(basin)
+    cog = write_gridded_static(basin_dir_path, geom)
+    store = write_gridded_dynamic(basin_dir_path, geom, times)
+    return cog, store
+
+
+def write_grids(dataset_root: Path) -> list[Path]:
+    """Write the COG + Zarr for every basin; return all emitted artifact paths."""
+    written: list[Path] = []
+    for basin in BASINS:
+        cog, store = write_gridded_for_basin(dataset_root, basin)
+        written.extend((cog, store))
+    return written

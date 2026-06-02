@@ -1,15 +1,21 @@
-"""Build the valid baseline's scalar/geometry half, then self-assert (MS2-S2).
+"""Build the valid baseline (scalar + gridded halves), then self-assert (MS2-S3).
 
-This is the generation entry point ``regenerate.sh`` calls for MS2-S2. It emits
-the *scalar* half of the one valid dataset onto the mature parquet/geoparquet
-path — ``manifest.json``, the root ``scalar_static.parquet`` rollup, per-basin
-``scalar_dynamic.parquet``, and the root ``outlines.geoparquet`` — into
-``conformance/valid/minimal/``, then runs the load-bearing scalar self-assertions
-(:func:`hdx_fixtures.assertions.run_scalar_assertions`), aborting on any failure.
+This is the generation entry point ``regenerate.sh`` calls. It emits the one
+valid dataset into ``conformance/valid/minimal/`` in two halves and runs the
+load-bearing self-assertions after each, aborting on any failure:
 
-The gridded half (COG + Zarr) and the derived invalids are later MS2 steps; this
-step emits a **partial-but-valid** scalar tree whose every artifact is conformant
-on its own terms.
+* the **scalar/geometry** half (MS2-S2) on the mature parquet/geoparquet path —
+  ``manifest.json``, the root ``scalar_static.parquet`` rollup, per-basin
+  ``scalar_dynamic.parquet``, and the root ``outlines.geoparquet`` — confirmed by
+  :func:`hdx_fixtures.assertions.run_scalar_assertions`.
+* the **gridded** half (MS2-S3) — per basin a ``gridded_static/<label>.tif``
+  multiband COG and a ``gridded_dynamic/<label>.zarr`` Zarr v3 store sharing one
+  aligned grid label, the Zarr time axis identical to the scalar ``time`` —
+  confirmed by :func:`hdx_fixtures.assertions.run_gridded_assertions`.
+
+The gridded half is emitted **after** the scalar half so the Zarr time axis can
+align to the already-written scalar ``time`` (T2). Together they complete the
+**four-quadrant** valid dataset; the two derived invalids are a later MS2 step.
 """
 
 import argparse
@@ -17,7 +23,8 @@ import sys
 from pathlib import Path
 
 from hdx_fixtures import configure_logging, get_logger
-from hdx_fixtures.assertions import run_scalar_assertions
+from hdx_fixtures.assertions import run_gridded_assertions, run_scalar_assertions
+from hdx_fixtures.grids import write_grids
 from hdx_fixtures.manifest import write_manifest
 from hdx_fixtures.outlines import write_outlines
 from hdx_fixtures.scalar import write_scalar
@@ -38,9 +45,19 @@ def build_scalar_baseline(dataset_root: Path) -> None:
     log.info("scalar baseline emitted")
 
 
+def build_gridded_baseline(dataset_root: Path) -> None:
+    """Emit the gridded COG + Zarr artifacts into ``dataset_root`` (spec §7/§8)."""
+    log = get_logger("build")
+    log.info("building gridded baseline at %s", dataset_root)
+    write_grids(dataset_root)
+    log.info("gridded baseline emitted")
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Emit the scalar baseline and run its self-assertions (abort on failure)."""
-    parser = argparse.ArgumentParser(description="Build the MS2 valid baseline (scalar half).")
+    """Emit the four-quadrant baseline and run its self-assertions (abort on failure)."""
+    parser = argparse.ArgumentParser(
+        description="Build the MS2 valid baseline (scalar + gridded halves)."
+    )
     parser.add_argument(
         "--dataset-root",
         type=Path,
@@ -55,10 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     dataset_root: Path = args.dataset_root
     build_scalar_baseline(dataset_root)
     run_scalar_assertions(dataset_root)
+    build_gridded_baseline(dataset_root)
+    run_gridded_assertions(dataset_root)
 
-    log.info("MS2-S2 scalar baseline complete + self-assertions passed")
+    log.info("MS2-S3 four-quadrant baseline complete + self-assertions passed")
     # User-facing status line (output, not a diagnostic) — see architecture §2.
-    print(f"MS2-S2: valid baseline scalar + outlines emitted at {dataset_root}")
+    print(f"MS2-S3: valid baseline (four quadrants) emitted at {dataset_root}")
     return 0
 
 
