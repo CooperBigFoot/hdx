@@ -43,6 +43,7 @@ from hdx_fixtures.mutate import (
     EXTRA_MANIFEST_FIELD_VALUE,
     H1_DIVERGENT_FIELD,
     I2_FOREIGN_BASIN_ID,
+    IRREGULAR_TIME_DAY_OFFSETS,
     MISSING_ROOT_ROLLUP,
     WRONG_FORMAT_VERSION,
     Invalid,
@@ -946,6 +947,96 @@ def _assert_divergent_grid_label_set(
     )
 
 
+def _assert_irregular_time_axis(
+    baseline_root: Path, invalid_root: Path, added: set[str], removed: set[str]
+) -> None:
+    """Confirm the irregular-time-axis fixture is one matched scalar+Zarr rewrite (M6 skip).
+
+    The MS8-S3 still-conformant case: EXACTLY the mutated basin's
+    ``scalar_dynamic.parquet`` AND its ``gridded_dynamic`` Zarr ``time`` coordinate
+    diverge from the baseline — the matched pair — and **no** file is added or
+    removed (both are in-place rewrites, same artifact names, same time-point
+    count). Re-reading proves the rewritten axis is strictly ascending, non-null,
+    with NON-uniform gaps (irregular, the M6 rule (b) concern) and that the Zarr
+    ``time`` equals the scalar ``time`` cell-for-cell (T2 preserved, no spurious
+    co-fail). Every changed file lies under the one mutated basin, and only its
+    ``scalar_dynamic.parquet`` plus its Zarr files differ (the COG, the other
+    basins, and the manifest are byte-identical to the baseline).
+    """
+    basin_prefix = f"basin={_MUTATED_BASIN}/"
+    scalar_rel = f"{basin_prefix}scalar_dynamic.parquet"
+    zarr_prefix = f"{basin_prefix}gridded_dynamic/{GRID_LABEL}.zarr/"
+
+    # In-place rewrites only: nothing added or removed (same artifact names + count).
+    _require(
+        not added and not removed,
+        f"{invalid_root}: irregular-time-axis added {sorted(added)} / removed "
+        f"{sorted(removed)}; the matched scalar+Zarr rewrite must add/remove "
+        f"nothing (LOW-2 one mutation, M6 still-conformant marker)",
+    )
+
+    changed = _changed_files(baseline_root, invalid_root)
+    # Every changed file is either the mutated basin's scalar_dynamic or a file
+    # under that basin's Zarr — and at least both of those classes changed.
+    for rel in changed:
+        _require(
+            rel == scalar_rel or rel.startswith(zarr_prefix),
+            f"{invalid_root}: changed {rel!r} is outside the mutated basin's "
+            f"scalar_dynamic + {GRID_LABEL}.zarr matched pair (LOW-2 one mutation)",
+        )
+    _require(
+        scalar_rel in changed,
+        f"{invalid_root}: the mutated basin's {scalar_rel!r} did not change "
+        f"(the scalar time axis must be rewritten)",
+    )
+    _require(
+        any(rel.startswith(zarr_prefix) for rel in changed),
+        f"{invalid_root}: the mutated basin's {zarr_prefix!r} time coordinate did "
+        f"not change (the matched Zarr axis must be re-emitted identically)",
+    )
+
+    # The rewritten scalar axis: same count, strictly ascending, non-null, with
+    # NON-uniform gaps (irregular). The column stays named time, timestamp, non-null.
+    mutated = _read_table(invalid_root / scalar_rel)
+    time_field = mutated.schema.field("time")
+    _require(
+        pa.types.is_timestamp(time_field.type) and not time_field.nullable,
+        f"{invalid_root}: {scalar_rel} time is no longer a non-nullable timestamp "
+        f"(LOW-2: only the axis spacing may diverge; T1 stays pass)",
+    )
+    values: list[dt.datetime] = mutated.column("time").to_pylist()
+    _require(
+        len(values) == len(IRREGULAR_TIME_DAY_OFFSETS),
+        f"{invalid_root}: {scalar_rel} time has {len(values)} points, expected "
+        f"{len(IRREGULAR_TIME_DAY_OFFSETS)} (the count must be preserved for T2)",
+    )
+    _require(
+        all(a < b for a, b in zip(values, values[1:], strict=False)),
+        f"{invalid_root}: {scalar_rel} time is not strictly ascending {values} "
+        f"(T1 stays pass — only the spacing may be irregular)",
+    )
+    gaps = {
+        (b - a).days for a, b in zip(values, values[1:], strict=False)
+    }
+    _require(
+        len(gaps) > 1,
+        f"{invalid_root}: {scalar_rel} time gaps {gaps} are uniform — M6 needs an "
+        f"IRREGULAR axis (non-constant interior step)",
+    )
+
+    # The matched Zarr axis is IDENTICAL to the scalar axis (T2 preserved): re-read
+    # the Zarr time coordinate and the scalar time under the SAME CF day encoding.
+    store = zarr_path(basin_dir(invalid_root, _MUTATED_BASIN))
+    group = zarr.open_group(str(store), mode="r")
+    zarr_time = [int(v) for v in np.asarray(group["time"][:]).tolist()]
+    scalar_time = _scalar_time_days(invalid_root, _MUTATED_BASIN)
+    _require(
+        zarr_time == scalar_time,
+        f"{invalid_root}: Zarr time {zarr_time} != scalar time {scalar_time} for "
+        f"basin {_MUTATED_BASIN} — the matched pair must stay identical (T2)",
+    )
+
+
 def assert_differs_in_exactly_one_way(
     baseline_root: Path, invalid_root: Path, invalid: Invalid
 ) -> None:
@@ -1015,6 +1106,16 @@ def assert_differs_in_exactly_one_way(
       ``era5.*`` → ``era5b.*`` (every removed path is that basin's ``era5.*``
       artifact, every added path its ``era5b.*`` artifact), and **no** shared file
       differs; that basin's label set becomes ``{era5b}`` (pins **H2**).
+
+    The **MS8-S3** still-conformant M6 case (NOT a fail-closed invalid):
+
+    * :attr:`Invalid.IRREGULAR_TIME_AXIS` — exactly the mutated basin's
+      ``scalar_dynamic.parquet`` AND its ``gridded_dynamic`` Zarr ``time``
+      coordinate differ (the matched pair), adding/removing nothing; the rewritten
+      ``time`` axis is strictly ascending, non-null, with NON-uniform gaps (and the
+      Zarr axis is identical to the scalar axis, T2 preserved). ``validate`` reports
+      M6 ``skipped``-with-reason and ``conformant:true`` (no enforceable M6 negative
+      in v0.1 — the regularity leg is R3-skipped).
     """
     log = get_logger("assert.invalid")
     base_files = _relative_files(baseline_root)
@@ -1196,6 +1297,8 @@ def assert_differs_in_exactly_one_way(
         _assert_misaligned_shared_label(baseline_root, invalid_root, removed)
     elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
         _assert_divergent_grid_label_set(baseline_root, invalid_root, added, removed)
+    elif invalid is Invalid.IRREGULAR_TIME_AXIS:
+        _assert_irregular_time_axis(baseline_root, invalid_root, added, removed)
     else:
         # The Bucket-B parquet mutations (I1/I2/I3/H1/T1) each rewrite exactly one
         # parquet file: no file added or removed, exactly one shared file differs.

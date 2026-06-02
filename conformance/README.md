@@ -83,9 +83,19 @@ conformance/
     valid-minimal.validate.json            # pinned `validate` report (R4); produced by hdx-core, not the generator
     invalid-<fixture>.validate.json         # pinned per-fixture `validate` report for each invalid (R4)
   valid/minimal/                          # the one valid four-quadrant dataset (git-ignored data)
+  valid/irregular-time/                   # M6 still-conformant case (irregular time axis) — derived, STILL conformant:true (git-ignored data)
   invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline (git-ignored data)
   invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline (git-ignored data)
 ```
+
+> **Two valid-shaped fixtures.** `valid/minimal/` is the four-quadrant baseline.
+> `valid/irregular-time/` (folder `valid/irregular-time-axis/`) is a SECOND
+> valid-shaped fixture, derived from the baseline by the same one-mutation
+> machinery but **STILL `conformant:true`** — it documents the
+> no-enforceable-M6-negative finding (see [the M6 subsection
+> below](#the-still-conformant-m6-case-no-enforceable-m6-negative-in-v01)). The
+> suite cleanly separates these "derived from baseline but still conformant"
+> fixtures (under `valid/`) from the fail-closed negatives (under `invalid/`).
 
 ### `valid/minimal/` — the one valid four-quadrant dataset
 
@@ -225,6 +235,55 @@ one-violation-per-check golden report matrix.)
 > `goldens/valid-minimal.validate.json` is **byte-unchanged** across MS8 — the green
 > floor every MS8 invalid fixture builds on.
 
+### The still-conformant M6 case: no enforceable M6 negative in v0.1
+
+`valid/irregular-time-axis/` is the documented M6 still-conformant fixture, derived
+from the baseline by **exactly one surgical mutation**: ONE basin's
+`scalar_dynamic.parquet` `time` column is rewritten to an **irregular** but
+**strictly-ascending, non-null** axis (days `[0,1,3,7]` off the basin's start
+instead of the baseline `[0,1,2,3]` — gaps of 1, 2, 4 days), **and** that basin's
+`gridded_dynamic` Zarr `time` coordinate is re-emitted to the **identical**
+irregular axis (so the intra-basin scalar/gridded axes stay equal and T2 does not
+spuriously co-fail). The point COUNT is unchanged, so the parquet rows and the
+Zarr `time` length still match. The generator self-assertion
+(`assertions._assert_irregular_time_axis`) proves the matched pair — exactly that
+basin's `scalar_dynamic.parquet` and its Zarr `time` differ, the axis is strictly
+ascending with **non-uniform** gaps, the Zarr axis equals the scalar axis, and no
+file is added or removed.
+
+`validate` of this fixture reports **M6 `status:skipped`** with a non-empty reason
+naming the regularity leg, `result:null`, and top-level **`conformant:true`** — the
+golden is [`goldens/valid-irregular-time-axis.validate.json`](goldens/valid-irregular-time-axis.validate.json),
+byte-identical to the baseline `valid-minimal` validate golden (the irregular
+spacing is byte-deep invisible to `validate`). The pinned regression test is
+`irregular_time_axis_skips_m6_and_stays_conformant` in `crates/core/src/validate.rs`.
+
+**Why there is NO enforceable M6 negative in v0.1.** `check_m6` is exactly two
+rules (FOLD MED-1): rule (a) — `cadence` is a non-empty string (this also is M4;
+M6 references it) — and rule (b) — each basin's realized `time` axis is
+**internally regular** (a constant interior step, the §6.2 consequence of
+NaN-filled gaps). Rule (b) is honestly **R3 `ByteDeep`-skipped**: the v0.1
+discovery model surfaces only a **two-point `[start, end]` `TimeExtent`** plus a
+`sorted_ascending` flag, **from which a constant interior step is not derivable**
+(you would need the full 1-D `time` array). Because a `Skipped` leg is never a
+fail and rule (a) passes, an irregular per-basin axis stays `conformant:true`.
+
+Two hard guardrails this fixture documents and the test pins:
+
+- **M6 never interprets the cadence *word*.** It does NOT read `"daily"` as a
+  1-day step (that would be the semantic interpretation HDX must avoid, spec
+  §1/§6.4). The skip reason names *axis regularity*, never the cadence word.
+- **M6 asserts no cross-basin step equality.** §6.1 explicitly permits **ragged
+  per-basin time extents**, so a merely-different cross-basin step is not a
+  failure. No cross-basin cadence rule is resurrected; the reason states this
+  explicitly ("no cross-basin step equality asserted").
+
+So the only M6 *fail* form is an empty cadence (rule (a)) — and that is already
+rejected at the M4 entry gate before `check_m6` runs (the `empty-cadence` invalid
+pins M4, not M6). There is therefore **no fixture that makes M6 `ran:fail`** in
+v0.1; the irregular-time-axis fixture is the documented still-conformant case in
+its place.
+
 ### `invalid/wrong-format-version/` — pins **M2**
 
 Byte-identical to the baseline **except** `manifest.json`'s `format_version` is
@@ -254,6 +313,7 @@ one surgical mutation** (LOW-2) and pins **exactly one** spec §14 check.
 | **M5** — the manifest `crs` matches every georeferenced file's recorded CRS (§7/§11). | `invalid/crs-mismatch/` | `manifest.json` `crs`: `"EPSG:4326"` → `"EPSG:3857"` (the files keep `EPSG:4326`; all other floor fields unchanged). |
 | **G2** — a grid label shared across the COG and Zarr subtrees implies cell-for-cell alignment (§8). | `invalid/misaligned-shared-label/` | Re-emit one basin's `gridded_static/era5.tif` under the **same** `era5` label at a half-cell-shifted geometry (`west` `10.0` → `10.5`); its Zarr stays at the baseline geometry, so the shared label no longer coincides. |
 | **H2** — the grid-label set is identical across basins (§8). | `invalid/divergent-grid-label-set/` | Re-emit one basin's COG **and** Zarr under a divergent `era5b` label (`era5.*` → `era5b.*`); that basin's label set becomes `{era5b}` while every other basin's is `{era5}`. |
+| **M6 (skip)** — *no enforceable negative*; M6 rule (b) regularity is R3-skipped. STILL **`conformant:true`** (a valid-shaped fixture, not a fail-closed invalid). | `valid/irregular-time-axis/` | Rewrite one basin's `scalar_dynamic` `time` to an irregular but strictly-ascending, non-null axis (days `[0,1,3,7]`) **and** its matching Zarr `time` to the identical axis. See [the M6 subsection](#the-still-conformant-m6-case-no-enforceable-m6-negative-in-v01). |
 
 > **The exhaustive one-invalid-per-check family is MS8.** MS2 shipped the first
 > two pinned invalids (M2, L1); MS8 adds the rest (the entry-gate M3/M4, the

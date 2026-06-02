@@ -553,6 +553,28 @@ def reemit_basin_grids_under_label(
     return cog, store
 
 
+def reemit_basin_zarr_with_times(
+    dataset_root: Path, basin: BasinSpec, times: list[dt.datetime]
+) -> Path:
+    """Re-emit ONLY a basin's Zarr (same :data:`GRID_LABEL`) with a given ``time`` axis.
+
+    Removes the basin's baseline ``gridded_dynamic`` Zarr and re-writes it under the
+    shared :data:`GRID_LABEL` at the **baseline** geometry but with ``times`` as its
+    ``time`` coordinate (CF integer days-since-epoch). Used by the MS8-S3
+    still-conformant irregular-time-axis mutation to keep the Zarr ``time`` axis
+    IDENTICAL to the basin's rewritten scalar ``time`` column (T2 preserved). The
+    COG, the grid geometry, and every other artifact are untouched — only the one
+    basin's Zarr ``time`` coordinate (and the chunked arrays sized to ``len(times)``)
+    differ, matching the scalar rewrite cell-for-cell.
+    """
+    from hdx_fixtures.scalar import basin_dir
+
+    basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+    geom = _basin_geometry()
+    _rmtree(zarr_path(basin_dir_path))
+    return write_gridded_dynamic(basin_dir_path, geom, times, GRID_LABEL)
+
+
 def reemit_basin_cog_with_geometry(
     dataset_root: Path, basin: BasinSpec, geom: GridGeometry
 ) -> Path:

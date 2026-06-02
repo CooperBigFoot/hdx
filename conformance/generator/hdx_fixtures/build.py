@@ -72,14 +72,17 @@ def build_gridded_baseline(dataset_root: Path) -> None:
 
 
 def derive_invalids(dataset_root: Path) -> None:
-    """Derive every invalid from the baseline + self-assert each (MS2-S4 / LOW-2).
+    """Derive every fixture from the baseline + self-assert each (MS2-S4 / LOW-2).
 
     The repo root is recovered from ``dataset_root`` (``<repo>/conformance/valid/
-    minimal``) so each invalid lands under ``<repo>/conformance/invalid/<name>/``.
-    For every :class:`Invalid`, the baseline is copied and exactly one surgical
-    mutation is applied, then the "differs in exactly one way" self-assertion runs
-    (aborting on failure) before the next invalid. The loop iterates the
-    :class:`Invalid` enum, so a widened enum (MS8-S2 added M3/M4) needs no edit.
+    minimal``) so each fixture lands under its :func:`~hdx_fixtures.mutate.invalid_root`
+    location — fail-closed invalids under ``<repo>/conformance/invalid/<name>/`` and
+    the still-conformant :attr:`~hdx_fixtures.mutate.Invalid.IRREGULAR_TIME_AXIS`
+    case under ``<repo>/conformance/valid/<name>/`` (MS8-S3). For every
+    :class:`Invalid`, the baseline is copied and exactly one surgical mutation is
+    applied, then the "differs in exactly one way" self-assertion runs (aborting on
+    failure) before the next fixture. The loop iterates the :class:`Invalid` enum,
+    so a widened enum (MS8-S2/S3 added variants) needs no edit.
     """
     log = get_logger("build")
     # dataset_root == <repo>/conformance/valid/minimal -> repo is three up.
@@ -116,11 +119,12 @@ def main(argv: list[str] | None = None) -> int:
     run_gridded_assertions(dataset_root)
     derive_invalids(dataset_root)
 
-    log.info("baseline + two derived invalids complete + self-assertions passed")
+    log.info("baseline + derived fixtures complete + self-assertions passed")
     # User-facing status line (output, not a diagnostic) — see architecture §2.
     print(
         f"conformance fixtures regenerated: valid baseline (four quadrants) at "
-        f"{dataset_root}; two invalids derived under conformance/invalid/; "
+        f"{dataset_root}; fail-closed invalids derived under conformance/invalid/ "
+        "and the still-conformant irregular-time-axis fixture under conformance/valid/; "
         "all self-assertions passed"
     )
     return 0

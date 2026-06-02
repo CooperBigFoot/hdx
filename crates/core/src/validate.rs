@@ -2079,6 +2079,65 @@ mod tests {
         assert_eq!(empty.result(), Some(CheckResult::Fail), "empty cadence fails M6 rule (a)");
     }
 
+    #[test]
+    fn irregular_time_axis_skips_m6_and_stays_conformant() {
+        // MS8-S3: the still-conformant M6 case. One basin's scalar `time` axis (and its
+        // matching Zarr `time` coordinate) is irregular but strictly ascending, non-null
+        // (days [0,1,3,7] off its start). There is NO enforceable M6 negative in v0.1 —
+        // the regularity leg (rule b) is R3 ByteDeep-skipped because discovery surfaces
+        // only a two-point [start,end] extent + sortedness. So `validate` reports M6
+        // skipped-with-reason and the dataset STILL `conformant:true`.
+        let name = "valid/irregular-time-axis";
+        let report = validate(conformance(name)).expect("the irregular-time fixture validates");
+
+        // The dataset is STILL conformant (a skip never flips the verdict).
+        assert!(report.conformant(), "{name} ⇒ conformant:true (M6 skip never flips it)");
+
+        // M6 is SKIPPED-with-reason (ByteDeep), naming the regularity leg, NOT a fail.
+        let m6 = report.find(CheckId::M6).expect("M6 present");
+        assert_eq!(m6.status(), CheckStatus::Skipped, "M6 is skipped (R3 regularity leg)");
+        assert_eq!(m6.result(), None, "a skipped M6 carries no result");
+        assert_eq!(m6.depth(), DepthClass::ByteDeep, "regularity leg is byte-deep");
+        let detail = m6.detail().expect("M6 carries a reason").to_lowercase();
+        assert!(detail.contains("regularity"), "the reason names the regularity leg");
+        assert!(
+            detail.contains("rule (a)") && detail.contains("cadence-non-empty"),
+            "the reason confirms rule (a) cadence-non-empty passed"
+        );
+        // M6 never interprets the cadence WORD and asserts no cross-basin step equality.
+        assert!(!detail.contains("daily"), "M6 must not interpret the cadence word");
+        assert!(
+            detail.contains("no cross-basin step equality"),
+            "M6 records it asserts no cross-basin step equality"
+        );
+
+        // T1 and T2 are NOT ran:fail (the rewritten axis stays sorted/non-null/named,
+        // and the matched Zarr axis is identical so T2 does not spuriously co-trip).
+        let t1 = report.find(CheckId::T1).expect("T1 present");
+        assert_ne!(t1.result(), Some(CheckResult::Fail), "T1 must not fail (axis stays sorted)");
+        let t2 = report.find(CheckId::T2).expect("T2 present");
+        assert_ne!(t2.result(), Some(CheckResult::Fail), "T2 must not fail (axes stay identical)");
+
+        // SNAPSHOT: the produced report equals the relocated per-fixture golden.
+        let produced: Value = serde_json::from_str(
+            &validate_json(conformance(name)).expect("validate_json succeeds"),
+        )
+        .expect("validate output is valid JSON");
+        assert_eq!(
+            produced,
+            fixture_golden_value(name),
+            "{name}: validate must equal the committed golden \
+             (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+
+        // The golden also matches the pinned wire shape (R4 schema lock).
+        let validator = validate_validator();
+        assert!(
+            validator.is_valid(&fixture_golden_value(name)),
+            "{name}: the golden must validate against validate.schema.json"
+        );
+    }
+
     // --- M5 in-memory falsifiable leg -------------------------------------------------
 
     #[test]

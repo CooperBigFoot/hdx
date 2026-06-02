@@ -87,6 +87,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import datetime as dt
+
 from hdx_fixtures import get_logger
 from hdx_fixtures.grids import (
     DIVERGENT_GRID_LABEL,
@@ -95,9 +97,10 @@ from hdx_fixtures.grids import (
     misaligned_geometry,
     reemit_basin_cog_with_geometry,
     reemit_basin_grids_under_label,
+    reemit_basin_zarr_with_times,
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS
-from hdx_fixtures.scalar import BASINS, DYNAMIC_FIELD, basin_dir
+from hdx_fixtures.scalar import BASINS, DYNAMIC_FIELD, TIME_TYPE, basin_dir
 
 # The mutated format_version for the wrong-format-version invalid. Any value other
 # than the baseline "0.1" is rejected outright by M2 (the §0 hard cut); "0.2" is a
@@ -181,6 +184,30 @@ H1_DIVERGENT_FIELD: str = "flow"
 # git artifact and the layout walk would treat it identically, so deleting the subtree
 # is the committed form (the H2-collision caveat in steps.md §0 Bucket-B / L2).
 
+# --- MS8-S3 still-conformant M6 marker (irregular-time-axis) ------------------
+#
+# The irregular-time-axis fixture is NOT a fail-closed invalid: it is a SECOND
+# valid-shaped fixture (placed under ``conformance/valid/irregular-time/``, see
+# :func:`invalid_root`) that proves the documented no-enforceable-M6-negative
+# finding in v0.1. There is NO enforceable M6 NEGATIVE: M6 rule (b) (per-basin
+# axis REGULARITY) is honestly R3 ByteDeep-skipped (``check_m6``) because v0.1
+# discovery surfaces only a two-point ``[start,end]`` TimeExtent + a sortedness
+# flag — a constant interior step is not derivable — and M6 NEVER interprets the
+# cadence word nor asserts any cross-basin step equality (§6.1 permits ragged
+# extents). So an irregular per-basin axis still validates ``conformant:true`` and
+# M6 stays ``skipped``-with-reason. This fixture makes that finding a regenerable,
+# pinned artifact.
+#
+# Per-basin day offsets the mutated basin's ``time`` axis is rewritten to: an
+# IRREGULAR but strictly-ascending, non-null axis (gaps 1,2,4 days — NOT a
+# constant step), e.g. days [0,1,3,7] off the basin's start instead of the
+# baseline [0,1,2,3]. The COUNT (4) is unchanged so the parquet rows and the Zarr
+# ``time`` length still match (T2 preserved); the SAME offsets are applied to BOTH
+# the scalar ``time`` column AND the matching Zarr ``time`` coordinate, so the
+# intra-basin axes stay identical (T2 does not spuriously co-fail). T1 stays pass
+# (still sorted ascending, non-null, named ``time``, timestamp).
+IRREGULAR_TIME_DAY_OFFSETS: tuple[int, ...] = (0, 1, 3, 7)
+
 
 class Invalid(Enum):
     """The minimal invalid fixtures, each pinning one spec check (§14).
@@ -214,14 +241,39 @@ class Invalid(Enum):
     CRS_MISMATCH = "crs-mismatch"
     MISALIGNED_SHARED_LABEL = "misaligned-shared-label"
     DIVERGENT_GRID_LABEL_SET = "divergent-grid-label-set"
+    # MS8-S3 still-conformant M6 case (NOT a fail-closed invalid). Derived by the
+    # same one-mutation machinery but placed under ``conformance/valid/`` (see
+    # :attr:`still_conformant` / :func:`invalid_root`): one basin's scalar ``time``
+    # axis (and its matching Zarr ``time`` coordinate) is rewritten to an irregular
+    # but strictly-ascending, non-null axis. ``validate`` reports M6 ``skipped``-
+    # with-reason and the dataset STILL ``conformant:true`` — there is no
+    # enforceable M6 negative in v0.1 (the regularity leg is R3-skipped).
+    IRREGULAR_TIME_AXIS = "irregular-time-axis"
+
+    @property
+    def still_conformant(self) -> bool:
+        """Whether this fixture is STILL ``conformant:true`` (not a fail-closed invalid).
+
+        Only :attr:`IRREGULAR_TIME_AXIS` is still-conformant: it is derived by the
+        same one-mutation machinery but documents the no-enforceable-M6-negative
+        finding (M6 ``skipped``-with-reason, ``conformant:true``). It is therefore
+        emitted under ``conformance/valid/`` — a sibling valid-shaped fixture —
+        rather than the fail-closed ``conformance/invalid/`` tree. Every other
+        variant is a fail-closed negative (an entry-gate ``Err`` or a
+        ``conformant:false`` report).
+        """
+        return self is Invalid.IRREGULAR_TIME_AXIS
 
     @property
     def pinned_check(self) -> str:
-        """Return the single spec §14 check this invalid pins.
+        """Return the single spec §14 check this fixture pins.
 
         Bucket-A entry-gate ``Err`` negatives: M2/M3/M4/L1. Bucket-B
         ``conformant:false`` negatives: I1/I2/I3/H1/T1/L2 (MS8-S3). MS8-S2
-        georef/grid-label negatives: M5/G2/H2.
+        georef/grid-label negatives: M5/G2/H2. The MS8-S3 still-conformant case
+        :attr:`IRREGULAR_TIME_AXIS` carries the dedicated marker ``"M6(skip)"`` —
+        it does not pin a ``ran:fail`` (no enforceable M6 negative exists in v0.1);
+        it asserts M6 ``skipped``-with-reason while the dataset stays conformant.
         """
         if self is Invalid.WRONG_FORMAT_VERSION:
             return "M2"
@@ -245,12 +297,22 @@ class Invalid(Enum):
             return "M5"
         if self is Invalid.MISALIGNED_SHARED_LABEL:
             return "G2"
-        return "H2"
+        if self is Invalid.DIVERGENT_GRID_LABEL_SET:
+            return "H2"
+        return "M6(skip)"
 
 
 def invalid_root(repo_root: Path, invalid: Invalid) -> Path:
-    """Return the ``conformance/invalid/<name>/`` tree root for ``invalid``."""
-    return repo_root / "conformance" / "invalid" / invalid.value
+    """Return the on-disk tree root for ``invalid``.
+
+    A fail-closed invalid lands under ``conformance/invalid/<name>/``. A
+    :attr:`Invalid.still_conformant` fixture (the MS8-S3
+    :attr:`Invalid.IRREGULAR_TIME_AXIS`) is a SECOND valid-shaped fixture, so it
+    lands under ``conformance/valid/<name>/`` instead — a still-conformant location
+    the suite cleanly separates from the fail-closed ``invalid/`` tree.
+    """
+    quadrant = "valid" if invalid.still_conformant else "invalid"
+    return repo_root / "conformance" / quadrant / invalid.value
 
 
 def _copy_baseline(baseline_root: Path, target_root: Path) -> None:
@@ -571,6 +633,59 @@ def _mutate_divergent_grid_label_set(target_root: Path) -> None:
     )
 
 
+# --- MS8-S3 still-conformant M6 mutation (irregular-time-axis) ----------------
+
+
+def _irregular_times() -> list[dt.datetime]:
+    """Return the mutated basin's IRREGULAR but strictly-ascending ``time`` axis.
+
+    Built off the mutated basin's ``start`` with :data:`IRREGULAR_TIME_DAY_OFFSETS`
+    (gaps of 1, 2, 4 days — NON-uniform), keeping the SAME number of points as the
+    baseline daily axis so the parquet row count and the Zarr ``time`` length still
+    match (T2 preserved). The offsets are strictly ascending and start at 0, so the
+    axis is sorted ascending with no nulls (T1 stays pass) — only the inter-point
+    SPACING diverges from the baseline (irregular, the M6 rule (b) concern).
+    """
+    return [
+        _MUTATED_BASIN_SPEC.start + dt.timedelta(days=offset)
+        for offset in IRREGULAR_TIME_DAY_OFFSETS
+    ]
+
+
+def _mutate_irregular_time_axis(target_root: Path) -> None:
+    """Rewrite ONE basin's scalar + Zarr ``time`` axis to an irregular axis (M6 skip).
+
+    For :data:`_MUTATED_BASIN`, rewrite BOTH the matched pair so the intra-basin
+    axes stay identical (T2 is preserved, no spurious co-fail):
+
+    * the ``scalar_dynamic.parquet`` ``time`` column is replaced with
+      :func:`_irregular_times` (same count, still sorted ascending, non-null,
+      timestamp, named ``time``) — every other column byte-for-byte preserved;
+    * the ``gridded_dynamic`` Zarr ``time`` coordinate is re-emitted to the
+      IDENTICAL irregular axis (CF integer days-since-epoch), via the grids re-emit
+      seam, so the scalar and gridded ``time`` axes match cell-for-cell.
+
+    The result is STILL ``conformant:true``: T1 stays pass (sorted/non-null/named),
+    M6 rule (a) (cadence non-empty) stays pass, M6 rule (b) (per-basin regularity)
+    stays the honest R3 ByteDeep skip — ``validate`` cannot observe the irregular
+    spacing from the two-point ``[start,end]`` extent + sortedness it surfaces, and
+    M6 never interprets the cadence word. This is the documented
+    no-enforceable-M6-negative case (see the module/README finding).
+    """
+    irregular = _irregular_times()
+
+    # (1) Rewrite the scalar_dynamic time column in place (same count, irregular).
+    path = basin_dir(target_root, _MUTATED_BASIN) / "scalar_dynamic.parquet"
+    table = _read_true_table(path)
+    time_index = table.schema.get_field_index("time")
+    new_time = pa.array(irregular, type=TIME_TYPE)
+    table = table.set_column(time_index, table.schema.field("time"), new_time)
+    _write_scalar_dynamic_table(path, table)
+
+    # (2) Re-emit the matching Zarr `time` coordinate to the IDENTICAL axis (T2).
+    reemit_basin_zarr_with_times(target_root, _MUTATED_BASIN_SPEC, irregular)
+
+
 def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Path:
     """Derive one invalid tree from the baseline via exactly one mutation.
 
@@ -604,8 +719,10 @@ def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Pa
         _mutate_crs_mismatch(target_root)
     elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
         _mutate_misaligned_shared_label(target_root)
-    else:
+    elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
         _mutate_divergent_grid_label_set(target_root)
+    else:
+        _mutate_irregular_time_axis(target_root)
 
     log.info(
         "derived invalid=%s pins=%s root=%s",
