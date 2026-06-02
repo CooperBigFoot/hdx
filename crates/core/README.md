@@ -45,6 +45,25 @@ that owns the JSON shape **in one place**, leaving the inert domain types free o
 **zero IO** (the verb that reads the files lands in a later step) and reports **facts
 only — no conformance verdict** (no `conformant` key, spec §10).
 
+As of milestone MS6, the crate adds the **`validate` conformance verb** (spec §10/§14):
+[`validate`](src/validate.rs) runs the §14 `MUST` checklist over the same shared
+`Discovery` model and emits a `ValidationReport` of per-check `CheckOutcome`s — each
+recording **ran vs skipped**, a **pass/fail** result, its **R3 depth class**, and an
+opaque detail/reason — plus an overall `conformant: bool` ("**no check that ran
+failed**"; a skip never flips it). The verb's **entry order mirrors `describe`** (spec
+§0): read `manifest.json` → `Manifest::from_json` hard-cut `format_version` **before**
+discovery → `discover` → run the §14 rules. The **report-vs-error split is load-bearing**:
+a violated `MUST` that ran is a recorded fail outcome (⇒ `conformant: false`), **never** a
+returned `Err`; a `ValidateError` is reserved for **structural / entry** failures (an
+unreadable manifest, the §0 hard cut, an undecodable present artifact). MS6-S1 freezes the
+report wire shape + the per-check rule-function surface and implements the
+**in-memory-falsifiable** checks (M1–M4 via the entry gate; H1, H2, I3, T1, G1 as pure
+rule functions, each with a mandatory in-memory negative test); the cross-file checks
+(M5, M6, L1–L3, I1, I2, T2, G2, G3, Geo1) are honest `skipped("not yet wired")`
+placeholders, wired in MS6-S2. The verb adds **no reader** and decodes **no gridded chunk
+/ pixel raster** (LOW-3) — it runs over the discovery layer + the 1-D index reads MS3/MS4
+already do.
+
 ## Inert and agnostic (load-bearing discipline)
 
 > **HDX describes the *shape* of data, never *what was done to it*** (spec §1).
@@ -94,6 +113,7 @@ graph TD
     geoparquet_reader[geoparquet_reader — outlines schema + delineation/basin_id + CRS]
     gridded_discovery[gridded_discovery — gridded half + combined Discovery]
     describe[describe — Description type + R4 serializable DTO layer]
+    validate[validate — §14 MUST checklist + ValidationReport]
 
     format_version --> error
     field --> error
@@ -143,6 +163,14 @@ graph TD
     describe --> manifest
     describe --> scalar_reader
     describe --> gridded_discovery
+
+    validate --> error
+    validate --> newtypes
+    validate --> field
+    validate --> manifest
+    validate --> scalar_reader
+    validate --> discovery
+    validate --> gridded_discovery
 ```
 
 The three MS3 modules (`layout` → `scalar_reader` → `discovery`) form the **scalar half
@@ -232,6 +260,16 @@ layered on.
   `to_json_pretty` emit the R4 shape. **Facts only — no verdict**: a basin with no
   extent serializes a `null` extent (the §6.1 ragged gap), an absent outlines rollup an
   empty `delineations` array.
+- **`validate`** (MS6) — the `validate` conformance verb (spec §10/§14): the report
+  value types ([`CheckId`](src/validate.rs) — the closed set of the 20 §14 ids;
+  `CheckStatus` `Ran`/`Skipped`; `CheckResult` `Pass`/`Fail`; `DepthClass`
+  `MetadataDeep`/`ByteDeep`; `CheckOutcome`; `ValidationReport`), the pure in-memory rule
+  functions (`check_h1` / `check_h2` / `check_i3` / `check_t1` / `check_g1`; M3/M4 folded
+  into the entry gate via `Manifest::from_json`), and the boundary verb
+  [`validate`](src/validate.rs) whose first act is the §0 hard-cut entry gate (mirroring
+  `describe`). The inert domain types and the report types gain **no** `serde::Serialize`
+  derive (the wire shape lands in MS6-S3) and the report carries only id / ran-skip /
+  pass-fail / depth / opaque detail — **no derived domain field**.
 
 The committed `schemas/manifest.schema.json` (at the repo root) mirrors the `manifest`
 floor; a `jsonschema` dev-dependency test (`tests/manifest_schema.rs`) asserts the
@@ -270,3 +308,9 @@ Domain terms an agent would not infer from the code alone. Spec section in paren
 | **Description** (§10, arch §3.5) | The full self-description `describe` emits ([`Description`](src/describe.rs)): the parsed `Manifest` plus the discovered `basins`, `fields` (`scalar ⊕ gridded`), `grids`, per-basin ragged `time_extents`, and `delineations`. Composed **only** from the six manifest floor fields + discovered facts (the §10/§11 floor stress test) and **records facts, never a verdict** (no `conformant` key — that is `validate`). A discovery gap is a fact: a basin with no extent has a `null` extent (the §6.1 ragged gap), an absent outlines rollup an empty list. |
 | **describe verb** (§10) | The first contract verb (spec §10): emit the full self-description discovered from a dataset's files, **facts only — no conformance verdict**. MS5-S1 freezes its output *type* + JSON shape; the verb's IO (read `manifest.json` → hard-cut `format_version` → `discover`) lands in a later step. `describe` is the declared **stress test of the manifest floor**: if assembling the `Description` is hard, the floor is too thin (spec §10/§11). |
 | **R4 mini-contract** (arch §7 R4) | The `Description` JSON shape is itself a downstream contract (the CLI + the PyO3 binding consume it), so it is **owned by the `describe` boundary**, not the inert domain types: a describe-local `#[derive(Serialize)]` DTO layer ([`describe`](src/describe.rs)) defines the wire shape in one reviewable place, mirroring the manifest parser's two-stage `ManifestDto` discipline. The domain types (`Field`, `GridInfo`, `Manifest`, `TimeExtent`) carry **no** `serde::Serialize` derive, so the wire shape cannot silently drift with internal type changes. Versioned **implicitly by `format_version` only** (no separate schema-version field). |
+| **validate verb** (§10, §14) | The conformance verb (spec §10): run the §14 `MUST` checklist over the shared discovery model and emit a `ValidationReport` + an overall `conformant: bool`. It **fails closed** (a violated `MUST` that ran ⇒ non-conformant) while honestly reporting **which checks ran vs skipped** (the §14 note). Its entry order mirrors `describe` — the §0 `format_version` hard cut and manifest boundary-parse run **before** discovery — and a structural / entry failure is a typed `ValidateError`, distinct from a `conformant: false` verdict. |
+| **CheckId** (§14) | The closed enum of the **20** §14 `MUST` check ids (`M1`–`M6`, `L1`–`L3`, `I1`–`I3`, `H1`–`H2`, `T1`–`T2`, `G1`–`G3`, `Geo1`) — never a string, so a typo cannot mint a non-existent check. `as_str()` yields the stable spec id for the wire shape. |
+| **CheckOutcome** (§14) | One check's recorded result: its `CheckId`, whether it `Ran` or was `Skipped` (an enum, never a bool), its `Pass`/`Fail` result (`Some` iff it ran), its R3 `DepthClass`, and an opaque detail/reason string. Built only through `ran_pass` / `ran_fail` / `skipped`, so a `Skipped` check can never carry a result. **Inert** — no derived domain field. |
+| **ValidationReport** (§10, §14) | The full report: the per-check `CheckOutcome`s + `conformant`, where `conformant` is computed **by construction** as "**no check that `Ran` has `result == Fail`**" — a `Skipped` check never flips it (fail-closed applies only to a `MUST` that ran). `find(id)` accesses a single outcome. The inert report types carry **no** `serde::Serialize` derive (MS6-S3 owns the wire shape). |
+| **R3 depth class** (arch §7 R3) | How deep into the bytes a check reached: `MetadataDeep` (decided from metadata + 1-D index reads only — every MS6-S1 check) vs `ByteDeep` (would need a chunk / pixel / full-axis read — the legs v0.1 honestly *skips*, e.g. the MS6-S2 per-basin axis-regularity leg). Recorded on every `CheckOutcome` so the report states its enforcement depth (the §14 note). |
+| **ran / skipped** (§14 note) | The §14 enforcement-depth note requires the validator to **clearly report which checks ran**. A `Skipped` check is an *honest deferral*, always paired with a reason string; it never makes a dataset non-conformant on its own. MS6-S1 runs M1–M4 (entry gate) + H1/H2/I3/T1/G1 and skips the cross-file checks as `"not yet wired"` until MS6-S2. |

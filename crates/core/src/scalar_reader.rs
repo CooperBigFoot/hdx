@@ -229,6 +229,28 @@ impl TimeColumn {
     pub fn is_sorted_ascending(&self) -> bool {
         self.sorted_ascending
     }
+
+    /// Test-only: builds a [`TimeColumn`] from its four recorded facts.
+    ///
+    /// The production path constructs a [`TimeColumn`] only from a parsed arrow schema
+    /// (see [`read_scalar_dynamic`]); this constructor exists so the in-memory T1
+    /// negative tests (MS6) can hand-build a non-conformant descriptor (a nullable /
+    /// unsorted / mis-named / mis-typed `time`) without differently-shaped on-disk
+    /// bytes. It is `#[cfg(test)]`-gated, so it adds no production surface.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        name: impl Into<String>,
+        dtype: Dtype,
+        nullable: bool,
+        sorted_ascending: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            dtype,
+            nullable,
+            sorted_ascending,
+        }
+    }
 }
 
 /// The discovered facts of the dataset-level `scalar_static.parquet` rollup

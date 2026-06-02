@@ -83,6 +83,23 @@
 //!   [`Description`](describe::Description). Errors are the boundary
 //!   [`DescribeError`](error::DescribeError) (it wraps [`CoreError`](error::CoreError)
 //!   so the hard cut surfaces unchanged).
+//! - [`validate`] — the `validate` conformance verb (spec §10/§14): runs the §14 `MUST`
+//!   checklist over the same shared [`Discovery`](gridded_discovery::Discovery) model and
+//!   emits a [`ValidationReport`](validate::ValidationReport) of per-check
+//!   [`CheckOutcome`](validate::CheckOutcome)s (each recording **ran vs skipped**, a
+//!   **pass/fail** result, and its R3 [`DepthClass`](validate::DepthClass)) plus an
+//!   overall `conformant: bool`. The verb's **entry order mirrors `describe`** (spec §0):
+//!   (1) read `manifest.json`, (2) [`Manifest::from_json`](manifest::Manifest::from_json)
+//!   hard-cut `format_version` — returning before discovery — (3)
+//!   [`discover`](gridded_discovery::discover), then (4) run the §14 rules. The
+//!   **report-vs-error split is load-bearing**: a violated `MUST` that ran is a recorded
+//!   fail [`CheckOutcome`](validate::CheckOutcome) (so `conformant: false`), never a
+//!   returned `Err`; a [`ValidateError`](error::ValidateError) is reserved for
+//!   **structural / entry** failures (an unreadable manifest, the §0 hard cut, an
+//!   undecodable present artifact) so the CLI (MS7) can map the two to distinct exit
+//!   codes. As of MS6-S1 the report carries real outcomes for the in-memory-falsifiable
+//!   checks (M1–M4 via the entry gate; H1, H2, I3, T1, G1) and `skipped` placeholders for
+//!   the cross-file checks (wired in MS6-S2), so the report already lists all 20 §14 ids.
 
 pub mod cog_reader;
 pub mod describe;
@@ -97,6 +114,7 @@ pub mod layout;
 pub mod manifest;
 pub mod newtypes;
 pub mod scalar_reader;
+pub mod validate;
 pub mod zarr_reader;
 
 // The parquet metadata touchpoint (MS3-S1): the scalar reader is its first non-test

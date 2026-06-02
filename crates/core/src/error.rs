@@ -354,3 +354,82 @@ pub enum DescribeError {
         detail: String,
     },
 }
+
+/// Errors produced by the `validate` boundary verb
+/// ([`validate`](crate::validate::validate), spec §10/§14, architecture §5).
+///
+/// `validate` shares `describe`'s **§0 entry discipline**: it reads `manifest.json`
+/// first and hard-cuts `format_version` **before** any discovery. Its error surface is
+/// therefore shaped like [`DescribeError`] — one boundary-IO concern of its own
+/// ([`ManifestUnreadable`]) plus thin wrappers over [`CoreError`] for the §0 hard cut /
+/// malformed manifest ([`Manifest`]) and structural discovery faults ([`Discovery`]).
+///
+/// **The report-vs-error split is load-bearing (recorded in MS6-S1).** A **violated
+/// `MUST` that ran** is *never* a `ValidateError`: it is a recorded
+/// [`CheckOutcome`](crate::validate::CheckOutcome) with
+/// [`CheckResult::Fail`](crate::validate::CheckResult::Fail), which makes the
+/// [`ValidationReport`](crate::validate::ValidationReport) non-`conformant`. A
+/// `ValidateError` is only for **structural / entry** failures — an unreadable manifest,
+/// the §0 hard version cut, an undecodable present artifact — so the CLI (MS7) can map a
+/// `ValidateError` to a distinct exit code from a `conformant: false` verdict. Library
+/// code never panics; every recoverable failure is one of these variants.
+///
+/// [`ManifestUnreadable`]: ValidateError::ManifestUnreadable
+/// [`Manifest`]: ValidateError::Manifest
+/// [`Discovery`]: ValidateError::Discovery
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ValidateError {
+    /// Fires when `<dataset>/manifest.json` itself cannot be read as a file: it is
+    /// absent, is a directory, or the read fails with a filesystem/permissions error
+    /// (spec §0 — the manifest is read **first**, before any other file). This is
+    /// **distinct from a malformed manifest**: a file that *is* read but whose contents
+    /// are not a conformant six-field manifest surfaces through
+    /// [`ValidateError::Manifest`] instead. The variant stays **inert/agnostic**
+    /// (spec §1): it carries only the offending path and an opaque detail string from
+    /// the underlying filesystem error — no domain field, no provenance.
+    #[error("failed to read manifest.json at {path:?}: {detail}")]
+    ManifestUnreadable {
+        /// The `manifest.json` path that could not be read (used only for the
+        /// diagnostic message, never interpreted).
+        path: String,
+        /// The underlying filesystem error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
+    /// Fires when the `manifest.json` file was read but its contents are not a
+    /// conformant six-field manifest — most importantly the §0/§14 M2 **hard version
+    /// cut** ([`CoreError::UnknownFormatVersion`]), which `validate` evaluates
+    /// **before** any discovery (spec §0 entry discipline). Also wraps the M3/M4
+    /// boundary failures ([`CoreError::ExtraManifestField`],
+    /// [`CoreError::MissingManifestField`], [`CoreError::InvalidTimestamp`],
+    /// [`CoreError::EmptyCrs`], [`CoreError::EmptyCadence`]) — the manifest parser
+    /// rejects all of these at the boundary, so M3/M4 are recorded as `ran:pass` once
+    /// the manifest parses and surface here as an `Err` when it does not. Wraps the
+    /// inner [`CoreError`] unchanged so a caller can match
+    /// `Manifest(CoreError::UnknownFormatVersion { .. })`.
+    #[error("manifest boundary-parse failed: {0}")]
+    Manifest(#[source] CoreError),
+
+    /// Fires when discovery (the layout walk + the scalar/gridded metadata readers)
+    /// fails **after** the manifest has been read and the hard version cut has passed.
+    /// Wraps the inner [`CoreError`] unchanged so the underlying structural failure
+    /// (e.g. [`CoreError::LayoutWalk`], [`CoreError::ZarrRead`]) surfaces verbatim. A
+    /// **violated `MUST`** is *not* this error — it is a recorded fail
+    /// [`CheckOutcome`](crate::validate::CheckOutcome), never raised (spec §10/§14).
+    #[error("discovery failed: {0}")]
+    Discovery(#[source] CoreError),
+
+    /// Reserved for MS6-S3: fires when an assembled
+    /// [`ValidationReport`](crate::validate::ValidationReport) cannot be serialized to
+    /// its JSON wire shape. Like [`DescribeError::Serialize`], this branch is
+    /// effectively unreachable (the report carries only stable enum strings, ids, and
+    /// opaque detail strings) but is surfaced as a typed boundary error so the no-panic
+    /// guarantee holds. The variant stays **inert/agnostic** (spec §1): it carries only
+    /// an opaque detail string from `serde_json` — no domain field.
+    #[error("failed to serialize the validate report: {detail}")]
+    Serialize {
+        /// The underlying `serde_json` error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+}
