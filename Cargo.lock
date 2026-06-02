@@ -709,7 +709,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hdx"
-version = "0.1.26"
+version = "0.1.27"
 dependencies = [
  "anyhow",
  "hdx-core",
@@ -729,6 +729,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tiff",
  "time",
  "tracing",
  "zarrs_metadata",
@@ -1459,6 +1460,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
 name = "quote"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1948,6 +1955,16 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float",
+]
+
+[[package]]
+name = "tiff"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63feaf3343d35b6ca4d50483f94843803b0f51634937cc2ec519fc32232bc52"
+dependencies = [
+ "half",
+ "quick-error",
 ]
 
 [[package]]

@@ -42,7 +42,16 @@
 //!   with the S1 center→edge conversion plus an ordinary `GriddedDynamic`
 //!   [`Field`](field::Field) per data variable. Metadata + 1-D coordinate reads only
 //!   — never a `c/0/0/0` data chunk (LOW-3).
+//! - [`cog_reader`] — the COG / GeoTIFF **metadata** reader (MS4): reads a
+//!   `gridded_static/<label>.tif` artifact **tags only** — the band description
+//!   (= field name) + units from tag 42112 `GDAL_METADATA` (the MED-4 protocol,
+//!   resolved as outcome 1: pure-Rust read live), and the standard GeoTIFF georef
+//!   tags (`ModelPixelScale`, `ModelTiepoint`, `ImageWidth`/`ImageLength`,
+//!   `GeoKeyDirectory` EPSG) into an edge-based [`GridInfo`](grid::GridInfo) plus an
+//!   ordinary `GriddedStatic` [`Field`](field::Field). Never decodes a pixel
+//!   raster (LOW-3); the edge extent matches the Zarr reader's at `10.0`/`50.0`.
 
+pub mod cog_reader;
 pub mod discovery;
 pub mod error;
 pub mod field;

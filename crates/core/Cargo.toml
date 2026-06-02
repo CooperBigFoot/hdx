@@ -53,6 +53,24 @@ zarrs_metadata = "0.7"
 # decompressed; the sharded `c/0/0/0` data chunks are never read (LOW-3). This is the
 # "any decompressor" the S1 R1 LOW contingency anticipates.
 ruzstd = "0.7"
+# Pure-Rust TIFF/GeoTIFF reader — the R1 COG reader choice (MS4-S3; spec §7/§8,
+# architecture §7 R1, MED-4), pinned to major 0 / minor 11. `default-features =
+# false` deliberately trims OUT every image-decode codec (`deflate`/`fax`/`jpeg`/
+# `lzw`, and the C-linking `zstd`): the COG reader reads **tags only** (band
+# descriptions + georef) and never decodes a pixel strip/tile, so no decompressor
+# is needed. We use only `tiff::decoder::Decoder` + `find_tag`/`get_tag_*` to read
+# the standard GeoTIFF georef tags (33550 ModelPixelScale, 33922 ModelTiepoint,
+# 34735 GeoKeyDirectory) and the GDAL band-metadata tag (42112), keeping the
+# no-GDAL / no-C-toolchain guarantee. NO GDAL, no async, no cloud, no pixel decode
+# (LOW-3). MED-4 outcome resolved: **(1) pure-Rust read works** — `tiff` 0.11
+# surfaces tag 42112 GDAL_METADATA as ASCII, from which HDX parses the band
+# description (`elevation`) + units (`m`); G1 COG-side is metadata-deep and live
+# (verified by the `cog_reader` fixture round-trip test). LOW contingency
+# (architecture §7 R1 amendment): if this crate's tag-reading API differs at
+# implementation time (it cannot be confirmed offline), pin the working adjacent
+# major and record a follow-up amendment — a version surprise is a recorded
+# pin-bump, never an ad-hoc red commit.
+tiff = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 # Test-only (never shipped in `hdx-core`): compiles the committed
