@@ -39,9 +39,12 @@ from hdx_fixtures.mutate import (
     EMPTY_CADENCE,
     EXTRA_MANIFEST_FIELD,
     EXTRA_MANIFEST_FIELD_VALUE,
+    H1_DIVERGENT_FIELD,
+    I2_FOREIGN_BASIN_ID,
     MISSING_ROOT_ROLLUP,
     WRONG_FORMAT_VERSION,
     Invalid,
+    _MUTATED_BASIN,
 )
 from hdx_fixtures.outlines import DELINEATION_ALT, DELINEATION_PRIMARY
 from hdx_fixtures.scalar import (
@@ -760,6 +763,86 @@ def _changed_files(baseline_root: Path, invalid_root: Path) -> set[str]:
     return changed
 
 
+def _mutated_dynamic_rel() -> str:
+    """Return the mutated basin's ``scalar_dynamic.parquet`` POSIX-relative path."""
+    return f"basin={_MUTATED_BASIN}/scalar_dynamic.parquet"
+
+
+def _assert_one_parquet_mutation(
+    invalid_root: Path, invalid: Invalid, changed: set[str]
+) -> None:
+    """Confirm a Bucket-B parquet rewrite touched exactly one file, correctly.
+
+    For each parquet-rewrite variant (I1/I2/H1/T1): exactly one shared file
+    differs (the mutated artifact), and re-reading it confirms the single intended
+    content divergence. Raises :class:`AssertionFailed` otherwise (LOW-2 one
+    surgical mutation, proven from the emitted bytes).
+    """
+    expected_file = _mutated_dynamic_rel()
+    _require(
+        changed == {expected_file},
+        f"{invalid_root}: differs in {sorted(changed)}, expected only "
+        f"{{{expected_file!r}}} (LOW-2 one mutation, pins {invalid.pinned_check})",
+    )
+
+    mutated = _read_table(invalid_root / expected_file)
+    names = mutated.schema.names
+
+    if invalid is Invalid.MISSING_BASIN_ID_COLUMN:
+        # I1: the mutated scalar_dynamic no longer carries the basin_id column.
+        _require(
+            "basin_id" not in names,
+            f"{invalid_root}: {expected_file} still has a basin_id column "
+            f"(I1 requires it dropped)",
+        )
+        _require(
+            DYNAMIC_FIELD in names and "time" in names,
+            f"{invalid_root}: {expected_file} lost more than basin_id "
+            f"(LOW-2: only basin_id may be dropped)",
+        )
+    elif invalid is Invalid.BASIN_ID_FOLDER_MISMATCH:
+        # I2: the in-file basin_id is the foreign value, disagreeing with the folder
+        # yet still a single unique value (so I3 stays pass).
+        ids = set(mutated.column("basin_id").to_pylist())
+        _require(
+            ids == {I2_FOREIGN_BASIN_ID},
+            f"{invalid_root}: {expected_file} in-file basin_id {ids} != "
+            f"{{{I2_FOREIGN_BASIN_ID!r}}} (I2 folder mismatch, kept unique)",
+        )
+        _require(
+            I2_FOREIGN_BASIN_ID != _MUTATED_BASIN,
+            f"{invalid_root}: foreign basin_id {I2_FOREIGN_BASIN_ID!r} equals the "
+            f"folder id (I2 needs a disagreement)",
+        )
+    elif invalid is Invalid.RAGGED_FIELD_SCHEMA:
+        # H1: the data field is renamed; only the name diverges (dtype unchanged).
+        _require(
+            H1_DIVERGENT_FIELD in names and DYNAMIC_FIELD not in names,
+            f"{invalid_root}: {expected_file} fields {names} did not rename "
+            f"{DYNAMIC_FIELD!r} → {H1_DIVERGENT_FIELD!r} (H1 ragged schema)",
+        )
+        _require(
+            pa.types.is_floating(mutated.schema.field(H1_DIVERGENT_FIELD).type),
+            f"{invalid_root}: {expected_file} renamed field dtype changed "
+            f"(LOW-2: only the name may diverge for H1)",
+        )
+    else:  # Invalid.NON_MONOTONIC_TIME
+        # T1: the time column is descending (first value exceeds the last), the
+        # only divergence; the column stays named time, timestamp, non-nullable.
+        time_field = mutated.schema.field("time")
+        _require(
+            pa.types.is_timestamp(time_field.type) and not time_field.nullable,
+            f"{invalid_root}: {expected_file} time is no longer a non-nullable "
+            f"timestamp (LOW-2: only the sort order may diverge for T1)",
+        )
+        values = mutated.column("time").to_pylist()
+        _require(
+            len(values) >= 2 and values[0] > values[-1],
+            f"{invalid_root}: {expected_file} time is not descending {values} "
+            f"(T1 non-monotonic)",
+        )
+
+
 def assert_differs_in_exactly_one_way(
     baseline_root: Path, invalid_root: Path, invalid: Invalid
 ) -> None:
@@ -788,6 +871,29 @@ def assert_differs_in_exactly_one_way(
     * :attr:`Invalid.MISSING_ROOT_ROLLUP` — the invalid tree is missing **exactly
       one** file (``outlines.geoparquet``), adds nothing, and **no** shared file's
       bytes differ — the rest of the tree is byte-identical (pins **L1**).
+
+    The **Bucket-B** parquet/layout negatives (MS8-S3) each touch exactly one
+    basin's artifact, adding nothing:
+
+    * :attr:`Invalid.MISSING_BASIN_ID_COLUMN` — exactly **one** file (the mutated
+      basin's ``scalar_dynamic.parquet``) differs; re-read, it no longer carries a
+      ``basin_id`` column, while the baseline still does (pins **I1**).
+    * :attr:`Invalid.BASIN_ID_FOLDER_MISMATCH` — exactly **one** file (the mutated
+      basin's ``scalar_dynamic.parquet``) differs; its in-file ``basin_id`` set is
+      exactly ``{I2_FOREIGN_BASIN_ID}`` (``9999``), disagreeing with the
+      ``basin=<id>`` folder yet unique across the dataset (pins **I2**).
+    * :attr:`Invalid.RAGGED_FIELD_SCHEMA` — exactly **one** file (the mutated
+      basin's ``scalar_dynamic.parquet``) differs; its data field is renamed
+      ``streamflow`` → :data:`H1_DIVERGENT_FIELD` (``flow``), the only schema
+      divergence (pins **H1**).
+    * :attr:`Invalid.NON_MONOTONIC_TIME` — exactly **one** file (the mutated
+      basin's ``scalar_dynamic.parquet``) differs; its ``time`` column is
+      descending (the first value exceeds the last), the only divergence (pins
+      **T1**).
+    * :attr:`Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE` — the invalid tree is missing
+      **exactly** the mutated basin's ``gridded_dynamic/`` subtree (every removed
+      path lies under it), adds nothing, and **no** shared file's bytes differ
+      (pins **L2**).
     """
     log = get_logger("assert.invalid")
     base_files = _relative_files(baseline_root)
@@ -900,7 +1006,7 @@ def assert_differs_in_exactly_one_way(
                 f"{invalid_root}: manifest differs in {sorted(differing_keys)}, "
                 f"expected only {{'cadence'}} (LOW-2 one mutation)",
             )
-    else:  # Invalid.MISSING_ROOT_ROLLUP
+    elif invalid is Invalid.MISSING_ROOT_ROLLUP:
         _require(
             removed == {MISSING_ROOT_ROLLUP},
             f"{invalid_root}: missing files {sorted(removed)}, expected exactly "
@@ -912,6 +1018,35 @@ def assert_differs_in_exactly_one_way(
             f"{invalid_root}: shared files differ {sorted(changed)}; removing one "
             f"rollup must leave the rest byte-identical (LOW-2)",
         )
+    elif invalid is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
+        # L2: the whole gridded_dynamic/ subtree of exactly the mutated basin is
+        # removed (a Zarr store is many files), nothing is added, and no shared file
+        # differs. Every removed path lies under that one basin's gridded_dynamic/.
+        subtree_prefix = (
+            f"basin={_MUTATED_BASIN}/gridded_dynamic/"
+        )
+        _require(
+            removed and all(rel.startswith(subtree_prefix) for rel in removed),
+            f"{invalid_root}: removed files {sorted(removed)} are not exactly the "
+            f"{subtree_prefix!r} subtree (LOW-2 one mutation, pins L2)",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            not changed,
+            f"{invalid_root}: shared files differ {sorted(changed)}; deleting one "
+            f"basin's gridded_dynamic subtree must leave the rest byte-identical "
+            f"(LOW-2)",
+        )
+    else:
+        # The Bucket-B parquet mutations (I1/I2/I3/H1/T1) each rewrite exactly one
+        # parquet file: no file added or removed, exactly one shared file differs.
+        _require(
+            not removed,
+            f"{invalid_root}: {invalid.value} removed files {sorted(removed)}; a "
+            f"parquet rewrite must add/remove nothing (LOW-2)",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _assert_one_parquet_mutation(invalid_root, invalid, changed)
 
     log.info(
         "invalid OK name=%s pins=%s added=%d removed=%d (one surgical mutation)",

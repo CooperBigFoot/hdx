@@ -2395,6 +2395,130 @@ mod tests {
         }
     }
 
+    // --- MS8-S3: Bucket-B one-violation invalids (I1/I2/I3/H1/T1/L2) ------------------
+    //
+    // Each fixture is one surgical mutation off the valid baseline (LOW-2; the
+    // generator's `assert_differs_in_exactly_one_way` proves the one-mutation invariant
+    // at generation time). Its negative is a CLEAN `conformant:false` report with exactly
+    // ONE §14 check `ran:fail` and every other check `pass`-or-`skip`. Each test pins the
+    // exact failing id, runs the purity assertion (no second check trips), and snapshots
+    // the report against the committed per-fixture `validate.golden.json`.
+
+    /// Reads a committed per-fixture golden validate report as a parsed `Value`.
+    ///
+    /// Regeneration workflow (when the report shape legitimately changes — a
+    /// `format_version` bump only): run `validate_json(conformance("invalid/<name>"))`,
+    /// pretty-print it, and overwrite `conformance/invalid/<name>/validate.golden.json`.
+    /// See `conformance/README.md`. Never hand-edited.
+    fn fixture_golden_value(name: &str) -> Value {
+        let path = conformance(name).join("validate.golden.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the golden must be valid JSON")
+    }
+
+    /// Asserts a Bucket-B fixture pins **exactly** one §14 check `ran:fail`.
+    ///
+    /// Shared `(fixture, pinned_id)` helper: validates the fixture (which discovers — the
+    /// violation is a check fail, not an `Err`), asserts `conformant:false`, the pinned id
+    /// is `status:ran result:fail`, **every other** check has `result != fail` (the purity
+    /// assertion that guards a second check from tripping), and the produced report is
+    /// snapshot-equal to the committed per-fixture golden.
+    fn assert_pins_exactly(name: &str, pinned: CheckId) {
+        let report = validate(conformance(name))
+            .unwrap_or_else(|e| panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}"));
+
+        // The pinned check ran and FAILED.
+        let outcome = report
+            .find(pinned)
+            .unwrap_or_else(|| panic!("{name}: {pinned:?} present in the report"));
+        assert_eq!(outcome.status(), CheckStatus::Ran, "{name}: {pinned:?} ran");
+        assert_eq!(
+            outcome.result(),
+            Some(CheckResult::Fail),
+            "{name}: {pinned:?} must fail"
+        );
+
+        // Non-conformant (fail-closed on the one violated MUST that ran).
+        assert!(!report.conformant(), "{name} ⇒ non-conformant");
+
+        // PURITY: EXACTLY the pinned id fails; every other check is pass-or-skip.
+        for other in report.checks() {
+            if other.id() == pinned {
+                continue;
+            }
+            assert_ne!(
+                other.result(),
+                Some(CheckResult::Fail),
+                "{name}: only {pinned:?} may fail; {:?} also failed",
+                other.id()
+            );
+        }
+
+        // SNAPSHOT: the produced report equals the committed per-fixture golden.
+        let produced: Value = serde_json::from_str(
+            &validate_json(conformance(name)).expect("validate_json succeeds"),
+        )
+        .expect("validate output is valid JSON");
+        assert_eq!(
+            produced,
+            fixture_golden_value(name),
+            "{name}: validate must equal the committed golden \
+             (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+
+        // The golden also matches the pinned wire shape (R4 schema lock).
+        let validator = validate_validator();
+        assert!(
+            validator.is_valid(&fixture_golden_value(name)),
+            "{name}: the golden must validate against validate.schema.json"
+        );
+    }
+
+    #[test]
+    fn i1_missing_basin_id_pins_exactly_i1() {
+        // One basin's scalar_dynamic dropped its basin_id column (spec §3 / I1). The
+        // reader records has_basin_id=false (it does NOT error), so check_i1 ⇒ ran:fail.
+        // I3/I2/H1 are unaffected (the None basin is filtered/skipped; basin_id is never
+        // a catalogued field) — confirmed I1-only.
+        assert_pins_exactly("invalid/missing-basin-id-column", CheckId::I1);
+    }
+
+    #[test]
+    fn i2_folder_mismatch_pins_exactly_i2() {
+        // One basin's in-file basin_id is rewritten to a unique foreign value (9999) that
+        // disagrees with its basin=<id> folder (spec §3 / I2) ⇒ check_i2 ran:fail. I3
+        // stays pass (the value is kept unique); I1 stays pass (the column is present).
+        assert_pins_exactly("invalid/basin-id-folder-mismatch", CheckId::I2);
+    }
+
+    #[test]
+    fn h1_ragged_schema_pins_exactly_h1() {
+        // One basin's scalar_dynamic renames its data field streamflow→flow (spec §5 /
+        // H1); only the name diverges (dtype/quadrant kept) ⇒ check_h1 ran:fail. T1/I1/I2/
+        // I3 stay pass (time/basin_id unchanged) — confirmed H1-only.
+        assert_pins_exactly("invalid/ragged-field-schema", CheckId::H1);
+    }
+
+    #[test]
+    fn t1_non_monotonic_pins_exactly_t1() {
+        // One basin's scalar_dynamic time is written descending across row groups (spec
+        // §6.3 / T1) ⇒ time_sorted_ascending false ⇒ check_t1 ran:fail. The single pinned
+        // T1 mutation (the nullable/mistyped/misnamed legs are covered in-memory by
+        // t1_negative_per_leg).
+        assert_pins_exactly("invalid/non-monotonic-time", CheckId::T1);
+    }
+
+    #[test]
+    fn l2_missing_gridded_dynamic_pins_exactly_l2() {
+        // One basin's gridded_dynamic/ subtree is deleted (spec §4 / L2).
+        // declares_gridded_dynamic stays true dataset-wide, so that basin's empty
+        // dynamic_artifacts() ⇒ check_l2 ran:fail. H2 does NOT co-fail: the surviving COG
+        // keeps the era5 static label, so every basin's label set is {era5} — confirmed
+        // L2-only (the H2-collision caveat held).
+        assert_pins_exactly("invalid/missing-gridded-dynamic-subtree", CheckId::L2);
+    }
+
     /// The DTO is the single wire-shape surface (the inert types stay serde-free).
     /// A produced report serializes to exactly `{checks, conformant}` at the top level
     /// and each check entry is exactly `{id, status, result, depth, detail}` — no

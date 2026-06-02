@@ -1,0 +1,145 @@
+{
+  "checks": [
+    {
+      "id": "M1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M4",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M5",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M6",
+      "status": "skipped",
+      "result": null,
+      "depth": "byte_deep",
+      "detail": "rule (a) cadence-non-empty passed; rule (b) per-basin axis REGULARITY needs the full 1-D time array, but v0.1 discovery surfaces only [start,end] + sortedness — byte-deep axis-regularity verification deferred (no cadence-word interpretation, no cross-basin step equality asserted)"
+    },
+    {
+      "id": "L1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "L2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "L3",
+      "status": "skipped",
+      "result": null,
+      "depth": "byte_deep",
+      "detail": "the metadata-deep legs hold by construction (the walk ignores dot-cruft and every present artifact decoded during discovery); the absence-is-NaN-not-a- missing-file leg needs a byte-deep read of the cell payloads, which validate never performs (LOW-3) — deferred to the MS8 on-disk matrix"
+    },
+    {
+      "id": "I1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "I2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "I3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "H1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "H2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "T1",
+      "status": "ran",
+      "result": "fail",
+      "depth": "metadata_deep",
+      "detail": "non-monotonic time axis in basin \"0003\""
+    },
+    {
+      "id": "T2",
+      "status": "skipped",
+      "result": null,
+      "depth": "byte_deep",
+      "detail": "intra-basin scalar-vs-gridded full time-axis identity needs both 1-D axes; v0.1 discovery surfaces the scalar [start,end] extent but not a comparable gridded time axis on the model — byte-deep cross-artifact axis identity deferred to the MS8 on-disk matrix"
+    },
+    {
+      "id": "G1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "G2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "G3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "Geo1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    }
+  ],
+  "conformant": false
+}
