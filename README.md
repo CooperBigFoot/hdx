@@ -89,28 +89,35 @@ hdx validate ./my-dataset    # prints the ValidationReport JSON to stdout
 | `1` | non-conformant — `validate` returned `conformant: false` |
 | `2` | usage / IO error — bad args, unreadable path, unknown `format_version` (hard cut), malformed manifest |
 
-> **Note:** the CLI is being finalized in milestone MS7; the current `src/main.rs` is a stub. The surface above is the intended v0.1 contract per the spec and milestone plan.
-
 ### Conformance fixtures
 
-[`conformance/`](conformance/) holds a **dev-only Python fixture generator** (never shipped in `hdx-core`, not an HDX writer) plus committed datasets and golden outputs (see [`conformance/README.md`](conformance/README.md)):
+[`conformance/`](conformance/) holds a **dev-only Python fixture generator** (never shipped in `hdx-core`, not an HDX writer) plus the golden outputs (see [`conformance/README.md`](conformance/README.md)). The fixture **data** trees are **git-ignored and regenerated** from the deterministic generator (run `conformance/generator/regenerate.sh` before `cargo test`); only the generator source and the small goldens are tracked.
 
 - `valid/minimal/` — one valid three-basin, four-quadrant dataset (shared aligned `era5` grid label, ragged-across/aligned-within time axes, companion-mask + `{source}_{variable}` fields, plural delineations).
-- `invalid/wrong-format-version/` — one surgical mutation pinning check `M2`.
-- `invalid/missing-root-rollup/` — one surgical mutation pinning check `L1`.
-- Golden `describe` and `validate` outputs (produced by `hdx-core`, not the generator), pinned by snapshot tests and validated against the JSON Schemas in [`schemas/`](schemas/) (`manifest.schema.json`, `describe.schema.json`, `validate.schema.json`).
+- `valid/irregular-time-axis/` — a second valid-shaped dataset that stays `conformant: true` while `M6`'s axis-regularity leg is honestly reported *skipped* (the no-enforceable-M6-negative finding).
+- **12 fail-closed invalids**, each one surgical mutation off the baseline, each pinning exactly one §14 check (`M2`–`M6`, `L1`/`L2`, `I1`/`I2`, `H1`/`H2`, `T1`, `G2`). The full classification of all 20 ids — including the checks with no isolable on-disk negative in v0.1 (`I3`, `G1`, `G3`, `Geo1`) and the byte-deep skips (`L3`, `T2`, `M6`-regularity) — lives in `conformance/README.md`.
+- Golden `describe`/`validate` outputs in [`conformance/goldens/`](conformance/goldens/) (produced by `hdx-core`, kept *outside* the regenerated trees), pinned by snapshot tests and validated against the JSON Schemas in [`schemas/`](schemas/) (`manifest.schema.json`, `describe.schema.json`, `validate.schema.json`).
+
+### The Python binding
+
+[`crates/python/`](crates/python/) is a **PyO3 binding** (abi3, built with `maturin`) that **mirrors** `validate`/`describe` over the same `hdx-core` API — it adds no contract logic and re-derives no wire shape. `hdx.describe(path)` / `hdx.validate(path)` return the same JSON-shaped `dict`s; the §0 hard version cut surfaces as an `hdx.UnknownFormatVersionError` (an `hdx.HdxError`). See [`crates/python/README.md`](crates/python/README.md).
 
 ### Explicitly out of scope
 
-`regrid`, `clip`, and `reduce` are **excluded from HDX entirely** — they encode hydrology (area-weighting, partial-cell handling, resampling kernels), not the contract, and belong to a separate data-operations engine. They MUST NOT appear in `hdx-core`. A **PyO3 Python binding** (`crates/python`, mirroring the two verbs over the same `hdx-core` API) is planned but **not yet built** (milestone MS9).
+`regrid`, `clip`, and `reduce` are **excluded from HDX entirely** — they encode hydrology (area-weighting, partial-cell handling, resampling kernels), not the contract, and belong to a separate data-operations engine. They MUST NOT appear in `hdx-core`.
 
 ## Build & development quickstart
 
 ```sh
 cargo build
+# conformance fixture data is git-ignored — regenerate it before testing:
+PYTHON=python3.12 conformance/generator/regenerate.sh
 cargo test
-cargo clippy -- -D warnings
-cargo run -- describe conformance/valid/minimal     # once MS7 lands
+cargo clippy --all-targets -- -D warnings
+cargo run -- describe conformance/valid/minimal     # Description JSON to stdout
+
+# Python binding (mirrors the verbs):
+crates/python/run_python_tests.sh                    # maturin build + pytest over regenerated fixtures
 ```
 
 Project conventions (see [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)):
@@ -135,4 +142,4 @@ Project conventions (see [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)):
 
 ## Status
 
-HDX is in active, milestone-based development of **v0.1** (`format_version = "0.1"`). The discovery layer and both verbs (`validate` + `describe`) are implemented in `hdx-core` with committed conformance fixtures and golden outputs; the thin CLI (MS7) and the PyO3 binding (MS9) are forthcoming.
+**HDX v0.1 (`format_version = "0.1"`) is feature-complete.** The shared discovery layer and both verbs (`validate` over the full 20-check §14 `MUST` set, and `describe`) are implemented in `hdx-core` (pure-Rust readers, no GDAL); the thin `hdx` CLI wraps them with the `0`/`1`/`2` exit-code contract; the conformance suite covers every §14 id (regenerated fixtures + tracked goldens); and the PyO3 binding in `crates/python` mirrors the verbs into Python. Built milestone-by-milestone with an adversarial plan→critique→execute workflow; see [`planning/`](planning/) for the audit trail and [`architecture.md`](architecture.md) for the build decisions and amendments.
