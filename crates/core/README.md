@@ -117,7 +117,7 @@ graph TD
     geoparquet_reader[geoparquet_reader — outlines schema + delineation/basin_id + CRS]
     gridded_discovery[gridded_discovery — gridded half + combined Discovery]
     describe[describe — Description type + R4 serializable DTO layer]
-    validate[validate — §14 MUST checklist + ValidationReport]
+    validate[validate — §14 MUST checklist + ValidationReport + R4 serializable DTO layer]
 
     format_version --> error
     field --> error
@@ -273,9 +273,12 @@ layered on.
   (`check_l1` / `check_l2` / `check_l3` / `check_i1` / `check_i2` / `check_m5` /
   `check_m6` / `check_t2` / `check_g2` / `check_g3` / `check_geo1`, MS6-S2), and the
   boundary verb [`validate`](src/validate.rs) whose first act is the §0 hard-cut entry
-  gate (mirroring `describe`). The inert domain types and the report types gain **no** `serde::Serialize`
-  derive (the wire shape lands in MS6-S3) and the report carries only id / ran-skip /
-  pass-fail / depth / opaque detail — **no derived domain field**.
+  gate (mirroring `describe`). The inert domain types and the report types gain **no**
+  `serde::Serialize` derive — MS6-S3 owns the wire shape via a validate-local
+  `#[derive(Serialize)]` DTO layer (`ValidationReportDto` + `CheckOutcomeDto`) and the
+  `validate_json` boundary, pinned by `schemas/validate.schema.json` + a committed golden
+  report. The report carries only id / ran-skip / pass-fail / depth / opaque detail —
+  **no derived domain field**.
 
 The committed `schemas/manifest.schema.json` (at the repo root) mirrors the `manifest`
 floor; a `jsonschema` dev-dependency test (`tests/manifest_schema.rs`) asserts the
@@ -317,6 +320,7 @@ Domain terms an agent would not infer from the code alone. Spec section in paren
 | **validate verb** (§10, §14) | The conformance verb (spec §10): run the §14 `MUST` checklist over the shared discovery model and emit a `ValidationReport` + an overall `conformant: bool`. It **fails closed** (a violated `MUST` that ran ⇒ non-conformant) while honestly reporting **which checks ran vs skipped** (the §14 note). Its entry order mirrors `describe` — the §0 `format_version` hard cut and manifest boundary-parse run **before** discovery — and a structural / entry failure is a typed `ValidateError`, distinct from a `conformant: false` verdict. |
 | **CheckId** (§14) | The closed enum of the **20** §14 `MUST` check ids (`M1`–`M6`, `L1`–`L3`, `I1`–`I3`, `H1`–`H2`, `T1`–`T2`, `G1`–`G3`, `Geo1`) — never a string, so a typo cannot mint a non-existent check. `as_str()` yields the stable spec id for the wire shape. |
 | **CheckOutcome** (§14) | One check's recorded result: its `CheckId`, whether it `Ran` or was `Skipped` (an enum, never a bool), its `Pass`/`Fail` result (`Some` iff it ran), its R3 `DepthClass`, and an opaque detail/reason string. Built only through `ran_pass` / `ran_fail` / `skipped`, so a `Skipped` check can never carry a result. **Inert** — no derived domain field. |
-| **ValidationReport** (§10, §14) | The full report: the per-check `CheckOutcome`s + `conformant`, where `conformant` is computed **by construction** as "**no check that `Ran` has `result == Fail`**" — a `Skipped` check never flips it (fail-closed applies only to a `MUST` that ran). `find(id)` accesses a single outcome. The inert report types carry **no** `serde::Serialize` derive (MS6-S3 owns the wire shape). |
+| **ValidationReport** (§10, §14) | The full report: the per-check `CheckOutcome`s + `conformant`, where `conformant` is computed **by construction** as "**no check that `Ran` has `result == Fail`**" — a `Skipped` check never flips it (fail-closed applies only to a `MUST` that ran). `find(id)` accesses a single outcome. The inert report types carry **no** `serde::Serialize` derive — the validate-local `ValidationReportDto` owns the wire shape (see *validate wire-shape lock*). |
+| **validate wire-shape lock** (§10/§14, arch §7 R4) | MS6-S3 pins the report's JSON wire shape exactly like `describe`'s R4 mini-contract: a validate-local `#[derive(Serialize)]` DTO layer (`ValidationReportDto` + `CheckOutcomeDto`) defines the shape in one reviewable place, the inert `CheckOutcome`/`ValidationReport` stay serde-free, and `validate_json(path) -> Result<String, ValidateError>` is the JSON boundary. The shape `{checks, conformant}` (each check `{id, status, result, depth, detail}`) is committed to [`schemas/validate.schema.json`](../../schemas/validate.schema.json) (`additionalProperties:false`) and to a golden report (`conformance/valid/minimal/validate.golden.json`), checked by Rust tests via the `jsonschema` dev-dep + a snapshot equality. Versioned **implicitly by `format_version` only**. The golden makes the §14-note "report which checks ran" requirement a machine-readable artifact. |
 | **R3 depth class** (arch §7 R3) | How deep into the bytes a check reached: `MetadataDeep` (decided from metadata + 1-D index reads only — every MS6-S1 check) vs `ByteDeep` (would need a chunk / pixel / full-axis read — the legs v0.1 honestly *skips*, e.g. the MS6-S2 per-basin axis-regularity leg). Recorded on every `CheckOutcome` so the report states its enforcement depth (the §14 note). |
 | **ran / skipped** (§14 note) | The §14 enforcement-depth note requires the validator to **clearly report which checks ran**. A `Skipped` check is an *honest deferral*, always paired with a reason string; it never makes a dataset non-conformant on its own. As of MS6-S2 every §14 id reaches a real outcome: M1–M4 (entry gate) + H1/H2/I3/T1/G1/L1/L2/I1/I2/M5/G2/G3 `ran` (pass/fail), and the genuinely byte-deep / on-disk-shape-dependent legs (L3, M6 rule (b) axis-regularity, T2 cross-artifact axis, Geo1 when outlines is absent) are honest R3 `Skipped`-with-reason. |

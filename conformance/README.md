@@ -63,6 +63,7 @@ conformance/
     hdx_fixtures/                         # generator package (manifest/scalar/outlines/grids/mutate/assertions)
   valid/minimal/                          # the one valid four-quadrant dataset
   valid/minimal/describe.golden.json      # pinned `describe` output (R4); produced by hdx-core, not the generator
+  valid/minimal/validate.golden.json      # pinned `validate` report (R4); produced by hdx-core, not the generator
   invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline
   invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline
 ```
@@ -146,6 +147,45 @@ hand-edited: run `describe` over `valid/minimal`, pretty-print it
 when the describe shape legitimately changes (a `format_version` bump). A drift caught
 by the snapshot test that is **not** an intended shape change is a bug, not a
 golden-refresh. (MS8 extends this golden-output discipline to the wider fixture family.)
+
+### `valid/minimal/validate.golden.json` — the pinned `validate` report (R4)
+
+A single committed golden file holds the exact `validate` report JSON for the valid
+fixture: [`valid/minimal/validate.golden.json`](valid/minimal/validate.golden.json).
+
+It is **produced by `hdx-core`'s `validate` verb — NOT by the Python generator.** The
+generator emits the on-disk dataset bytes; `validate` reads them, runs the §14 `MUST`
+checklist over the discovery layer, and emits the report (the per-check outcomes +
+`conformant`). The golden is the pretty-printed output of `validate_json(valid/minimal)`
+and is pinned by Rust tests in `crates/core/src/validate.rs`:
+
+1. it **validates** against [`schemas/validate.schema.json`](../schemas/validate.schema.json)
+   (via the test-only `jsonschema` dev-dep) — the R4 validate-half lock;
+2. `validate` of the valid fixture, parsed to JSON, **equals** the golden — the snapshot.
+
+**It records which checks ran vs were skipped (spec §14 note).** The golden lists **all
+20** §14 ids; each carries its `status` (`ran` / `skipped`), its `result` (`pass` / `fail`,
+or `null` for a skip), its R3 `depth` (`metadata_deep` / `byte_deep`), and an opaque
+`detail`. On the valid fixture every check `ran:pass` **except** the v0.1 honest R3 skips —
+**M6** (per-basin axis regularity needs the full 1-D `time` array), **L3** (the
+absence-is-NaN-not-a-missing-file leg needs a byte-deep payload read), and **T2** (the
+cross-artifact full time-axis identity needs both 1-D axes) — each with a non-empty skip
+reason. `conformant` is `true` (a skip never flips the verdict; fail-closed applies only to
+a violated `MUST` that ran). This makes the §14-note requirement ("the validator MUST
+clearly report which checks ran") a **machine-readable, pinned artifact**.
+
+**Versioned implicitly by `format_version` only.** Like the describe shape, the validate
+report carries no schema-version field; its only version is the manifest `format_version`
+hard cut (spec §0/§11). A shape change is therefore a `format_version` bump, refreshed in
+the same change.
+
+**Golden-update workflow.** The golden is regenerated **from the Rust verb**, never
+hand-edited: run `validate` over `valid/minimal`, pretty-print it
+(`ValidationReport::to_json_pretty`), and overwrite `validate.golden.json`. Do this **only**
+when the report shape legitimately changes (a `format_version` bump). A drift caught by the
+snapshot test that is **not** an intended shape change is a bug, not a golden-refresh.
+(MS8 extends this golden-output discipline to the wider invalid fixture family — the
+exhaustive one-violation-per-check golden report matrix.)
 
 ### `invalid/wrong-format-version/` — pins **M2**
 

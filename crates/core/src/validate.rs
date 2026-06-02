@@ -75,6 +75,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use serde::Serialize;
 use tracing::{debug, info, instrument};
 
 use crate::discovery::BasinScalar;
@@ -205,6 +206,16 @@ pub enum CheckStatus {
     Skipped,
 }
 
+impl CheckStatus {
+    /// Returns the stable wire string (`"ran"` / `"skipped"`) for the report.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckStatus::Ran => "ran",
+            CheckStatus::Skipped => "skipped",
+        }
+    }
+}
+
 /// The verdict of a check that ran: `Pass` or `Fail` (an enum, never a bool).
 ///
 /// Only a [`CheckStatus::Ran`] check carries a `CheckResult`; a `Fail` of any `MUST`
@@ -215,6 +226,16 @@ pub enum CheckResult {
     Pass,
     /// The `MUST` was violated — the dataset is non-conformant (fail-closed).
     Fail,
+}
+
+impl CheckResult {
+    /// Returns the stable wire string (`"pass"` / `"fail"`) for the report.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckResult::Pass => "pass",
+            CheckResult::Fail => "fail",
+        }
+    }
 }
 
 /// The R3 enforcement-depth class of a check (architecture §7 R3).
@@ -366,6 +387,95 @@ impl ValidationReport {
     /// Returns the outcome for a given check id, if present.
     pub fn find(&self, id: CheckId) -> Option<&CheckOutcome> {
         self.checks.iter().find(|c| c.id() == id)
+    }
+
+    /// Maps this [`ValidationReport`] into its serializable [`ValidationReportDto`]
+    /// (the pinned wire shape, spec §10/§14).
+    ///
+    /// The DTO owns the JSON wire shape; this is the single place the inert domain types
+    /// are projected onto it. Borrowing — no clones beyond the `&str` views the DTO holds.
+    pub fn to_dto(&self) -> ValidationReportDto<'_> {
+        ValidationReportDto {
+            checks: self.checks.iter().map(CheckOutcomeDto::from_outcome).collect(),
+            conformant: self.conformant,
+        }
+    }
+
+    /// Serializes this [`ValidationReport`] to a compact JSON string (the wire shape).
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Error |
+    /// |---|---|
+    /// | the DTO cannot be serialized (practically unreachable — only stable `&str`s and a bool) | [`serde_json::Error`] |
+    pub fn to_json_string(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.to_dto())
+    }
+
+    /// Serializes this [`ValidationReport`] to a pretty-printed JSON string (the wire
+    /// shape, indented; the form the golden report pins).
+    ///
+    /// # Errors
+    ///
+    /// | Condition | Error |
+    /// |---|---|
+    /// | the DTO cannot be serialized (practically unreachable — only stable `&str`s and a bool) | [`serde_json::Error`] |
+    pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.to_dto())
+    }
+}
+
+/// The serializable top-level `validate` report shape. Owns the JSON wire shape.
+///
+/// Exactly `{checks, conformant}` (spec §10/§14): the per-check outcomes plus the overall
+/// verdict. The shape is **inert/agnostic** (spec §1) — a check entry carries only its id,
+/// ran/skip status, pass/fail result, R3 depth class, and an opaque detail string; no
+/// derived domain field. The inert [`CheckOutcome`] / [`ValidationReport`] gain **no**
+/// `serde::Serialize` derive; this describe-local DTO is the single wire-shape surface, the
+/// same two-stage discipline `describe` uses (architecture §3.5/§5, R4). The shape is
+/// versioned **implicitly by `format_version` only** (the hard cut, spec §0/§11) — there is
+/// no separate schema-version field.
+#[derive(Debug, Serialize)]
+pub struct ValidationReportDto<'a> {
+    /// Source: [`ValidationReport::checks`] (every §14 id, in spec order).
+    checks: Vec<CheckOutcomeDto<'a>>,
+    /// Source: [`ValidationReport::conformant`] ("no check that ran failed", spec §14).
+    conformant: bool,
+}
+
+/// The serializable per-check outcome shape — exactly `{id, status, result, depth,
+/// detail}` (spec §14).
+///
+/// Mirrors one [`CheckOutcome`] onto the wire: the stable spec id, the ran/skip status,
+/// the pass/fail result (`null` for a skipped check), the R3 depth class, and the opaque
+/// detail/reason string (`null` when none). This is the machine-readable form of the §14
+/// note requirement — the report **clearly reports which checks ran vs were skipped**.
+#[derive(Debug, Serialize)]
+struct CheckOutcomeDto<'a> {
+    /// Source: [`CheckOutcome::id`] via [`CheckId::as_str`] (`"M1"`…`"Geo1"`).
+    id: &'a str,
+    /// Source: [`CheckOutcome::status`] via [`CheckStatus::as_str`] (`"ran"` / `"skipped"`).
+    status: &'a str,
+    /// Source: [`CheckOutcome::result`] via [`CheckResult::as_str`] (`"pass"` / `"fail"`),
+    /// or `null` for a skipped check.
+    result: Option<&'a str>,
+    /// Source: [`CheckOutcome::depth`] via [`DepthClass::as_str`]
+    /// (`"metadata_deep"` / `"byte_deep"`).
+    depth: &'a str,
+    /// Source: [`CheckOutcome::detail`] — the opaque fail/skip reason, or `null` when none.
+    detail: Option<&'a str>,
+}
+
+impl<'a> CheckOutcomeDto<'a> {
+    /// Projects one [`CheckOutcome`] onto the wire shape (borrowing its stable strings).
+    fn from_outcome(outcome: &'a CheckOutcome) -> Self {
+        Self {
+            id: outcome.id().as_str(),
+            status: outcome.status().as_str(),
+            result: outcome.result().map(|r| r.as_str()),
+            depth: outcome.depth().as_str(),
+            detail: outcome.detail(),
+        }
     }
 }
 
@@ -1180,6 +1290,30 @@ pub fn validate(path: impl AsRef<Path>) -> Result<ValidationReport, ValidateErro
     Ok(report)
 }
 
+/// Validates a dataset and serializes the [`ValidationReport`] to its stable JSON string
+/// (the wire shape the CLI (MS7) and the PyO3 binding (MS9) consume, spec §10/§14).
+///
+/// A thin wrapper over [`validate`] + [`ValidationReport::to_json_string`]; the same §0
+/// entry discipline and report-vs-error split apply. A **violated `MUST`** is carried in
+/// the JSON as a `result:"fail"` outcome with `conformant:false`, never raised as an
+/// `Err` — only a structural/entry failure (or the §0 hard cut) is an `Err`.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |---|---|
+/// | [`validate`] fails (unreadable/malformed manifest, the §0 hard cut, or discovery) | the propagated [`ValidateError`] |
+/// | the assembled [`ValidationReport`] cannot be serialized (practically unreachable — only stable enum strings + a bool) | [`ValidateError::Serialize`] |
+#[instrument(fields(path = %path.as_ref().display()))]
+pub fn validate_json(path: impl AsRef<Path>) -> Result<String, ValidateError> {
+    let report = validate(path)?;
+    report
+        .to_json_string()
+        .map_err(|err| ValidateError::Serialize {
+            detail: err.to_string(),
+        })
+}
+
 /// Assembles the report by running every §14 rule over the discovery model + manifest
 /// (spec §14).
 ///
@@ -1323,6 +1457,7 @@ fn per_basin_time(discovery: &Discovery) -> Vec<(&BasinId, Option<&TimeColumn>)>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
     use crate::error::{CoreError, ValidateError};
@@ -1332,9 +1467,11 @@ mod tests {
     use crate::newtypes::{BasinId, Cadence, Crs, GridLabel};
     use crate::scalar_reader::TimeColumn;
 
+    use serde_json::Value;
+
     use crate::validate::{
         CheckId, CheckResult, CheckStatus, DepthClass, ValidationReport, check_g1, check_h1,
-        check_h2, check_i3, check_m5, check_m6, check_t1, validate,
+        check_h2, check_i3, check_m5, check_m6, check_t1, validate, validate_json,
     };
 
     /// Resolves a path under the committed `conformance/` fixture tree.
@@ -1975,5 +2112,280 @@ mod tests {
             Some(CheckResult::Pass),
             "G1 treats the companion-mask field as ordinary (no special-casing)"
         );
+    }
+
+    // --- MS6-S3: the report wire-shape lock (validate.schema.json + golden snapshot) ---
+
+    /// Resolves a path under the repository-root `schemas/` directory.
+    ///
+    /// `CARGO_MANIFEST_DIR` is `crates/core`; the committed schemas live two levels up.
+    fn schema_path(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../schemas")
+            .join(rel)
+    }
+
+    /// Loads and compiles the committed `schemas/validate.schema.json`.
+    ///
+    /// Uses the test-only `jsonschema` dev-dependency (never shipped in `hdx-core`).
+    fn validate_validator() -> jsonschema::Validator {
+        let path = schema_path("validate.schema.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let schema: Value =
+            serde_json::from_str(&raw).expect("validate.schema.json must be valid JSON");
+        jsonschema::validator_for(&schema)
+            .expect("validate.schema.json must compile as a JSON Schema")
+    }
+
+    /// Reads the committed golden validate report as a parsed `Value`.
+    ///
+    /// Regeneration workflow (when the report shape legitimately changes — a
+    /// `format_version` bump only): run `validate(conformance("valid/minimal"))`,
+    /// pretty-print it (`ValidationReport::to_json_pretty`), and overwrite
+    /// `conformance/valid/minimal/validate.golden.json`. See `conformance/README.md`.
+    fn golden_value() -> Value {
+        let path = conformance("valid/minimal/validate.golden.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the golden must be valid JSON")
+    }
+
+    /// R4 schema test (jsonschema dev-dep). The committed golden validate report of the
+    /// MS2 valid fixture **validates** against the committed `validate.schema.json`,
+    /// pinning the validate half of R4 (architecture §7).
+    #[test]
+    fn golden_validates_against_validate_schema() {
+        let validator = validate_validator();
+        let golden = golden_value();
+        if let Err(error) = validator.validate(&golden) {
+            panic!("the golden validate report must validate against validate.schema.json: {error}");
+        }
+    }
+
+    /// Golden snapshot test. `validate_json` of the valid fixture, parsed to a `Value`,
+    /// equals the committed golden parsed to a `Value` (compared as parsed JSON so
+    /// whitespace/trailing-newline differences are not brittle while every key/value is
+    /// pinned). This is the snapshot that locks the report wire shape to a committed
+    /// artifact.
+    #[test]
+    fn validate_json_equals_committed_golden() {
+        let produced: Value = serde_json::from_str(
+            &validate_json(conformance("valid/minimal")).expect("validate_json succeeds"),
+        )
+        .expect("validate output is valid JSON");
+
+        assert_eq!(
+            produced,
+            golden_value(),
+            "validate of the valid fixture must equal the committed golden \
+             (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+    }
+
+    /// Report-states-which-ran (FOLD honesty / spec §14 note). The golden's `checks`
+    /// array contains **all 20** §14 ids; the v0.1 honest skips (M6 regularity leg, L3
+    /// absence-vs-NaN leg, T2 cross-artifact axis leg) appear with `status:"skipped"` +
+    /// a non-empty `detail`; every other check is `status:"ran"` with `result:"pass"`;
+    /// top-level `conformant:true`. This pins, in the committed artifact, that the report
+    /// clearly reports which checks ran vs were skipped.
+    #[test]
+    fn golden_clearly_reports_which_checks_ran_vs_skipped() {
+        let golden = golden_value();
+        let checks = golden
+            .get("checks")
+            .and_then(Value::as_array)
+            .expect("golden checks array");
+
+        // All 20 §14 ids are present, in spec order.
+        let ids: Vec<&str> = checks
+            .iter()
+            .map(|c| c.get("id").and_then(Value::as_str).expect("check id"))
+            .collect();
+        let expected_ids = [
+            "M1", "M2", "M3", "M4", "M5", "M6", "L1", "L2", "L3", "I1", "I2", "I3", "H1", "H2",
+            "T1", "T2", "G1", "G2", "G3", "Geo1",
+        ];
+        assert_eq!(ids, expected_ids, "the golden lists every §14 id in spec order");
+
+        // The v0.1 honest skips: each is status:skipped with a non-empty detail reason
+        // and result:null (a skip never carries a verdict, the §14-note honesty rule).
+        let skipped: BTreeSet<&str> = ["M6", "L3", "T2"].into_iter().collect();
+        for check in checks {
+            let id = check.get("id").and_then(Value::as_str).expect("id");
+            let status = check.get("status").and_then(Value::as_str).expect("status");
+            if skipped.contains(id) {
+                assert_eq!(status, "skipped", "{id} is an honest v0.1 skip");
+                assert!(
+                    check.get("result").expect("result key").is_null(),
+                    "{id} skip carries no result"
+                );
+                let detail = check.get("detail").and_then(Value::as_str);
+                assert!(
+                    detail.is_some_and(|d| !d.is_empty()),
+                    "{id} skip carries a non-empty reason (the §14 note)"
+                );
+            } else {
+                // Every other check ran and passed on the valid fixture.
+                assert_eq!(status, "ran", "{id} ran on the valid fixture");
+                assert_eq!(
+                    check.get("result").and_then(Value::as_str),
+                    Some("pass"),
+                    "{id} passed on the valid fixture"
+                );
+            }
+        }
+
+        // Top-level verdict.
+        assert_eq!(
+            golden.get("conformant").and_then(Value::as_bool),
+            Some(true),
+            "the valid fixture is conformant"
+        );
+    }
+
+    /// Negative schema test. A golden mutated with (a) an injected extra top-level key,
+    /// (b) a check object missing its `id`, and (c) a check object with an unknown
+    /// `status` each **fails** schema validation (`additionalProperties:false` /
+    /// `required` / enum constraints), proving the schema catches a shape drift.
+    #[test]
+    fn mutated_golden_with_drift_is_rejected_by_schema() {
+        let validator = validate_validator();
+
+        // Sanity: the unmutated golden validates.
+        assert!(
+            validator.is_valid(&golden_value()),
+            "the unmutated golden must validate"
+        );
+
+        // (a) An arbitrary injected extra top-level key.
+        let mut with_extra = golden_value();
+        with_extra
+            .as_object_mut()
+            .expect("golden object")
+            .insert("schema_version".to_string(), Value::from("9.9"));
+        assert!(
+            !validator.is_valid(&with_extra),
+            "an extra top-level key must be rejected (additionalProperties:false catches drift)"
+        );
+
+        // (b) A check object missing its required `id`.
+        let mut missing_id = golden_value();
+        missing_id
+            .get_mut("checks")
+            .and_then(Value::as_array_mut)
+            .expect("checks array")[0]
+            .as_object_mut()
+            .expect("check object")
+            .remove("id");
+        assert!(
+            !validator.is_valid(&missing_id),
+            "a check missing `id` must be rejected (required catches drift)"
+        );
+
+        // (c) A check object with an unknown `status`.
+        let mut bad_status = golden_value();
+        bad_status
+            .get_mut("checks")
+            .and_then(Value::as_array_mut)
+            .expect("checks array")[0]
+            .as_object_mut()
+            .expect("check object")
+            .insert("status".to_string(), Value::from("maybe"));
+        assert!(
+            !validator.is_valid(&bad_status),
+            "an unknown `status` must be rejected (enum catches drift)"
+        );
+    }
+
+    /// Both invalids' reports serialize over the wire (smoke test, spec §14). Each MS2
+    /// invalid's report is produced as valid JSON: the `missing-root-rollup` tree
+    /// serializes with `conformant:false` and `L1` `result:"fail"` (the wire shape
+    /// carries a fail correctly); the `wrong-format-version` tree is an entry-gate `Err`
+    /// (the §0 hard cut), so `validate_json` surfaces it as a `ValidateError`, never a
+    /// `conformant:true` report. The exhaustive per-check golden matrix is MS8.
+    #[test]
+    fn both_invalids_reports_serialize_carrying_the_verdict() {
+        // missing-root-rollup → a conformant:false report with L1 result:fail, valid JSON.
+        let json = validate_json(conformance("invalid/missing-root-rollup"))
+            .expect("missing-root-rollup serializes (the gap is a check fail, not an Err)");
+        let value: Value = serde_json::from_str(&json).expect("output is valid JSON");
+
+        // It validates against the schema (the wire shape carries a fail correctly).
+        let validator = validate_validator();
+        assert!(
+            validator.is_valid(&value),
+            "a non-conformant report still matches the pinned wire shape"
+        );
+
+        assert_eq!(
+            value.get("conformant").and_then(Value::as_bool),
+            Some(false),
+            "missing-root-rollup is non-conformant"
+        );
+        let l1 = value
+            .get("checks")
+            .and_then(Value::as_array)
+            .expect("checks array")
+            .iter()
+            .find(|c| c.get("id").and_then(Value::as_str) == Some("L1"))
+            .expect("L1 present");
+        assert_eq!(l1.get("status").and_then(Value::as_str), Some("ran"), "L1 ran");
+        assert_eq!(
+            l1.get("result").and_then(Value::as_str),
+            Some("fail"),
+            "L1 carries the fail verdict on the wire"
+        );
+
+        // wrong-format-version → the §0 hard cut wins: an entry-gate Err, never a report.
+        match validate_json(conformance("invalid/wrong-format-version")) {
+            Err(ValidateError::Manifest(CoreError::UnknownFormatVersion { found })) => {
+                assert_eq!(found, "0.2");
+            }
+            other => panic!("expected the §0 hard cut Err, got {other:?}"),
+        }
+    }
+
+    /// The DTO is the single wire-shape surface (the inert types stay serde-free).
+    /// A produced report serializes to exactly `{checks, conformant}` at the top level
+    /// and each check entry is exactly `{id, status, result, depth, detail}` — no
+    /// inert-violating / derived key. Pins the inert/agnostic shape (spec §1) directly.
+    #[test]
+    fn report_dto_top_level_and_check_key_sets_are_exact() {
+        let json = validate_json(conformance("valid/minimal")).expect("validate_json succeeds");
+        let value: Value = serde_json::from_str(&json).expect("valid JSON");
+
+        let top_keys: BTreeSet<String> = value
+            .as_object()
+            .expect("top-level object")
+            .keys()
+            .cloned()
+            .collect();
+        let expected_top: BTreeSet<String> = ["checks", "conformant"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(top_keys, expected_top, "top level is exactly {{checks, conformant}}");
+
+        let check_keys: BTreeSet<String> = ["id", "status", "result", "depth", "detail"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for check in value
+            .get("checks")
+            .and_then(Value::as_array)
+            .expect("checks array")
+        {
+            let keys: BTreeSet<String> = check
+                .as_object()
+                .expect("check object")
+                .keys()
+                .cloned()
+                .collect();
+            assert_eq!(
+                keys, check_keys,
+                "a check is exactly {{id, status, result, depth, detail}} (inert)"
+            );
+        }
     }
 }

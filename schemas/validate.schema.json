@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/validate.schema.json",
+  "title": "HDX validate report",
+  "description": "The full validation report the `validate` verb emits (spec §10/§14, R4): the §14 MUST checklist executed over the discovery layer. Mirrors the validate-local DTO 1:1: exactly {checks, conformant}, additionalProperties:false at every level. `checks` lists EVERY §14 check id (the closed set of 20: M1–M6, L1–L3, I1–I3, H1–H2, T1–T2, G1–G3, Geo1), each recording whether it `ran` or was `skipped` (the §14-note requirement: the validator MUST CLEARLY REPORT WHICH CHECKS RAN). A check that ran carries a `pass`/`fail` result; a skipped check carries `result: null` and a non-null `detail` reason (an honest R3 deferral, never a silent pass). `conformant` is the overall verdict — true iff no check that RAN failed (fail-closed; a skip never flips it, spec §14). A violated MUST is carried here as a `result: fail` outcome with `conformant: false`, NEVER as a raised error. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checks",
+    "conformant"
+  ],
+  "properties": {
+    "checks": {
+      "description": "The per-check outcomes, one per §14 MUST id, in spec order (spec §14). Every id in the closed set appears exactly once — ran or honestly skipped.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/check_outcome"
+      }
+    },
+    "conformant": {
+      "description": "The overall verdict: true iff no check that RAN failed (spec §14). A skipped check never flips it (fail-closed applies only to a violated MUST that ran).",
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "check_outcome": {
+      "title": "HDX §14 check outcome",
+      "description": "One §14 MUST check's recorded result — EXACTLY {id, status, result, depth, detail} (spec §14). additionalProperties:false forbids any derived/semantic key; the outcome is inert (id + ran/skip + pass/fail + R3 depth + opaque detail only). `result` is null iff the check was skipped; `detail` carries the fail or skip reason (null when none).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "result",
+        "depth",
+        "detail"
+      ],
+      "properties": {
+        "id": {
+          "description": "The stable spec check id (the closed set of the 20 §14 MUST ids).",
+          "type": "string",
+          "enum": [
+            "M1",
+            "M2",
+            "M3",
+            "M4",
+            "M5",
+            "M6",
+            "L1",
+            "L2",
+            "L3",
+            "I1",
+            "I2",
+            "I3",
+            "H1",
+            "H2",
+            "T1",
+            "T2",
+            "G1",
+            "G2",
+            "G3",
+            "Geo1"
+          ]
+        },
+        "status": {
+          "description": "Whether the check ran or was skipped (the §14-note ran/skip requirement).",
+          "type": "string",
+          "enum": [
+            "ran",
+            "skipped"
+          ]
+        },
+        "result": {
+          "description": "The pass/fail verdict of a check that ran, or null for a skipped check.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pass",
+            "fail",
+            null
+          ]
+        },
+        "depth": {
+          "description": "The R3 enforcement-depth class (architecture §7 R3): metadata_deep (metadata + 1-D index reads only) or byte_deep (would need a chunk/pixel/full-axis read).",
+          "type": "string",
+          "enum": [
+            "metadata_deep",
+            "byte_deep"
+          ]
+        },
+        "detail": {
+          "description": "The opaque fail reason or skip reason, or null when none (not interpreted by HDX).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

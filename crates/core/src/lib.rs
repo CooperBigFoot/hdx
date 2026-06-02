@@ -101,7 +101,12 @@
 //!   via the entry gate; H1, H2, I3, T1, G1) and the cross-file checks (L1, L2, I1, I2,
 //!   M5, G2, G3) `ran` (pass/fail), with the byte-deep / on-disk-shape-dependent legs
 //!   (L3, M6 rule (b), T2, Geo1-when-outlines-absent) honest R3 `Skipped`-with-reason.
-//!   The report lists all 20 §14 ids; the on-disk negative matrix is MS8.
+//!   The report lists all 20 §14 ids; the on-disk negative matrix is MS8. MS6-S3 pins the
+//!   report's **JSON wire shape**: a validate-local `#[derive(Serialize)]`
+//!   [`ValidationReportDto`](validate::ValidationReportDto) (the inert types stay
+//!   serde-free, mirroring `describe`), [`validate_json`](validate::validate_json), and a
+//!   committed golden report checked against `schemas/validate.schema.json` — making the
+//!   §14-note "report which checks ran" requirement a machine-readable, pinned artifact.
 
 pub mod cog_reader;
 pub mod describe;
