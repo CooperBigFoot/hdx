@@ -2,11 +2,14 @@
 #
 # regenerate.sh — HDX conformance fixture generator entry point (dev-only).
 #
-# MS2-S1 STUB: this step stands up the harness only. It idempotently creates the
-# pinned venv, installs the exact-version dependency closure, smoke-imports every
-# pinned dep on the declared interpreter (proving the pins resolve), prints one
-# status line, and exits 0. No fixtures are emitted yet — later MS2 steps wire the
-# valid baseline (S2/S3) and the two derived invalids (S4) into this script.
+# MS2-S2: idempotently creates the pinned venv, installs the exact-version
+# dependency closure, smoke-imports every pinned dep (proving the pins resolve),
+# then emits the SCALAR half of the one valid baseline into
+# conformance/valid/minimal/ (manifest.json, scalar_static.parquet, per-basin
+# scalar_dynamic.parquet, outlines.geoparquet) and runs the load-bearing scalar
+# self-assertions, ABORTING on any failure (non-zero exit). The gridded half
+# (S3) and the two derived invalids (S4) are wired into this script in later
+# MS2 steps.
 #
 # This generator is DEV-ONLY and is NOT an HDX writer: it lives only under
 # conformance/, is never shipped in or imported by hdx-core, and only emits bytes
@@ -25,6 +28,9 @@ set -euo pipefail
 
 # --- locate self (works regardless of caller cwd) ---------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Repo root is two levels up: conformance/generator/ -> conformance/ -> <repo>.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VALID_MINIMAL="${REPO_ROOT}/conformance/valid/minimal"
 
 VENV_DIR="${SCRIPT_DIR}/.venv"
 LOCK_FILE="${SCRIPT_DIR}/requirements.lock"
@@ -79,7 +85,14 @@ else
     echo "regenerate.sh: pinned deps already installed (lock unchanged)" >&2
 fi
 
-# --- smoke import + status line (S1: harness only) --------------------------
-# Run the package entry point from the generator dir so `hdx_fixtures` is importable.
+# --- smoke import (proves the pins resolve on this interpreter) -------------
+# Run from the generator dir so the `hdx_fixtures` package is importable.
 cd "${SCRIPT_DIR}"
-exec "${VENV_PY}" -m hdx_fixtures
+"${VENV_PY}" -m hdx_fixtures
+
+# --- emit the valid baseline scalar half + run scalar self-assertions -------
+# build.py writes manifest.json + scalar_static.parquet + per-basin
+# scalar_dynamic.parquet + outlines.geoparquet into conformance/valid/minimal/,
+# then runs run_scalar_assertions(); any AssertionFailed aborts with non-zero.
+echo "regenerate.sh: emitting valid baseline scalar half -> ${VALID_MINIMAL}" >&2
+exec "${VENV_PY}" -m hdx_fixtures.build --dataset-root "${VALID_MINIMAL}"
