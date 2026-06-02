@@ -15,10 +15,15 @@ tool, **not** part of the shipped contract.
 > deterministically from the committed generator. **Run
 > `conformance/generator/regenerate.sh` before `cargo test`** (the Rust tests read
 > these trees from disk; a fresh checkout has none until you regenerate). What
-> *is* tracked: the generator source, this README, and the small **`*.golden.json`**
-> assertion baselines (the golden is produced by the Rust verb and is the stable,
-> human-reviewable snapshot the tests assert against). This keeps binary fixture
-> blobs out of git history while preserving reproducibility.
+> *is* tracked: the generator source, this README, and the small golden
+> assertion baselines under **`conformance/goldens/`** (each a
+> `<fixture>.<verb>.json` file produced by the Rust verb — the stable,
+> human-reviewable snapshot the tests assert against). The goldens live
+> **OUTSIDE** the gitignored `valid/`/`invalid/` trees on purpose: `regenerate.sh`
+> wipes (`rmtree`s) and rewrites those trees, so a golden inside them would be
+> deleted on the next regenerate — `conformance/goldens/` is a directory the
+> generator never touches. This keeps binary fixture blobs out of git history
+> while preserving reproducibility.
 
 The fixture set is **complete** for MS2: one valid four-quadrant dataset and the
 two pinned invalids (`wrong-format-version`, `missing-root-rollup`). The
@@ -60,9 +65,10 @@ identical** tree, so a regenerate produces no spurious diff.
 
 ## Layout
 
-Three trees are *generated* (git-ignored — see the tracking policy above; only
-their `*.golden.json` baselines are committed). Each is one mutation (or zero, for the baseline) off a
-known-good four-quadrant dataset.
+The `valid/`/`invalid/` trees are *generated* (git-ignored — see the tracking
+policy above). Each is one mutation (or zero, for the baseline) off a known-good
+four-quadrant dataset. The committed golden snapshots live OUTSIDE those trees,
+under `conformance/goldens/`, so `regenerate.sh` never clobbers them.
 
 ```
 conformance/
@@ -72,11 +78,13 @@ conformance/
     requirements.lock                     # exact-version lock installed by regenerate.sh
     regenerate.sh                         # the single deterministic end-to-end target
     hdx_fixtures/                         # generator package (manifest/scalar/outlines/grids/mutate/assertions)
-  valid/minimal/                          # the one valid four-quadrant dataset
-  valid/minimal/describe.golden.json      # pinned `describe` output (R4); produced by hdx-core, not the generator
-  valid/minimal/validate.golden.json      # pinned `validate` report (R4); produced by hdx-core, not the generator
-  invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline
-  invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline
+  goldens/                                # TRACKED golden snapshots (outside the gitignored trees; regenerate-inert)
+    valid-minimal.describe.json            # pinned `describe` output (R4); produced by hdx-core, not the generator
+    valid-minimal.validate.json            # pinned `validate` report (R4); produced by hdx-core, not the generator
+    invalid-<fixture>.validate.json         # pinned per-fixture `validate` report for each invalid (R4)
+  valid/minimal/                          # the one valid four-quadrant dataset (git-ignored data)
+  invalid/wrong-format-version/           # pins M2 — one surgical mutation off the baseline (git-ignored data)
+  invalid/missing-root-rollup/            # pins L1 — one surgical mutation off the baseline (git-ignored data)
 ```
 
 ### `valid/minimal/` — the one valid four-quadrant dataset
@@ -126,10 +134,12 @@ Annotated, engineered properties:
   `outlines.geoparquet` carries **plural** delineations (`merit`, plus a `grit`
   for `basin=0001`) as neutral labels, in a single non-partitioned root file.
 
-### `valid/minimal/describe.golden.json` — the pinned `describe` output (R4)
+### `goldens/valid-minimal.describe.json` — the pinned `describe` output (R4)
 
 A single committed golden file holds the exact `describe` JSON output for the valid
-fixture: [`valid/minimal/describe.golden.json`](valid/minimal/describe.golden.json).
+fixture: [`goldens/valid-minimal.describe.json`](goldens/valid-minimal.describe.json).
+It lives under `conformance/goldens/`, OUTSIDE the gitignored fixture trees, so a
+`regenerate.sh` (which rmtrees `valid/`/`invalid/`) never clobbers it.
 
 It is **produced by `hdx-core`'s `describe` verb — NOT by the Python generator.** The
 generator emits the on-disk dataset bytes; `describe` reads them and assembles the
@@ -154,19 +164,24 @@ refreshed in the same change.
 
 **Golden-update workflow.** The golden is regenerated **from the Rust verb**, never
 hand-edited: run `describe` over `valid/minimal`, pretty-print it
-(`Description::to_json_pretty`), and overwrite `describe.golden.json`. Do this **only**
-when the describe shape legitimately changes (a `format_version` bump). A drift caught
-by the snapshot test that is **not** an intended shape change is a bug, not a
-golden-refresh. (MS8 extends this golden-output discipline to the wider fixture family.)
+(`Description::to_json_pretty`), and overwrite
+`conformance/goldens/valid-minimal.describe.json`. Do this **only** when the describe
+shape legitimately changes (a `format_version` bump). A drift caught by the snapshot
+test that is **not** an intended shape change is a bug, not a golden-refresh. (MS8
+extends this golden-output discipline to the wider fixture family.)
 
 > **MS8 adds no field.** The exhaustive-invalids milestone introduces no new domain
-> field and mutates no manifest floor field, so this baseline `describe.golden.json` is
-> **byte-unchanged** across MS8 — the green floor every MS8 invalid fixture builds on.
+> field and mutates no manifest floor field, so this baseline
+> `goldens/valid-minimal.describe.json` is **byte-unchanged** across MS8 — the green
+> floor every MS8 invalid fixture builds on.
 
-### `valid/minimal/validate.golden.json` — the pinned `validate` report (R4)
+### `goldens/valid-minimal.validate.json` — the pinned `validate` report (R4)
 
 A single committed golden file holds the exact `validate` report JSON for the valid
-fixture: [`valid/minimal/validate.golden.json`](valid/minimal/validate.golden.json).
+fixture: [`goldens/valid-minimal.validate.json`](goldens/valid-minimal.validate.json).
+It lives under `conformance/goldens/`, OUTSIDE the gitignored fixture trees, so a
+`regenerate.sh` (which rmtrees `valid/`/`invalid/`) never clobbers it. Each invalid
+fixture has its own pinned report at `goldens/invalid-<fixture>.validate.json`.
 
 It is **produced by `hdx-core`'s `validate` verb — NOT by the Python generator.** The
 generator emits the on-disk dataset bytes; `validate` reads them, runs the §14 `MUST`
@@ -195,16 +210,20 @@ hard cut (spec §0/§11). A shape change is therefore a `format_version` bump, r
 the same change.
 
 **Golden-update workflow.** The golden is regenerated **from the Rust verb**, never
-hand-edited: run `validate` over `valid/minimal`, pretty-print it
-(`ValidationReport::to_json_pretty`), and overwrite `validate.golden.json`. Do this **only**
-when the report shape legitimately changes (a `format_version` bump). A drift caught by the
-snapshot test that is **not** an intended shape change is a bug, not a golden-refresh.
-(MS8 extends this golden-output discipline to the wider invalid fixture family — the
-exhaustive one-violation-per-check golden report matrix.)
+hand-edited: run `validate` over the fixture, pretty-print it
+(`ValidationReport::to_json_pretty`), and overwrite the matching golden under
+`conformance/goldens/` — `valid-minimal.validate.json` for the valid baseline, or
+`invalid-<fixture>.validate.json` for an invalid (the fixture path flattened with
+`/` → `-`). Do this **only** when the report shape legitimately changes (a
+`format_version` bump). A drift caught by the snapshot test that is **not** an
+intended shape change is a bug, not a golden-refresh. (MS8 extends this
+golden-output discipline to the wider invalid fixture family — the exhaustive
+one-violation-per-check golden report matrix.)
 
 > **MS8 adds no field.** The exhaustive-invalids milestone introduces no new domain
-> field and mutates no manifest floor field, so this baseline `validate.golden.json` is
-> **byte-unchanged** across MS8 — the green floor every MS8 invalid fixture builds on.
+> field and mutates no manifest floor field, so this baseline
+> `goldens/valid-minimal.validate.json` is **byte-unchanged** across MS8 — the green
+> floor every MS8 invalid fixture builds on.
 
 ### `invalid/wrong-format-version/` — pins **M2**
 

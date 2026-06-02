@@ -17,11 +17,10 @@ conformance/generator/scratch/
 
 # Generated conformance fixture DATA is NOT tracked — it is regenerated from the
 # committed deterministic generator (run conformance/generator/regenerate.sh
-# before `cargo test`). Tracked under these trees: ONLY the small *.golden.json
-# assertion baselines (re-included below). The generator source + conformance/README
-# remain tracked (they live outside these two trees).
+# before `cargo test`). Nothing under these two trees is tracked: the goldens now
+# live in the tracked, never-ignored conformance/goldens/ directory (outside these
+# trees, so regenerate.sh — which rmtrees them — can never clobber a golden). The
+# generator source + conformance/README + conformance/goldens/ remain tracked (they
+# live outside these two trees and need no rule).
 conformance/valid/**
 conformance/invalid/**
-!conformance/valid/**/
-!conformance/invalid/**/
-!conformance/**/*.golden.json

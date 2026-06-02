@@ -2192,9 +2192,11 @@ mod tests {
     /// Regeneration workflow (when the report shape legitimately changes — a
     /// `format_version` bump only): run `validate(conformance("valid/minimal"))`,
     /// pretty-print it (`ValidationReport::to_json_pretty`), and overwrite
-    /// `conformance/valid/minimal/validate.golden.json`. See `conformance/README.md`.
+    /// `conformance/goldens/valid-minimal.validate.json`. See `conformance/README.md`.
+    /// The golden lives OUTSIDE the gitignored fixture trees so `regenerate.sh` never
+    /// clobbers it.
     fn golden_value() -> Value {
-        let path = conformance("valid/minimal/validate.golden.json");
+        let path = conformance("goldens/valid-minimal.validate.json");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         serde_json::from_str(&raw).expect("the golden must be valid JSON")
@@ -2402,16 +2404,25 @@ mod tests {
     // at generation time). Its negative is a CLEAN `conformant:false` report with exactly
     // ONE §14 check `ran:fail` and every other check `pass`-or-`skip`. Each test pins the
     // exact failing id, runs the purity assertion (no second check trips), and snapshots
-    // the report against the committed per-fixture `validate.golden.json`.
+    // the report against the committed per-fixture golden under
+    // `conformance/goldens/invalid-<name>.validate.json`.
 
     /// Reads a committed per-fixture golden validate report as a parsed `Value`.
     ///
+    /// Maps a fixture path (e.g. `"invalid/non-monotonic-time"`) to the relocated golden
+    /// under `conformance/goldens/`, flattening `/` → `-` and appending `.validate.json`
+    /// (so `"invalid/non-monotonic-time"` reads
+    /// `conformance/goldens/invalid-non-monotonic-time.validate.json`). The golden lives
+    /// OUTSIDE the gitignored fixture trees so `regenerate.sh` never clobbers it.
+    ///
     /// Regeneration workflow (when the report shape legitimately changes — a
     /// `format_version` bump only): run `validate_json(conformance("invalid/<name>"))`,
-    /// pretty-print it, and overwrite `conformance/invalid/<name>/validate.golden.json`.
-    /// See `conformance/README.md`. Never hand-edited.
+    /// pretty-print it, and overwrite
+    /// `conformance/goldens/invalid-<name>.validate.json`. See `conformance/README.md`.
+    /// Never hand-edited.
     fn fixture_golden_value(name: &str) -> Value {
-        let path = conformance(name).join("validate.golden.json");
+        let flattened = name.replace('/', "-");
+        let path = conformance("goldens").join(format!("{flattened}.validate.json"));
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         serde_json::from_str(&raw).expect("the golden must be valid JSON")

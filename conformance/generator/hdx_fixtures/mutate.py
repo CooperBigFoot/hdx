@@ -211,14 +211,9 @@ def _copy_baseline(baseline_root: Path, target_root: Path) -> None:
     The copy is byte-for-byte (``copy2`` preserves file content; metadata is
     irrelevant to the committed fixture). ``target_root`` is removed first so the
     derivation is deterministic and re-runnable — re-deriving never leaves stale
-    files from a previous run.
-
-    The baseline's golden artifacts (``*.golden.json`` — the committed
-    ``describe``/``validate`` outputs of the *valid* baseline) are **excluded**:
-    they describe the baseline, not the mutated invalid, so copying them would
-    plant a stale, meaningless golden in the invalid tree. A per-fixture golden,
-    when a later step needs one, is regenerated from the Rust verb against the
-    mutated tree — never inherited from the baseline copy.
+    files from a previous run. The copy is verbatim: goldens no longer live in the
+    baseline tree (they are committed under ``conformance/goldens/``, outside the
+    gitignored fixture trees), so there is nothing golden-shaped to skip.
     """
     if target_root.exists():
         shutil.rmtree(target_root)
@@ -226,7 +221,6 @@ def _copy_baseline(baseline_root: Path, target_root: Path) -> None:
         baseline_root,
         target_root,
         copy_function=shutil.copy2,
-        ignore=shutil.ignore_patterns("*.golden.json"),
     )
 
 

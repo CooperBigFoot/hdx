@@ -733,16 +733,14 @@ def _relative_files(tree_root: Path) -> set[str]:
     files, so a recursive walk is required) and returns only files — directories
     are implied by their contents. Used to diff the file *set* of two trees.
 
-    Golden artifacts (``*.golden.json`` — the committed ``describe``/``validate``
-    outputs that live *alongside* a dataset) are excluded: they are verb outputs,
-    not part of the dataset bytes, and the valid baseline carries them while a
-    freshly-derived invalid does not (LOW-2 mutations are dataset-byte mutations).
-    Excluding them keeps the "differs in exactly one way" diff about the dataset.
+    The trees no longer contain goldens (they are committed under
+    ``conformance/goldens/``, outside the gitignored fixture trees), so the
+    "differs in exactly one way" diff is purely about dataset bytes.
     """
     return {
         p.relative_to(tree_root).as_posix()
         for p in tree_root.rglob("*")
-        if p.is_file() and not p.name.endswith(".golden.json")
+        if p.is_file()
     }
 
 

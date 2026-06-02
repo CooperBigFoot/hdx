@@ -1122,9 +1122,11 @@ mod tests {
     /// Regeneration workflow (when the shape legitimately changes — a `format_version`
     /// bump only): run `describe_json(conformance("valid/minimal"))`, pretty-print it
     /// (`Description::to_json_pretty`), and overwrite
-    /// `conformance/valid/minimal/describe.golden.json`. See `conformance/README.md`.
+    /// `conformance/goldens/valid-minimal.describe.json`. See `conformance/README.md`.
+    /// The golden lives OUTSIDE the gitignored fixture trees so `regenerate.sh` never
+    /// clobbers it.
     fn golden_value() -> Value {
-        let path = conformance("valid/minimal/describe.golden.json");
+        let path = conformance("goldens/valid-minimal.describe.json");
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         serde_json::from_str(&raw).expect("the golden must be valid JSON")
