@@ -141,6 +141,107 @@ pub enum CoreError {
         column: String,
     },
 
+    /// Fires when a Zarr v3 store cannot be opened or its metadata fails to decode
+    /// (spec §7/§8, architecture §1): the store's root `zarr.json` is missing or
+    /// malformed, its consolidated metadata cannot be parsed, or a 1-D coordinate
+    /// array's metadata is unreadable. MS4's Zarr reader uses this as its typed
+    /// surface so a corrupt or non-Zarr input is reported, never panicked over. The
+    /// reader reads metadata + 1-D coordinate arrays only — never a data chunk. The
+    /// variant stays **inert/agnostic** (spec §1): it carries only the artifact name
+    /// and an opaque detail string from the underlying reader — no domain field.
+    #[error("failed to read Zarr metadata for {artifact:?}: {detail}")]
+    ZarrRead {
+        /// A name for the store that failed (a path or in-memory label); used only
+        /// for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The underlying reader's error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
+    /// Fires when a COG / GeoTIFF artifact cannot be opened or its tags fail to
+    /// decode (spec §7/§8, architecture §1): the byte source is not a valid TIFF,
+    /// its IFD is malformed, or a required tag cannot be read. MS4's COG reader uses
+    /// this as its typed surface so a corrupt or non-TIFF input is reported, never
+    /// panicked over. The reader reads tags + band metadata + georef only — never a
+    /// pixel raster. The variant stays **inert/agnostic** (spec §1): it carries only
+    /// the artifact name and an opaque detail string from the reader — no domain field.
+    #[error("failed to read COG tags for {artifact:?}: {detail}")]
+    CogRead {
+        /// A name for the artifact that failed (a path or in-memory label); used
+        /// only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The underlying reader's error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
+    /// Fires when the `outlines.geoparquet` artifact cannot be opened or its
+    /// metadata fails to decode (spec §9, architecture §1): the byte source is not a
+    /// valid parquet file, its footer/`geo` key-value metadata is malformed, or the
+    /// arrow schema cannot be read. MS4's geoparquet reader uses this as its typed
+    /// surface so a corrupt input is reported, never panicked over. The reader reads
+    /// the schema + the 1-D `basin_id`/`delineation` columns + the `geo` KV only —
+    /// never the `geometry` blob. The variant stays **inert/agnostic** (spec §1): it
+    /// carries only the artifact name and an opaque detail string — no domain field.
+    #[error("failed to read geoparquet metadata for {artifact:?}: {detail}")]
+    GeoparquetRead {
+        /// A name for the artifact that failed (a path or in-memory label); used
+        /// only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The underlying reader's error rendered as a string; opaque to HDX.
+        detail: String,
+    },
+
+    /// Fires when a gridded artifact carries no resolvable georeferencing
+    /// (spec §7.3, feeds §14 G3): a Zarr data variable has no CF `grid_mapping`
+    /// target, or a GeoTIFF has no standard georef tags (no `ModelTiepoint` /
+    /// `ModelPixelScale` / `GeoKeyDirectory`). The georef is structurally required
+    /// to place the grid, so its absence is reported as a typed error rather than a
+    /// fabricated extent. The variant stays **inert/agnostic** (spec §1): it carries
+    /// only the artifact name and an opaque detail string naming what was missing.
+    #[error("gridded artifact {artifact:?} is missing georeferencing: {detail}")]
+    MissingGridGeoref {
+        /// A name for the artifact that lacked georeferencing (a path or in-memory
+        /// label); used only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// An opaque description of which georef facet was absent (e.g. the missing
+        /// CF `grid_mapping` target or GeoTIFF tag); not interpreted by HDX.
+        detail: String,
+    },
+
+    /// Fires when a required 1-D coordinate array is absent from a Zarr store
+    /// (spec §7.3): the `lat`, `lon`, or `time` coordinate array the CF convention
+    /// mandates cannot be found. This is a structural absence detected from the
+    /// store metadata — distinct from [`CoreError::ZarrRead`], which fires when the
+    /// store or its metadata cannot be decoded at all. The variant stays
+    /// **inert/agnostic** (spec §1): it carries only the artifact name and the
+    /// missing coordinate name — no domain field, no provenance.
+    #[error("Zarr store {artifact:?} is missing required coordinate array {coordinate:?}")]
+    MissingGriddedCoordinate {
+        /// A name for the store that lacked the coordinate (a path or in-memory
+        /// label); used only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The name of the structurally required coordinate array that was absent
+        /// (`lat`, `lon`, or `time`).
+        coordinate: String,
+    },
+
+    /// Fires when `outlines.geoparquet` lacks one of the three columns its schema is
+    /// structurally required to carry (spec §9, feeds §14 Geo1): `basin_id`,
+    /// `delineation`, or `geometry`. This is a schema-level absence detected from the
+    /// arrow schema — distinct from [`CoreError::GeoparquetRead`], which fires when
+    /// the file or its metadata cannot be decoded at all. The variant stays
+    /// **inert/agnostic** (spec §1): it carries only the artifact name and the
+    /// missing column name — no domain field, no provenance.
+    #[error("outlines artifact {artifact:?} is missing required column {column:?}")]
+    MissingGeometryColumn {
+        /// A name for the artifact that lacked the column (a path or in-memory
+        /// label); used only for the diagnostic message, never interpreted.
+        artifact: String,
+        /// The name of the structurally required column that was absent
+        /// (`basin_id`, `delineation`, or `geometry`).
+        column: String,
+    },
+
     // --- Reserved for later milestones (skeleton variants) ---
     /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
     /// `basin=<id>` partition folder (spec §3/§14 I2).

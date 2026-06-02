@@ -14,6 +14,10 @@
 //! - [`format_version`] — the single-arm [`FormatVersion`](format_version::FormatVersion)
 //!   hard version cut.
 //! - [`field`] — the field 2×2 quadrant model and the closed [`Dtype`](field::Dtype).
+//! - [`grid`] — the shared gridded-geometry value types ([`GridExtent`](grid::GridExtent)
+//!   with the single cell-edge convention + the Zarr center→edge half-pixel rule,
+//!   [`GridResolution`](grid::GridResolution), [`GridInfo`](grid::GridInfo)) the
+//!   gridded/geometry readers (MS4) consume; pure types, no IO.
 //! - [`manifest`] — the six-field [`Manifest`](manifest::Manifest) boundary parse.
 //! - [`layout`] — the basin-first hive walk into a typed
 //!   [`LayoutModel`](layout::LayoutModel): root-rollup presence + enumerated
@@ -36,6 +40,7 @@ pub mod discovery;
 pub mod error;
 pub mod field;
 pub mod format_version;
+pub mod grid;
 pub mod layout;
 pub mod manifest;
 pub mod newtypes;
@@ -101,12 +106,36 @@ mod tests {
                 artifact: "scalar_dynamic.parquet".to_string(),
                 column: "time".to_string(),
             },
+            CoreError::ZarrRead {
+                artifact: "era5.zarr".to_string(),
+                detail: "malformed zarr.json".to_string(),
+            },
+            CoreError::CogRead {
+                artifact: "era5.tif".to_string(),
+                detail: "not a valid TIFF".to_string(),
+            },
+            CoreError::GeoparquetRead {
+                artifact: "outlines.geoparquet".to_string(),
+                detail: "malformed footer".to_string(),
+            },
+            CoreError::MissingGridGeoref {
+                artifact: "era5.zarr".to_string(),
+                detail: "no grid_mapping target".to_string(),
+            },
+            CoreError::MissingGriddedCoordinate {
+                artifact: "era5.zarr".to_string(),
+                coordinate: "lon".to_string(),
+            },
+            CoreError::MissingGeometryColumn {
+                artifact: "outlines.geoparquet".to_string(),
+                column: "delineation".to_string(),
+            },
         ];
 
         // Every variant must render a non-empty Display string.
         for variant in &variants {
             assert!(!variant.to_string().is_empty());
         }
-        assert_eq!(variants.len(), 15);
+        assert_eq!(variants.len(), 21);
     }
 }
