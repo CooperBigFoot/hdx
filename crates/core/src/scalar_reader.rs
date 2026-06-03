@@ -4,26 +4,22 @@
 //! `scalar_static.parquet` rollup and each per-basin `basin=<id>/scalar_dynamic.parquet`
 //! — into typed facts, **never** their scientific values:
 //!
-//! - the **scalar field catalog**: the arrow schema mapped to MS1 [`Field`]s, one
-//!   per data column, with the right scalar [`Quadrant`] ([`Quadrant::ScalarStatic`]
-//!   for the static rollup, [`Quadrant::ScalarDynamic`] for the per-basin dynamic
-//!   table) and a [`Dtype`] via MS1 [`parse_dtype`] over the arrow physical type;
+//! - the **scalar field catalog**: the arrow schema mapped to [`Field`]s, one per
+//!   data column, with the right scalar [`Quadrant`] ([`Quadrant::ScalarStatic`] for
+//!   the static rollup, [`Quadrant::ScalarDynamic`] for the per-basin dynamic table)
+//!   and a [`Dtype`] via [`parse_dtype`] over the arrow physical type;
 //! - the **`basin_id` column**: its presence, and — for the dynamic table — the
 //!   distinct in-file id value(s) (spec §3: the *authoritative* id; the folder id is
-//!   only locality, paired with this for MS6's I2 cross-check, never compared here);
+//!   only locality, paired with this for the I2 cross-check, never compared here);
 //! - the **`time` column descriptor** ([`TimeColumn`]): name, logical [`Dtype`],
 //!   nullability, and whether it is sorted ascending (spec §6 — `time` is a full
-//!   timestamp, non-nullable, sorted ascending; T1 *enforcement* is MS6);
+//!   timestamp, non-nullable, sorted ascending; T1 is enforced elsewhere);
 //! - the **per-basin time extent** ([`TimeExtent`]): `[start, end]` with the
 //!   [`TimeExtentSource`] that produced it.
 //!
-//! ## Ordinary fields — no name magic (spec §2)
-//!
-//! Fields are catalogued **purely by physical schema**. Every column that is not
-//! `basin_id` or `time` becomes one ordinary [`Field`] named exactly as the parquet
-//! column. The reader applies **no name-pattern special-casing**: a column named
-//! `streamflow_was_filled` is an ordinary `ScalarDynamic` field with no suffix
-//! magic, no role, and no belongs-to — HDX is inert and agnostic (spec §1).
+//! Fields are catalogued **purely by physical schema** with no name-pattern
+//! special-casing: a column named `streamflow_was_filled` is an ordinary
+//! `ScalarDynamic` field, not a companion mask (spec §1/§2).
 //!
 //! ## The time extent: statistics primary, a bounded 1-D fallback (spec §8)
 //!
@@ -34,36 +30,28 @@
 //!   data is read. `scalar_dynamic.parquet` is written sorted by `time` with
 //!   row-group statistics (spec §8), so this is the live path on a conformant
 //!   dataset.
-//! - **[`TimeExtentSource::BoundedColumnScan`] (LOW-1 bounded fallback).** When the
-//!   `time` column carries **no** row-group statistics, the reader falls back to a
+//! - **[`TimeExtentSource::BoundedColumnScan`] (bounded fallback).** When the `time`
+//!   column carries **no** row-group statistics, the reader falls back to a
 //!   **bounded 1-D column read**: it projects **only the `time` column by name**
 //!   (never `streamflow`, `drainage_area`, or any other data column, and never a
 //!   gridded chunk) and recovers `[min, max]` from those timestamps. This is an
-//!   **architecture-§1-compliant metadata/index-tier read** — the same tier as
-//!   reading a Zarr `time` coordinate array — classified under **architecture §7
-//!   R3** as a 1-D coordinate/key-column read, **NOT** a gridded-chunk value decode.
-//!   The bound is hard and stated here: **exactly one column, selected by name.**
+//!   architecture-§1-compliant metadata/index-tier read — a 1-D coordinate/key-column
+//!   read, **not** a gridded-chunk value decode. The bound is hard: **exactly one
+//!   column, selected by name.**
 //!
-//! ## MED-5 writer/reader hand-off (received from MS2)
+//! ## Statistics hand-off rule
 //!
-//! MS2 self-asserted (pyarrow side) that the valid fixture's `time` column carries
-//! usable row-group min/max statistics. MS3 is the **Rust-side confirmation**: a
-//! test opens the fixture with the `parquet` crate, asserts those statistics are
-//! Rust-readable, and asserts [`time_extent`] sources the extent from
-//! [`TimeExtentSource::Statistics`] (not the fallback). **The hand-off rule:** if the
-//! Rust `parquet` crate ever *cannot* surface the statistics pyarrow wrote, the fix
-//! is to **regenerate the MS2 fixture** (an MS2 generator change), **never** a reader
-//! workaround that papers over a writer/reader mismatch. A future agent must treat a
-//! mismatch as a generator bug.
+//! The valid fixture's `time` column is written with usable row-group min/max
+//! statistics, and a test asserts the `parquet` crate can read them back and that
+//! [`time_extent`] sources its extent from [`TimeExtentSource::Statistics`] (not the
+//! fallback). **The hand-off rule:** if the `parquet` crate ever *cannot* surface the
+//! statistics the writer wrote, the fix is to **regenerate the fixture**, **never** a
+//! reader workaround that papers over a writer/reader mismatch — treat a mismatch as
+//! a generator bug.
 //!
-//! ## Records facts, enforces nothing
-//!
-//! Like the layout walk, this reader is a discovery surface: it *reads and models*
-//! the scalar schema and surfaces facts (the field catalog, `basin_id` presence +
-//! value, the `time` descriptor, per-basin extents and their provenance). It
-//! **enforces no spec §14 check** — I1/I2/I3, T1, H1 are MS6 rules run over this
-//! model. Per-basin extents differing across basins (§6.1 ragged extents) are
-//! surfaced as facts, never raised.
+//! Like the layout walk, this reader is a discovery surface: it records facts and
+//! enforces no spec §14 check. Per-basin extents differing across basins (§6.1 ragged
+//! extents) are surfaced as facts, never raised.
 //!
 //! ## Glossary
 //!
@@ -145,11 +133,11 @@ impl Timestamp {
     }
 }
 
-/// Which path produced a [`TimeExtent`] (spec §8, architecture §7 R3).
+/// Which path produced a [`TimeExtent`] (spec §8).
 ///
-/// An enum, never a `bool`, so the provenance is self-documenting at every call
-/// site (architecture §3.3). Recorded so downstream (`describe` MS5, `validate` MS6
-/// R3 classification) can report which tier produced each extent.
+/// An enum, never a `bool`, so the provenance is self-documenting at every call site
+/// (architecture §3.3). Recorded so downstream consumers can report which tier
+/// produced each extent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeExtentSource {
     /// The extent came from the `time` column's **row-group min/max statistics** —
@@ -159,7 +147,7 @@ pub enum TimeExtentSource {
     /// `time` column carried no row-group statistics, so the reader projected only
     /// that one column by name and read it. This is an architecture-§1-compliant
     /// metadata/index-tier read (a 1-D coordinate read), **not** a gridded-chunk
-    /// value decode (architecture §7 R3).
+    /// value decode.
     BoundedColumnScan,
 }
 
@@ -194,10 +182,10 @@ impl TimeExtent {
 
 /// The `time` column descriptor of a `scalar_dynamic.parquet` (spec §6).
 ///
-/// Records the four facts T1 (MS6) will later check: the column [`name`](Self::name),
-/// its logical [`Dtype`] (a full timestamp, spec §6.3), its [`nullability`](Self::is_nullable),
-/// and whether it is [`sorted ascending`](Self::is_sorted_ascending). MS3 **records**
-/// these; it enforces none of them. The descriptor is **inert/agnostic** (spec §1).
+/// Records the four facts T1 will later check: the column [`name`](Self::name), its
+/// logical [`Dtype`] (a full timestamp, spec §6.3), its [`nullability`](Self::is_nullable),
+/// and whether it is [`sorted ascending`](Self::is_sorted_ascending). This descriptor
+/// **records** these facts; it enforces none of them (spec §1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeColumn {
     name: String,
@@ -218,14 +206,13 @@ impl TimeColumn {
     }
 
     /// Returns `true` iff the arrow schema marks the column nullable (T1 expects
-    /// non-nullable — spec §6.3; enforcement is MS6).
+    /// non-nullable — spec §6.3).
     pub fn is_nullable(&self) -> bool {
         self.nullable
     }
 
     /// Returns `true` iff the `time` axis is sorted strictly non-decreasing, as
-    /// observed from row-group statistics or the bounded `time`-only scan (spec §6.3;
-    /// enforcement is MS6).
+    /// observed from row-group statistics or the bounded `time`-only scan (spec §6.3).
     pub fn is_sorted_ascending(&self) -> bool {
         self.sorted_ascending
     }
@@ -234,7 +221,7 @@ impl TimeColumn {
     ///
     /// The production path constructs a [`TimeColumn`] only from a parsed arrow schema
     /// (see [`read_scalar_dynamic`]); this constructor exists so the in-memory T1
-    /// negative tests (MS6) can hand-build a non-conformant descriptor (a nullable /
+    /// negative tests can hand-build a non-conformant descriptor (a nullable /
     /// unsorted / mis-named / mis-typed `time`) without differently-shaped on-disk
     /// bytes. It is `#[cfg(test)]`-gated, so it adds no production surface.
     #[cfg(test)]
@@ -303,9 +290,9 @@ impl ScalarDynamicTable {
 
     /// Borrows the distinct in-file `basin_id` value(s) read from the column.
     ///
-    /// This is the **authoritative** id (spec §3); MS6's I2 cross-check pairs it
-    /// with the `basin=<id>` folder id. A conformant per-basin table holds exactly
-    /// one distinct value; MS3 records whatever it finds and decides nothing.
+    /// This is the **authoritative** id (spec §3); the I2 cross-check pairs it with
+    /// the `basin=<id>` folder id. A conformant per-basin table holds exactly one
+    /// distinct value; this reader records whatever it finds and decides nothing.
     pub fn basin_id_values(&self) -> &[BasinId] {
         &self.basin_id_values
     }
@@ -316,7 +303,7 @@ impl ScalarDynamicTable {
     }
 }
 
-/// Maps an arrow [`DataType`] to the canonical dtype string MS1 [`parse_dtype`] accepts.
+/// Maps an arrow [`DataType`] to the canonical dtype string [`parse_dtype`] accepts.
 ///
 /// This is the single documented bridge from the physical arrow type the parquet
 /// schema surfaces to HDX's closed [`Dtype`] set. The mapping is intentionally
@@ -346,7 +333,7 @@ fn arrow_dtype_str(data_type: &DataType) -> Option<&'static str> {
     }
 }
 
-/// Parses an arrow [`DataType`] into a closed MS1 [`Dtype`] at the boundary.
+/// Parses an arrow [`DataType`] into a closed [`Dtype`] at the boundary.
 ///
 /// # Errors
 ///
@@ -501,7 +488,7 @@ pub fn read_scalar_dynamic(path: impl AsRef<Path>) -> Result<ScalarDynamicTable,
     let has_basin_id = schema_has_basin_id(&schema);
 
     // The `time` descriptor: name + nullability from the arrow schema, dtype via the
-    // MS1 mapping, sort from row-group statistics (or the bounded scan fallback).
+    // arrow-type mapping, sort from row-group statistics (or the bounded scan fallback).
     let time_field = schema
         .fields()
         .iter()
@@ -607,11 +594,11 @@ fn time_stats_extent(
 
 /// Reads the `time` column (and only that column) into its UTC timestamps, bounded.
 ///
-/// This is the **LOW-1 bounded fallback** read: it projects **exactly the `time`
-/// column by name** ([`ProjectionMask::leaves`] over a single leaf index) and reads
-/// it. No data column is ever projected, and no gridded chunk is touched — this is a
-/// 1-D coordinate read (architecture §1 / §7 R3). Returns the timestamps in file
-/// order so the caller can both bound them and check ascending order.
+/// This is the **bounded fallback** read: it projects **exactly the `time` column by
+/// name** ([`ProjectionMask::leaves`] over a single leaf index) and reads it. No data
+/// column is ever projected, and no gridded chunk is touched — this is a 1-D
+/// coordinate read (architecture §1). Returns the timestamps in file order so the
+/// caller can both bound them and check ascending order.
 ///
 /// # Errors
 ///
@@ -644,7 +631,7 @@ fn read_time_column(
     debug!(
         column = TIME_COLUMN,
         leaf = col_idx,
-        "bounded 1-D time-only column read (LOW-1 fallback)"
+        "bounded 1-D time-only column read (statistics-absent fallback)"
     );
 
     let mut timestamps: Vec<Timestamp> = Vec::new();
@@ -824,7 +811,7 @@ fn time_unit(schema: &Schema) -> Option<TimeUnit> {
 /// this is trivially satisfied by usable statistics). When statistics are absent it
 /// is *not* decided here (the bounded scan in [`time_extent`] establishes ordering);
 /// in that case this conservatively returns `false` so the descriptor records the
-/// fact that sort could not be confirmed from metadata. T1 enforcement is MS6.
+/// fact that sort could not be confirmed from metadata. T1 is enforced elsewhere.
 fn time_sorted_ascending(_artifact: &str, metadata: &ParquetMetaData) -> Result<bool, CoreError> {
     let Some(col_idx) = leaf_column_index(metadata, TIME_COLUMN) else {
         return Ok(false);
@@ -861,11 +848,11 @@ fn time_sorted_ascending(_artifact: &str, metadata: &ParquetMetaData) -> Result<
 /// min/max statistics and returns `[min, max]` with [`TimeExtentSource::Statistics`]
 /// — a pure footer read, no data decoded.
 ///
-/// **Bounded fallback (LOW-1).** When the `time` column carries no usable row-group
+/// **Bounded fallback.** When the `time` column carries no usable row-group
 /// statistics, projects **only the `time` column by name** and reads it to recover
 /// `[min, max]`, returning [`TimeExtentSource::BoundedColumnScan`]. This is an
-/// architecture-§1-compliant 1-D coordinate/key-column read (architecture §7 R3),
-/// **not** a gridded-chunk value decode. The bound is hard: exactly one column.
+/// architecture-§1-compliant 1-D coordinate/key-column read, **not** a gridded-chunk
+/// value decode. The bound is hard: exactly one column.
 ///
 /// # Errors
 ///
@@ -901,7 +888,7 @@ pub fn time_extent(path: impl AsRef<Path>) -> Result<TimeExtent, CoreError> {
         });
     }
 
-    // LOW-1 bounded fallback: read ONLY the `time` column.
+    // Bounded fallback: read ONLY the `time` column.
     warn!(
         column = TIME_COLUMN,
         "time row-group statistics absent; using bounded 1-D time-only fallback"
@@ -1070,7 +1057,7 @@ mod tests {
         path
     }
 
-    // --- Field catalog over the real MS2 fixture --------------------------------
+    // --- Field catalog over the real fixture ------------------------------------
 
     #[test]
     fn scalar_static_catalogs_drainage_area_and_recognizes_basin_id() {
@@ -1111,7 +1098,7 @@ mod tests {
 
     #[test]
     fn basin_id_in_file_value_for_basin_0001_is_recorded() {
-        // I2 input (recorded, NOT compared to the folder here — that is MS6).
+        // I2 input (recorded, NOT compared to the folder here).
         let table = read_scalar_dynamic(conformance(
             "valid/minimal/basin=0001/scalar_dynamic.parquet",
         ))
@@ -1119,7 +1106,7 @@ mod tests {
         assert_eq!(
             table.basin_id_values(),
             &[BasinId::new("0001")],
-            "exactly one distinct in-file basin_id, recorded for MS6 I2"
+            "exactly one distinct in-file basin_id, recorded for the I2 cross-check"
         );
     }
 
@@ -1143,7 +1130,7 @@ mod tests {
         );
     }
 
-    // --- MED-5 Rust-side statistics confirmation --------------------------------
+    // --- Rust-side statistics confirmation --------------------------------------
 
     #[test]
     fn med5_time_statistics_are_rust_readable_and_extent_is_from_statistics() {
@@ -1154,8 +1141,8 @@ mod tests {
         let path = conformance("valid/minimal/basin=0001/scalar_dynamic.parquet");
 
         // 1) Rust-side confirmation: the `time` row-group statistics expose usable
-        //    min/max. If this ever fails, the fix is to REGENERATE the MS2 fixture
-        //    (an MS2 generator change), NEVER a reader workaround — see module docs.
+        //    min/max. If this ever fails, the fix is to REGENERATE the fixture,
+        //    NEVER a reader workaround — see the module docs.
         let raw = std::fs::read(&path).expect("read fixture bytes");
         let builder =
             ParquetRecordBatchReaderBuilder::try_new(Bytes::from(raw)).expect("fixture must open");
@@ -1171,11 +1158,11 @@ mod tests {
         let stats = rg
             .column(time_idx)
             .statistics()
-            .expect("MED-5: time column must carry Rust-readable row-group statistics");
+            .expect("time column must carry Rust-readable row-group statistics");
         match stats {
             Statistics::Int64(s) => {
-                assert!(s.min_opt().is_some(), "MED-5: time min statistic present");
-                assert!(s.max_opt().is_some(), "MED-5: time max statistic present");
+                assert!(s.min_opt().is_some(), "time min statistic present");
+                assert!(s.max_opt().is_some(), "time max statistic present");
             }
             other => panic!("expected Int64 time statistics, got {other:?}"),
         }
@@ -1185,7 +1172,7 @@ mod tests {
         assert_eq!(
             extent.source(),
             TimeExtentSource::Statistics,
-            "MED-5: the fixture extent MUST come from row-group statistics, not the fallback"
+            "the fixture extent MUST come from row-group statistics, not the fallback"
         );
         assert_eq!(
             extent.start().as_offset_date_time(),
@@ -1249,7 +1236,7 @@ mod tests {
         assert_ne!(e1.end(), e3.end());
     }
 
-    // --- LOW-1 bounded fallback -------------------------------------------------
+    // --- Bounded fallback -------------------------------------------------------
 
     #[test]
     fn low1_fallback_used_when_statistics_disabled_with_correct_bounds() {

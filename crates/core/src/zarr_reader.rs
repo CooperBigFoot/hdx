@@ -1,5 +1,5 @@
 //! The Zarr v3 **metadata** reader for `gridded_dynamic/<label>.zarr` stores
-//! (spec §7/§8, architecture §1/§3.5, MED-5).
+//! (spec §7/§8, architecture §1/§3.5).
 //!
 //! This module reads the *shape* of a per-basin Zarr v3 store into typed facts —
 //! the gridded·dynamic field catalog plus a [`GridInfo`] — **never** its scientific
@@ -11,15 +11,15 @@
 //! 2. the **1-D `lat`/`lon`/`time` coordinate chunks** (`c/0`), a 1-D coordinate
 //!    read (architecture §1) used to derive the grid extent.
 //!
-//! It **never** opens a `c/0/0/0` data chunk (LOW-3): the sharded data arrays
+//! It **never** opens a `c/0/0/0` data chunk: the sharded data arrays
 //! (`era5_precipitation`, `era5_precipitation_was_filled`) are read for metadata
 //! only and their chunk payloads are opaque leaves.
 //!
-//! ## MED-5 — the consolidated-metadata path (Rust-side confirmation)
+//! ## The consolidated-metadata path (spec §8)
 //!
 //! The reader learns the whole store from **one read** of the root `zarr.json`'s
-//! `consolidated_metadata.metadata` map (ground truth: `kind == "inline"`, six
-//! members: `crs`, `era5_precipitation`, `era5_precipitation_was_filled`, `lat`,
+//! `consolidated_metadata.metadata` map (the live fixture has `kind == "inline"` and
+//! six members: `crs`, `era5_precipitation`, `era5_precipitation_was_filled`, `lat`,
 //! `lon`, `time`). Which path was taken is recorded in a self-documenting
 //! [`ConsolidatedMetadataSource`] enum — never a `bool`. If the store does not
 //! expose inline consolidated metadata, the source is recorded as
@@ -27,20 +27,15 @@
 //! silently claimed. A zarr-python-vs-Rust mismatch is fixed by **regenerating the
 //! fixture**, never a reader workaround.
 //!
-//! ## R1 crate choice (recorded; architecture §7 R1)
-//!
 //! The typed per-member array metadata is parsed with `zarrs_metadata` (the
-//! metadata-only sub-crate of `zarrs`, pinned to `0.7` in `crates/core/Cargo.toml`),
-//! whose `v3::ArrayMetadataV3` models a Zarr v3 array's `shape` / `data_type` /
-//! `attributes` / `dimension_names`. The consolidated map itself is read once with
-//! `serde_json` (already present) and each entry deserialized into
-//! `ArrayMetadataV3`. The 1-D coordinate chunks are decompressed with the pure-Rust
-//! `ruzstd` decoder. **No GDAL, no async, no cloud, no chunk-IO crate.** The R1 Zarr
-//! crate + pin and the LOW pin-bump contingency are recorded in `Cargo.toml`
-//! alongside the dependency (mirroring the parquet R1 record); the architecture
-//! amendment log carries the S1 R1 decision this fills in.
+//! metadata-only sub-crate of `zarrs`), whose `v3::ArrayMetadataV3` models a Zarr v3
+//! array's `shape` / `data_type` / `attributes` / `dimension_names`. The
+//! consolidated map itself is read once with `serde_json` and each entry
+//! deserialized into `ArrayMetadataV3`. The 1-D coordinate chunks are decompressed
+//! with the pure-Rust `ruzstd` decoder. **No GDAL, no async, no cloud, no chunk-IO
+//! crate.**
 //!
-//! ## Array classification (tightened per the LOW critique)
+//! ## Array classification
 //!
 //! - A **coordinate array** is one named `time`/`lat`/`lon` that self-references its
 //!   own dimension via `dimension_names == [name]`.
@@ -50,23 +45,13 @@
 //!   following a data variable's `grid_mapping` attribute** — *not* by dimension
 //!   self-reference. The `crs` array has `shape: []` and no `dimension_names`, so it
 //!   is unreachable by dimension grouping; it is read only after a data var points
-//!   at it (ground truth).
-//!
-//! ## Ordinary fields — no name magic (spec §2)
+//!   at it.
 //!
 //! Each data variable becomes one ordinary [`Field`] named **exactly** as the Zarr
-//! variable, with a scalar→dtype bridge over the Zarr `data_type` string, CF `units`
-//! from the variable's `units` attribute, and `Some(GridLabel)`. The reader applies
-//! **no** name-pattern special-casing: `era5_precipitation_was_filled` is an
-//! ordinary `GriddedDynamic` field with no `{source}_{variable}` split and no
-//! companion-mask link (HDX is inert and agnostic — spec §1).
-//!
-//! ## Records facts, enforces nothing
-//!
-//! Like the scalar reader, this is a discovery surface: it reads and models the
-//! store and surfaces facts (the field catalog, the grid geometry, the CRS, the
-//! consolidated-metadata path taken). It **enforces no spec §14 check** — G1/G2/G3,
-//! M5 are MS6 rules run over this model.
+//! variable, with no name-pattern special-casing: `era5_precipitation_was_filled` is
+//! an ordinary `GriddedDynamic` field, not a companion mask (spec §1/§2). Like the
+//! scalar reader, this is a discovery surface — it records facts and enforces no spec
+//! §14 check.
 //!
 //! ## Glossary
 //!
@@ -76,7 +61,7 @@
 //! | coordinate array | a 1-D `time`/`lat`/`lon` array self-referencing its dimension (CF cell centers) |
 //! | data variable | a gridded·dynamic array with `grid_mapping` + 3-D `[time, lat, lon]` dims |
 //! | grid_mapping target | the `crs` array a data var's `grid_mapping` attribute names |
-//! | center→edge | the half-pixel conversion from CF cell centers to the cell-edge extent (S1) |
+//! | center→edge | the half-pixel conversion from CF cell centers to the cell-edge extent |
 
 use std::io::Read;
 use std::path::Path;
@@ -103,10 +88,11 @@ const GRID_MAPPING_ATTR: &str = "grid_mapping";
 /// The CF attribute carrying a variable's units (spec §2).
 const UNITS_ATTR: &str = "units";
 
-/// Which path the reader used to learn the store (spec §8, MED-5).
+/// Which path the reader used to learn the store (spec §8).
 ///
-/// An enum, never a `bool`, so the path taken is self-documenting at every call
-/// site (architecture §3.3). MS5/MS6 can report which path produced the model.
+/// An enum, never a `bool`, so the path taken is self-documenting at every call site
+/// (architecture §3.3). Downstream consumers can report which path produced the
+/// model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsolidatedMetadataSource {
     /// The store was learned from **one read** of the root `zarr.json`'s inline
@@ -120,8 +106,7 @@ pub enum ConsolidatedMetadataSource {
     },
     /// Consolidated metadata could not be used: the root `zarr.json` carries no
     /// `consolidated_metadata` object, or its `kind` is not `"inline"`. Recorded
-    /// with a stated reason as an **R3 byte-deep SKIP** — documented, never
-    /// silently claimed (MED-5).
+    /// with a stated reason as a byte-deep skip — documented, never silently claimed.
     R3Skip {
         /// Why the consolidated path was unavailable; opaque, for honest reporting.
         reason: String,
@@ -155,13 +140,13 @@ impl ZarrGrid {
         &self.fields
     }
 
-    /// Borrows the consolidated-metadata path the reader took (MED-5).
+    /// Borrows the consolidated-metadata path the reader took.
     pub fn consolidated_source(&self) -> &ConsolidatedMetadataSource {
         &self.consolidated_source
     }
 }
 
-/// Bridges a Zarr v3 `data_type` string to the canonical dtype string MS1
+/// Bridges a Zarr v3 `data_type` string to the canonical dtype string
 /// [`parse_dtype`] accepts (the single documented Zarr→[`Dtype`] map).
 ///
 /// This mirrors the scalar reader's arrow-type bridge: it maps the *physical*
@@ -195,7 +180,7 @@ fn zarr_dtype_str(data_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Parses a Zarr v3 `data_type` string into a closed MS1 [`Dtype`] at the boundary.
+/// Parses a Zarr v3 `data_type` string into a closed [`Dtype`] at the boundary.
 ///
 /// # Errors
 ///
@@ -243,9 +228,9 @@ fn is_three_dim_grid(meta: &ArrayMetadataV3) -> bool {
 /// values (the `lat`/`lon` cell-center arrays).
 ///
 /// Reads exactly the chunk at `<store>/<coord>/c/0` — a 1-D coordinate read
-/// (architecture §1), never a `c/0/0/0` data chunk (LOW-3). The fixture stores the
-/// chunk `bytes` (little-endian) + `zstd`-framed, so it is zstd-decoded with the
-/// pure-Rust `ruzstd` decoder, then read as 8-byte little-endian doubles.
+/// (architecture §1), never a `c/0/0/0` data chunk. The fixture stores the chunk
+/// `bytes` (little-endian) + `zstd`-framed, so it is zstd-decoded with the pure-Rust
+/// `ruzstd` decoder, then read as 8-byte little-endian doubles.
 ///
 /// # Errors
 ///
@@ -303,7 +288,7 @@ fn read_coord_f64(
 
 /// Parses the root `zarr.json` and recovers the §8 inline consolidated-metadata map.
 ///
-/// Reads the file once (the one read MED-5 mandates) and returns the
+/// Reads the file once (the single consolidated read) and returns the
 /// `consolidated_metadata.metadata` object plus the [`ConsolidatedMetadataSource`]
 /// recording that the consolidated path was live. If the store carries no inline
 /// consolidated metadata, returns an [`ConsolidatedMetadataSource::R3Skip`] reason
@@ -362,7 +347,7 @@ fn read_consolidated_map(
                         .to_string()
                 }
             };
-            warn!(reason = %reason, "consolidated-metadata path unavailable (MED-5 R3 skip)");
+            warn!(reason = %reason, "consolidated-metadata path unavailable (skip)");
             // No usable map: surface the skip reason via a typed error so the caller
             // never proceeds with a silently-claimed path.
             Err(CoreError::ZarrRead {
@@ -374,13 +359,13 @@ fn read_consolidated_map(
 }
 
 /// Resolves the CRS of a `grid_mapping` target array as a comparable `EPSG:<code>`
-/// string when an EPSG id resolves, else the raw CRS string verbatim (S1 rule).
+/// string when an EPSG id resolves, else the raw CRS string verbatim.
 ///
 /// Follows the CF convention: the target array carries `spatial_ref` (often already
 /// `"EPSG:<code>"`) and/or `crs_wkt`. The reader prefers `spatial_ref` when it is an
 /// `EPSG:<code>` form; otherwise it records whatever string is present verbatim
-/// (the raw-string + R3 fallback — documented, never silently claimed). HDX records
-/// the CRS and compares nothing here (M5 is MS6).
+/// (the raw-string fallback — documented, never silently claimed). HDX records the
+/// CRS and compares nothing here (M5 is enforced elsewhere).
 fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
     if let Some(spatial_ref) = string_attr(target, "spatial_ref") {
         return Some(Crs::new(spatial_ref));
@@ -392,7 +377,7 @@ fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
 }
 
 /// Reads a `gridded_dynamic/<label>.zarr` store's metadata into a [`ZarrGrid`]
-/// (spec §7/§8, architecture §1/§3.5, MED-5).
+/// (spec §7/§8, architecture §1/§3.5).
 ///
 /// Learns the store from **one read** of the root `zarr.json`'s §8 inline
 /// consolidated-metadata map, classifies its arrays (coordinate vs data variable vs
@@ -400,7 +385,7 @@ fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
 /// center→edge [`GridExtent`], resolves the CRS from the data variables'
 /// `grid_mapping` target, and maps each data variable to an ordinary `GriddedDynamic`
 /// [`Field`]. The `time` coordinate is required structurally but its values are not
-/// needed for the grid geometry. **No `c/0/0/0` data chunk is ever read** (LOW-3).
+/// needed for the grid geometry. **No `c/0/0/0` data chunk is ever read.**
 ///
 /// `grid_label` is the label of the store (e.g. `era5`), supplied by the caller from
 /// the artifact name; HDX names nothing from the file contents.
@@ -422,7 +407,7 @@ pub fn read_zarr_grid(
     let store = path.as_ref();
     let artifact = store.display().to_string();
 
-    // MED-5: one read of the root zarr.json via the §8 consolidated-metadata path.
+    // One read of the root zarr.json via the §8 consolidated-metadata path.
     let (map, consolidated_source) = read_consolidated_map(store, &artifact)?;
 
     // Parse every member's metadata (typed via the R1 zarrs_metadata crate).
@@ -610,7 +595,7 @@ mod tests {
 
         match grid.consolidated_source() {
             ConsolidatedMetadataSource::Consolidated { members } => {
-                // MED-5: all six members enumerated from the single inline read.
+                // All six members enumerated from the single inline read.
                 assert_eq!(members.len(), 6, "all six members from one read");
                 for expected in [
                     "crs",
@@ -732,7 +717,7 @@ mod tests {
         assert_eq!(grid.grid_info().crs(), &Crs::new("EPSG:4326"));
     }
 
-    // --- LOW-3 no-data-chunk gate -----------------------------------------------
+    // --- No-data-chunk gate -----------------------------------------------------
 
     #[test]
     fn low3_no_data_chunk_read_identical_metadata_after_deleting_c000() {
@@ -764,7 +749,7 @@ mod tests {
 
         let after = read_zarr_grid(&temp, GridLabel::new("era5"));
         std::fs::remove_dir_all(&temp).ok();
-        let after = after.expect("read must STILL succeed with no data chunk (LOW-3)");
+        let after = after.expect("read must STILL succeed with no data chunk");
 
         // Identical metadata + extent: proves no c/0/0/0 data chunk was read.
         assert_eq!(
@@ -852,7 +837,7 @@ mod tests {
     #[test]
     fn uncosolidated_store_records_skip_reason_not_silent() {
         // A root zarr.json without consolidated metadata is surfaced as a typed
-        // ZarrRead with a stated reason (MED-5: never a silent claim).
+        // ZarrRead with a stated reason (never a silent claim).
         let temp = copy_store_to_temp(&fixture_store(), "unconsolidated");
         let root = temp.join("zarr.json");
         let text = std::fs::read_to_string(&root).expect("read root");

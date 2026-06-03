@@ -1,5 +1,5 @@
 //! The COG / GeoTIFF **metadata** reader for `gridded_static/<label>.tif` artifacts
-//! (spec §7/§8, architecture §1/§3.5, MED-4).
+//! (spec §7/§8, architecture §1/§3.5).
 //!
 //! This module reads the *shape* of a per-basin Cloud-Optimized GeoTIFF into typed
 //! facts — the gridded·static field catalog plus a [`GridInfo`] — **never** its
@@ -13,64 +13,45 @@
 //!    `34735` `GeoKeyDirectory` (the EPSG code); and
 //! 3. the **`SampleFormat` + `BitsPerSample`** tags to map the band to a [`Dtype`].
 //!
-//! It **never** decodes a pixel strip or tile (LOW-3): the public API exposes no
-//! pixel buffer, and the reader only ever calls `find_tag` / `get_tag_*` — never
+//! It **never** decodes a pixel strip or tile: the public API exposes no pixel
+//! buffer, and the reader only ever calls `find_tag` / `get_tag_*` — never
 //! `read_chunk` / `read_image`. The pixel raster is an opaque leaf.
 //!
-//! ## MED-4 — the band-description three-outcome protocol (resolved: outcome 1)
+//! ## The band-description protocol — read tag 42112, not IFD tag 270
 //!
-//! The fixture stores the band description in tag `42112` `GDAL_METADATA`, **not**
-//! in IFD tag `270` (`ImageDescription`) — ground truth, decoded from the committed
-//! MS2 fixture. The pure-Rust `tiff` crate surfaces tag `42112` as an ASCII string,
-//! from which HDX parses the small fixed `<GDALMetadata>` XML for the two `<Item>`s
-//! it needs:
+//! The band description lives in tag `42112` `GDAL_METADATA`, **not** in IFD tag
+//! `270` (`ImageDescription`). The pure-Rust `tiff` crate surfaces tag `42112` as an
+//! ASCII string, from which HDX parses the small fixed `<GDALMetadata>` XML for the
+//! two `<Item>`s it needs:
 //!
 //! - `<Item ... role="description">NAME</Item>` → the field name (`elevation`);
 //! - `<Item name="units" ...>UNIT</Item>` → the units (`m`).
 //!
-//! The XML parse is a minimal, dependency-free substring/attribute extraction —
-//! HDX reads only those two `<Item>`s and treats every value as an opaque producer
-//! string (spec §2). Which path produced the band name is recorded in a
-//! self-documenting [`CogBandSource`] enum — never a `bool`:
+//! The XML parse is a minimal, dependency-free substring/attribute extraction — HDX
+//! reads only those two `<Item>`s and treats every value as an opaque producer string
+//! (spec §2). Which path produced the band name is recorded in a self-documenting
+//! [`CogBandSource`] enum — never a `bool`:
 //!
-//! - **Outcome (1) — pure-Rust read works (the live path on a conformant fixture):**
-//!   the description reads back as `elevation` from tag `42112` and
-//!   [`CogBandSource::GdalMetadataTag`] is recorded. G1 COG-side is metadata-deep and
-//!   **live** — verified by the fixture round-trip test, not silently claimed.
-//! - **Outcome (3) — pure-Rust fails:** if tag `42112` is absent or unparseable, the
-//!   band source is recorded as [`CogBandSource::R3Skip`] with a stated reason — an
-//!   **R3** byte/format-deep SKIP, documented, never silently claimed. Outcome (2)
-//!   (accept GDAL, confirm the MS9 wheel) is invoked only by an explicit follow-up,
-//!   never silently here.
+//! - **Pure-Rust read works (the live path on a conformant fixture):** the
+//!   description reads back as `elevation` from tag `42112` and
+//!   [`CogBandSource::GdalMetadataTag`] is recorded — verified by the fixture
+//!   round-trip test, not silently claimed.
+//! - **Pure-Rust read fails:** if tag `42112` is absent or unparseable, the band
+//!   source is recorded as [`CogBandSource::R3Skip`] with a stated reason — a
+//!   byte/format-deep skip, documented, never silently claimed.
 //!
-//! **Mismatch rule:** if the reader cannot read the band description the MS2
-//! generator wrote, the fix is an **MS2 regenerate** (write the description in a tag
+//! **Mismatch rule:** if the reader cannot read the band description the generator
+//! wrote, the fix is to **regenerate the fixture** (write the description in a tag
 //! the reader supports), **never** a reader workaround.
 //!
-//! ## R1 crate choice (recorded; architecture §7 R1)
-//!
-//! The TIFF is read with the pure-Rust `tiff` crate (pinned to `0.11` in
-//! `crates/core/Cargo.toml`, `default-features = false` so every image-decode codec
-//! is trimmed out — the reader needs none). The GeoKeyDirectory is parsed by hand
-//! (the `tiff` crate surfaces it as a raw `u16` vector). **No GDAL, no C toolchain,
-//! no pixel decode.** The R1 `tiff` crate + pin and the LOW pin-bump contingency are
-//! recorded in `Cargo.toml` alongside the dependency (mirroring the parquet / Zarr
-//! R1 records); the S1 architecture amendment carries the MED-4 protocol this fills
-//! in with outcome (1).
-//!
-//! ## Ordinary field — no name magic (spec §2)
+//! The TIFF is read with the pure-Rust `tiff` crate (`default-features = false` so
+//! every image-decode codec is trimmed out — the reader needs none). The
+//! GeoKeyDirectory is parsed by hand (the `tiff` crate surfaces it as a raw `u16`
+//! vector). **No GDAL, no C toolchain, no pixel decode.**
 //!
 //! The single band becomes one ordinary [`Field`] named **exactly** as the tag-42112
-//! description, quadrant [`Quadrant::GriddedStatic`], dtype via MS1 [`parse_dtype`]
-//! over the `SampleFormat` + `BitsPerSample` tags, units from the same XML, and
-//! `Some(GridLabel)`. There is no positional channel axis and no name special-casing
-//! (HDX is inert and agnostic — spec §1).
-//!
-//! ## Records facts, enforces nothing
-//!
-//! Like the Zarr reader, this is a discovery surface: it reads and models the COG and
-//! surfaces facts (the field, the grid geometry, the CRS, the band source). It
-//! **enforces no spec §14 check** — G1/G2/G3, M5 are MS6 rules run over this model.
+//! description, with no name special-casing (spec §1/§2). Like the Zarr reader, this
+//! is a discovery surface — it records facts and enforces no spec §14 check.
 //!
 //! ## Glossary
 //!
@@ -80,7 +61,7 @@
 //! | ModelPixelScale (tag 33550) | the per-axis cell size `(x_res, y_res, z)` |
 //! | ModelTiepoint (tag 33922) | a raster↔model tiepoint; the NW cell-edge origin (already edge-based) |
 //! | GeoKeyDirectory (tag 34735) | the packed GeoTIFF key/value block carrying the EPSG code |
-//! | edge origin | the NW cell-edge `(west, north)` — the single grid convention (S1) |
+//! | edge origin | the NW cell-edge `(west, north)` — the single grid convention |
 
 use std::path::Path;
 
@@ -103,22 +84,22 @@ const GEOKEY_GEOGRAPHIC_TYPE: u16 = 2048;
 /// The GeoTIFF `ProjectedCSTypeGeoKey` (a projected CRS EPSG code) GeoKey id.
 const GEOKEY_PROJECTED_TYPE: u16 = 3072;
 
-/// Which path produced the band description / units (spec §2, MED-4).
+/// Which path produced the band description / units (spec §2).
 ///
-/// An enum, never a `bool`, so the band source is self-documenting at every call
-/// site (architecture §3.3). MS5/MS6 can report which path produced the catalog.
+/// An enum, never a `bool`, so the band source is self-documenting at every call site
+/// (architecture §3.3). Downstream consumers can report which path produced the
+/// catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CogBandSource {
     /// The band description (and units) were read from tag `42112` `GDAL_METADATA`
-    /// via the pure-Rust `tiff` crate — the **live** path on a conformant fixture
-    /// (MED-4 outcome 1). G1 COG-side is metadata-deep and live, not silently
-    /// claimed.
+    /// via the pure-Rust `tiff` crate — the **live** path on a conformant fixture,
+    /// not silently claimed.
     GdalMetadataTag,
     /// The band description could not be read from tag `42112` (the tag is absent,
     /// unreadable, or carries no `role="description"` `<Item>`). Recorded with a
-    /// stated reason as an **R3** byte/format-deep SKIP — documented, never silently
-    /// claimed (MED-4 outcome 3). The mismatch rule applies: the fix is an MS2
-    /// regenerate, never a reader workaround.
+    /// stated reason as a byte/format-deep skip — documented, never silently claimed.
+    /// The mismatch rule applies: the fix is to regenerate the fixture, never a
+    /// reader workaround.
     R3Skip {
         /// Why the pure-Rust band-description read was unavailable; opaque, for
         /// honest reporting.
@@ -153,7 +134,7 @@ impl CogGrid {
         &self.field
     }
 
-    /// Borrows the band source the reader took (MED-4).
+    /// Borrows the band source the reader took.
     pub fn band_source(&self) -> &CogBandSource {
         &self.band_source
     }
@@ -209,7 +190,7 @@ fn parse_gdal_metadata(xml: &str) -> GdalBandMetadata {
 }
 
 /// Maps a GeoTIFF `SampleFormat` + `BitsPerSample` pair to the canonical dtype string
-/// MS1 [`parse_dtype`] accepts (the single documented GeoTIFF→[`Dtype`] map).
+/// [`parse_dtype`] accepts (the single documented GeoTIFF→[`Dtype`] map).
 ///
 /// This mirrors the Zarr / arrow physical-type bridges: it maps the *physical*
 /// element encoding a GeoTIFF declares to HDX's closed [`Dtype`] set, returning
@@ -234,7 +215,7 @@ fn geotiff_dtype_str(sample_format: u16, bits: u16) -> Option<&'static str> {
     }
 }
 
-/// Parses a GeoTIFF `SampleFormat` + `BitsPerSample` pair into a closed MS1 [`Dtype`].
+/// Parses a GeoTIFF `SampleFormat` + `BitsPerSample` pair into a closed [`Dtype`].
 ///
 /// # Errors
 ///
@@ -290,21 +271,21 @@ fn epsg_from_geokey_directory(dir: &[u16]) -> Option<u16> {
 }
 
 /// Reads a `gridded_static/<label>.tif` COG's metadata into a [`CogGrid`]
-/// (spec §7/§8, architecture §1/§3.5, MED-4).
+/// (spec §7/§8, architecture §1/§3.5).
 ///
 /// Opens the TIFF and reads **tags only**: the band description + units from tag
-/// 42112 (MED-4), the standard GeoTIFF georef tags (`ModelPixelScale`,
-/// `ModelTiepoint`, `ImageWidth`/`ImageLength`, `GeoKeyDirectory`) into an
-/// edge-based [`GridExtent`] (the tiepoint is already a cell-edge origin — no
-/// conversion), and the `SampleFormat` + `BitsPerSample` for the dtype. Maps the
-/// band to one ordinary `GriddedStatic` [`Field`]. **No pixel raster is ever
-/// decoded** (LOW-3): the reader calls only `find_tag` / `get_tag_*`.
+/// 42112, the standard GeoTIFF georef tags (`ModelPixelScale`, `ModelTiepoint`,
+/// `ImageWidth`/`ImageLength`, `GeoKeyDirectory`) into an edge-based [`GridExtent`]
+/// (the tiepoint is already a cell-edge origin — no conversion), and the
+/// `SampleFormat` + `BitsPerSample` for the dtype. Maps the band to one ordinary
+/// `GriddedStatic` [`Field`]. **No pixel raster is ever decoded**: the reader calls
+/// only `find_tag` / `get_tag_*`.
 ///
 /// `grid_label` is the label of the artifact (e.g. `era5`), supplied by the caller
 /// from the artifact name; HDX names nothing from the file contents.
 ///
-/// On the MS2 fixture this yields the band `elevation` (`f32`, units `m`), resolution
-/// `0.25` / `−0.25`, dims `6 × 8`, CRS `EPSG:4326`, and the edge extent
+/// On the valid fixture this yields the band `elevation` (`f32`, units `m`),
+/// resolution `0.25` / `−0.25`, dims `6 × 8`, CRS `EPSG:4326`, and the edge extent
 /// `west = 10.0`, `north = 50.0`, `east = 11.5`, `south = 48.0` — byte-identical to
 /// the Zarr reader's converted extent.
 ///
@@ -368,7 +349,7 @@ pub fn read_cog_grid(
         });
     }
     // The GeoTIFF pixel scale is a positive magnitude; the row axis marches south,
-    // so the recorded y_res is negative (the single grid convention, S1).
+    // so the recorded y_res is negative (the single grid convention).
     let x_res = pixel_scale[0];
     let y_res = -pixel_scale[1];
 
@@ -406,9 +387,9 @@ pub fn read_cog_grid(
                 artifact: artifact.clone(),
                 detail: "GeoTIFF GeoKeyDirectory (tag 34735) absent".to_string(),
             })?;
-    // CRS-recording rule (S1): record `EPSG:<code>` when an EPSG id resolves, else
-    // the raw key-directory form verbatim and flag M5-readiness as R3 (here the
-    // fixture always resolves an inline EPSG code).
+    // CRS-recording rule: record `EPSG:<code>` when an EPSG id resolves, else the raw
+    // key-directory form verbatim (here the fixture always resolves an inline EPSG
+    // code).
     let crs = match epsg_from_geokey_directory(&geokey_dir) {
         Some(code) => Crs::new(format!("EPSG:{code}")),
         None => {
@@ -434,7 +415,7 @@ pub fn read_cog_grid(
             })?;
     let dtype = geotiff_dtype(sample_format, bits_per_sample)?;
 
-    // --- Band description + units (MED-4): tag 42112 GDAL_METADATA -------------
+    // --- Band description + units: tag 42112 GDAL_METADATA ---------------------
     let gdal_xml = decoder
         .get_tag_ascii_string(Tag::from_u16_exhaustive(TAG_GDAL_METADATA))
         .ok();
@@ -445,7 +426,7 @@ pub fn read_cog_grid(
                 Some(name) => {
                     debug!(
                         band = %name,
-                        "read band description from tag 42112 GDAL_METADATA (MED-4 outcome 1)"
+                        "read band description from tag 42112 GDAL_METADATA"
                     );
                     (name, meta.units, CogBandSource::GdalMetadataTag)
                 }
@@ -453,7 +434,7 @@ pub fn read_cog_grid(
                     // The tag exists but carries no role="description" Item.
                     let reason = "tag 42112 GDAL_METADATA has no role=\"description\" <Item>"
                         .to_string();
-                    warn!(reason = %reason, "MED-4 outcome 3: band description unavailable (R3 skip)");
+                    warn!(reason = %reason, "band description unavailable (skip)");
                     return Err(CoreError::CogRead {
                         artifact: artifact.clone(),
                         detail: reason,
@@ -462,11 +443,11 @@ pub fn read_cog_grid(
             }
         }
         None => {
-            // The pure-Rust read could not surface tag 42112 at all (MED-4 outcome 3):
-            // the band name HDX needs is unreadable — surface it, never silently claim.
+            // The pure-Rust read could not surface tag 42112 at all: the band name
+            // HDX needs is unreadable — surface it, never silently claim.
             let reason =
                 "tiff crate could not read tag 42112 GDAL_METADATA (band description)".to_string();
-            warn!(reason = %reason, "MED-4 outcome 3: band description unavailable (R3 skip)");
+            warn!(reason = %reason, "band description unavailable (skip)");
             return Err(CoreError::CogRead {
                 artifact: artifact.clone(),
                 detail: reason,
@@ -533,13 +514,13 @@ mod tests {
         path
     }
 
-    // --- MED-4 round-trip (the decision) ----------------------------------------
+    // --- Band-description round-trip --------------------------------------------
 
     #[test]
     fn med4_band_description_reads_back_as_elevation_from_tag_42112() {
         // The executable proof the pure-Rust read works on the real fixture: the band
-        // description is `elevation` and the source is the live GDAL_METADATA tag
-        // (outcome 1). A regression routes to outcome (3), never a silent claim.
+        // description is `elevation` and the source is the live GDAL_METADATA tag. A
+        // regression routes to the skip path, never a silent claim.
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5"))
             .expect("fixture COG must read its band description via tag 42112");
 
@@ -551,7 +532,7 @@ mod tests {
         assert_eq!(
             grid.band_source(),
             &CogBandSource::GdalMetadataTag,
-            "MED-4 outcome 1: pure-Rust read is live, not silently claimed"
+            "pure-Rust read is live, not silently claimed"
         );
     }
 
@@ -621,7 +602,7 @@ mod tests {
         );
     }
 
-    // --- LOW-3 no-pixel gate ----------------------------------------------------
+    // --- No-pixel gate ----------------------------------------------------------
 
     #[test]
     fn low3_returns_metadata_without_decoding_pixels() {

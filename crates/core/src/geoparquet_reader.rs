@@ -1,10 +1,10 @@
-//! The `outlines.geoparquet` **metadata + 1-D column** reader (MS4-S4; spec §9,
+//! The `outlines.geoparquet` **metadata + 1-D column** reader (spec §9,
 //! architecture §1/§3.5).
 //!
 //! Reads the plural-outlines artifact into the structural facts the Geo1 / I1 / M5
-//! checks (enforcement is MS6) need, **reusing MS3's pure-Rust `parquet`/`arrow`
-//! stack** (the R1 decision — no new crate) via the same private `parquet_meta`
-//! touchpoint the scalar reader uses. It reads three things and nothing more:
+//! checks need (enforcement lives elsewhere), reusing the pure-Rust `parquet`/`arrow`
+//! stack via the same private `parquet_meta` touchpoint the scalar reader uses. It
+//! reads three things and nothing more:
 //!
 //! 1. **The arrow schema** — to confirm the three structurally-required columns
 //!    `basin_id`, `delineation`, `geometry` are present (Geo1). A missing one is a
@@ -21,7 +21,7 @@
 //!    records the CRS as a *comparable* [`Crs`] per the CRS-recording rule
 //!    (architecture amendment): when the PROJJSON carries an `id` with
 //!    `authority == "EPSG"` and a numeric/string `code`, the reader records
-//!    `Crs::new("EPSG:<code>")` — a value MS6's M5 can compare to the manifest's
+//!    `Crs::new("EPSG:<code>")` — a value the M5 check can compare to the manifest's
 //!    `"EPSG:4326"`. When there is no resolvable EPSG `id`, the reader records the
 //!    raw PROJJSON string verbatim and flags the file as an **R3** item via
 //!    [`CrsSource::RawProjjsonR3`] (documented, never silently claimed).
@@ -72,14 +72,14 @@ const EPSG_AUTHORITY: &str = "EPSG";
 /// How [`OutlinesInfo::crs`] was resolved (spec §7/§11, the M5-readiness fact).
 ///
 /// An enum, never a `bool`, so the resolution path is self-documenting at every call
-/// site (architecture §3.3). MS6's M5 cross-check uses this to know whether the
+/// site (architecture §3.3). The M5 cross-check uses this to know whether the
 /// recorded [`Crs`] is a *comparable* `EPSG:<code>` (compare it to the manifest) or a
 /// raw PROJJSON string that needs an R3 byte-deep follow-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrsSource {
     /// The CRS was resolved to `EPSG:<code>` from the PROJJSON `id`
-    /// (`id.authority == "EPSG"`). The recorded [`Crs`] is a **comparable** value
-    /// MS6's M5 can compare directly to the manifest's `"EPSG:4326"` (the MEDIUM fix).
+    /// (`id.authority == "EPSG"`). The recorded [`Crs`] is a **comparable** value the
+    /// M5 check can compare directly to the manifest's `"EPSG:4326"`.
     EpsgFromProjjsonId,
     /// The PROJJSON carried no resolvable EPSG `id` (no `id`, or
     /// `authority != "EPSG"`), so the reader recorded the **raw PROJJSON string
@@ -167,7 +167,7 @@ impl OutlinesInfo {
 /// architecture §1). Records the column-presence facts (Geo1), the distinct
 /// delineation labels (spec §9), the distinct `basin_id` values (I1), the
 /// not-partitioned fact (single root file), and the CRS resolved from the PROJJSON
-/// `id` (the MEDIUM fix) or recorded raw with an R3 flag.
+/// `id` or recorded raw with an R3 flag.
 ///
 /// # Errors
 ///
@@ -194,7 +194,7 @@ pub fn read_outlines(path: impl AsRef<Path>) -> Result<OutlinesInfo, CoreError> 
     require_column(&artifact, schema, DELINEATION_COLUMN)?;
     require_column(&artifact, schema, GEOMETRY_COLUMN)?;
 
-    // The CRS from the `geo` KV primary-column PROJJSON (the MEDIUM fix).
+    // The CRS from the `geo` KV primary-column PROJJSON.
     let geo = meta
         .key_value(GEO_KV_KEY)
         .ok_or_else(|| CoreError::GeoparquetRead {
@@ -282,7 +282,7 @@ fn require_column(artifact: &str, schema: &Schema, column: &str) -> Result<(), C
     }
 }
 
-/// Resolves the recorded CRS from the geoparquet `geo` KV JSON (the MEDIUM fix).
+/// Resolves the recorded CRS from the geoparquet `geo` KV JSON.
 ///
 /// Parses the `geo` JSON, takes `primary_column`'s `crs` (a PROJJSON object), and
 /// records [`Crs::new`]`("EPSG:<code>")` + [`CrsSource::EpsgFromProjjsonId`] when the
@@ -318,7 +318,7 @@ fn resolve_crs(artifact: &str, geo: &str) -> Result<(Crs, CrsSource), CoreError>
             detail: format!("`geo` metadata has no CRS for primary column {primary:?}"),
         })?;
 
-    // The MEDIUM fix: prefer the comparable EPSG:<code> from the PROJJSON `id`.
+    // Prefer the comparable EPSG:<code> from the PROJJSON `id`.
     match epsg_code_from_projjson(crs_json) {
         Some(code) => {
             debug!(epsg = %code, "resolved geoparquet CRS from PROJJSON id");
@@ -659,9 +659,9 @@ mod tests {
 
     #[test]
     fn crs_resolves_to_epsg_4326_from_projjson_id() {
-        // The MEDIUM fix asserted on the fixture: the reader resolves the comparable
-        // EPSG:4326 from the PROJJSON `id`, NOT the raw PROJJSON blob — so MS6's M5
-        // receives a value comparable to the manifest's "EPSG:4326".
+        // Asserted on the fixture: the reader resolves the comparable EPSG:4326 from
+        // the PROJJSON `id`, NOT the raw PROJJSON blob — so the M5 check receives a
+        // value comparable to the manifest's "EPSG:4326".
         let info = read_outlines(fixture_outlines()).expect("fixture must read");
 
         assert_eq!(info.crs(), &Crs::new("EPSG:4326"));
