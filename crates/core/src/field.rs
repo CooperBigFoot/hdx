@@ -128,8 +128,7 @@ pub enum Dtype {
 }
 
 impl Dtype {
-    /// Returns the canonical string for this dtype (the form round-tripped by
-    /// [`parse_dtype`]).
+    /// Returns the canonical string for this dtype (round-tripped by [`parse_dtype`]).
     pub fn as_str(&self) -> &'static str {
         match self {
             Dtype::F32 => "f32",
@@ -204,7 +203,6 @@ impl Units {
         Self(None)
     }
 
-    /// Borrows the underlying units string, if any.
     pub fn as_deref(&self) -> Option<&str> {
         self.0.as_deref()
     }
@@ -279,22 +277,18 @@ impl Field {
         }
     }
 
-    /// Borrows the field name.
     pub fn name(&self) -> &FieldName {
         &self.name
     }
 
-    /// Returns the field's quadrant.
     pub fn quadrant(&self) -> Quadrant {
         self.quadrant
     }
 
-    /// Returns the field's dtype.
     pub fn dtype(&self) -> Dtype {
         self.dtype
     }
 
-    /// Borrows the field's units.
     pub fn units(&self) -> &Units {
         &self.units
     }

@@ -1,10 +1,8 @@
-//! Shared gridded-geometry value types — the typed vocabulary every gridded /
-//! geometry reader (MS4 S2–S4) and the assembler (S5) consume (spec §7/§8,
+//! Shared gridded-geometry value types — the typed vocabulary the gridded /
+//! geometry readers and the discovery assembler consume (spec §7/§8,
 //! architecture §3.5).
 //!
-//! This module is **pure types + one convention**: it stands up the grid geometry
-//! vocabulary *before* any reader is written, so all readers are coded against a
-//! settled contract. It performs **no IO** and pulls in **no new crates**.
+//! This module is **pure types + one convention**. It performs **no IO**.
 //!
 //! ## The single grid convention (the load-bearing decision)
 //!
@@ -12,39 +10,36 @@
 //! per-axis signed [`GridResolution`] — the GeoTIFF-native form. Both gridded
 //! readers build the *same* [`GridExtent`] this way:
 //!
-//! - The **COG reader** (S3) takes the affine tiepoint verbatim: GeoTIFF
+//! - The **COG reader** takes the affine tiepoint verbatim: GeoTIFF
 //!   `ModelTiepoint` is already a cell-edge origin, so no conversion is needed.
-//! - The **Zarr reader** (S2) stores cell-**center** coordinate arrays (CF
+//! - The **Zarr reader** stores cell-**center** coordinate arrays (CF
 //!   convention), so it converts the first center to an edge with the half-pixel
 //!   rule via [`center_to_edge`]: `west = lon[0] − x_res/2`, and
 //!   `north = lat[0] − y_res/2` (where `y_res < 0` for a north-up raster, so the
 //!   north edge sits *above* the first center). Signs are per axis.
 //!
-//! On the committed MS2 fixture both yield **west = 10.0 / north = 50.0** for two
-//! genuinely-aligned artifacts (Zarr centers `lon[0]=10.125`, `lat[0]=49.875`,
-//! `res=0.25`; COG tiepoint edges `10.0`/`50.0`). This single convention is the fix
-//! for the prior structural-misread defect: two aligned artifacts now yield
-//! *identical* extents, so MS5's G2 alignment precondition is observable, and it is
-//! recorded as an architecture amendment.
+//! For two genuinely-aligned artifacts both yield **west = 10.0 / north = 50.0**
+//! (Zarr centers `lon[0]=10.125`, `lat[0]=49.875`, `res=0.25`; COG tiepoint edges
+//! `10.0`/`50.0`). With this single convention two aligned artifacts yield
+//! *identical* extents, so the §8 shared-label alignment precondition is observable.
 //!
 //! ## A gridded field is an ordinary [`Field`] (no new type)
 //!
 //! HDX is **inert and agnostic** (spec §1/§2): a gridded field is just an ordinary
-//! MS1 [`Field`] with a [`Quadrant::GriddedStatic`] / [`Quadrant::GriddedDynamic`]
+//! [`Field`] with a [`Quadrant::GriddedStatic`] / [`Quadrant::GriddedDynamic`]
 //! quadrant and `Some(GridLabel)`. This module adds **no** new field type — the
 //! readers construct plain [`Field`]s. A name like `era5_precipitation_was_filled`
 //! carries no magic: it is recorded verbatim, with no `{source}_{variable}` split
 //! and no companion-mask special-casing.
 //!
-//! ## No-pixel / no-chunk review gate (LOW-3)
+//! ## No pixel / no chunk
 //!
 //! No type here holds a pixel buffer or a chunk payload, and the readers layered on
 //! these types read **metadata only** (architecture §1): the Zarr reader reads
 //! `zarr.json` + the 1-D `lat`/`lon`/`time` coordinate arrays + CF `grid_mapping`,
 //! and the COG reader reads GeoTIFF tags + band metadata + georef — **never** a
 //! `c/` chunk payload or a pixel raster. The `gridded_*` subtrees are opaque leaves
-//! to the layout walk and metadata-only to the readers. This gate is asserted in the
-//! S2/S3 reader tests; here it is the documented contract those tests reference.
+//! to the layout walk and metadata-only to the readers.
 //!
 //! ## Inert / agnostic (spec §1)
 //!
@@ -89,12 +84,10 @@ impl GridResolution {
         Self { x_res, y_res }
     }
 
-    /// Returns the signed x-axis (east-west) resolution.
     pub fn x_res(&self) -> f64 {
         self.x_res
     }
 
-    /// Returns the signed y-axis (north-south) resolution.
     pub fn y_res(&self) -> f64 {
         self.y_res
     }
@@ -108,15 +101,15 @@ impl GridResolution {
 /// the opposite far edges, derived from the origin, the signed resolution, and the
 /// pixel dimensions. This is the **single grid convention** every reader builds:
 ///
-/// - The COG reader (S3) supplies the tiepoint verbatim (already edge-based).
-/// - The Zarr reader (S2) first converts its cell-center coordinate arrays to edges
+/// - The COG reader supplies the tiepoint verbatim (already edge-based).
+/// - The Zarr reader first converts its cell-center coordinate arrays to edges
 ///   with the half-pixel rule (see [`center_to_edge`] and the module docs):
 ///   `west = lon[0] − x_res/2`, `north = lat[0] − y_res/2` (signs per axis;
 ///   `y_res < 0` puts the north edge above the first center).
 ///
 /// Build it through [`GridExtent::from_edge_origin`] so both readers derive
-/// `east`/`south` identically; on the MS2 fixture this yields `west = 10.0`,
-/// `north = 50.0`, `east = 11.5`, `south = 48.0` for the 6×8 / 0.25° grid.
+/// `east`/`south` identically; for a 6×8 / 0.25° grid this yields `west = 10.0`,
+/// `north = 50.0`, `east = 11.5`, `south = 48.0`.
 ///
 /// Inert / agnostic (spec §1): four bare edge coordinates, no transform/role/semantic.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,9 +133,9 @@ impl GridExtent {
     /// - `south = north − res * height`
     ///
     /// Both readers call this with the same edge-origin convention, so two
-    /// genuinely-aligned artifacts produce identical extents. On the fixture
+    /// genuinely-aligned artifacts produce identical extents. For example,
     /// `from_edge_origin(10.0, 50.0, 0.25, 6, 8)` yields `east = 11.5`,
-    /// `south = 48.0` — byte-matching the decoded COG bounds.
+    /// `south = 48.0`, byte-matching the decoded COG bounds.
     pub fn from_edge_origin(west: f64, north: f64, res: f64, width: usize, height: usize) -> Self {
         let east = west + res * width as f64;
         let south = north - res * height as f64;
@@ -155,22 +148,18 @@ impl GridExtent {
         }
     }
 
-    /// Returns the west cell-edge coordinate (the NW origin's x).
     pub fn west(&self) -> f64 {
         self.west
     }
 
-    /// Returns the north cell-edge coordinate (the NW origin's y).
     pub fn north(&self) -> f64 {
         self.north
     }
 
-    /// Returns the east cell-edge coordinate (the far x).
     pub fn east(&self) -> f64 {
         self.east
     }
 
-    /// Returns the south cell-edge coordinate (the far y).
     pub fn south(&self) -> f64 {
         self.south
     }
@@ -181,12 +170,12 @@ impl GridExtent {
 /// HDX records, per grid label, one representative [`GridExtent`] +
 /// [`GridResolution`] + pixel dimensions + the recorded [`Crs`]. A shared label
 /// across the `gridded_static` (COG) and `gridded_dynamic` (Zarr) subtrees signals
-/// cell-for-cell alignment (spec §8); MS5 observes that the two labels' extents
-/// coincide (the G2 precondition), and MS6 enforces it.
+/// cell-for-cell alignment (spec §8): the two labels' extents coincide (the §14 G2
+/// precondition).
 ///
-/// The `crs` is recorded per the CRS-recording rule (architecture amendment): an
-/// `EPSG:<code>` string whenever an EPSG authority/code resolves, else the raw CRS
-/// string verbatim. HDX records the CRS and compares nothing here (M5 is MS6).
+/// The `crs` is recorded per the CRS-recording rule: an `EPSG:<code>` string
+/// whenever an EPSG authority/code resolves, else the raw CRS string verbatim. HDX
+/// records the CRS and compares nothing here.
 ///
 /// Inert / agnostic (spec §1): geometry + a CRS string, no transform/role/semantic.
 #[derive(Debug, Clone, PartialEq)]
@@ -231,39 +220,33 @@ impl GridInfo {
         }
     }
 
-    /// Borrows the grid label this geometry represents.
     pub fn grid_label(&self) -> &GridLabel {
         &self.grid_label
     }
 
-    /// Returns the grid's extent (the NW cell-edge origin + far edges).
     pub fn extent(&self) -> GridExtent {
         self.extent
     }
 
-    /// Returns the grid's signed per-axis resolution.
     pub fn resolution(&self) -> GridResolution {
         self.resolution
     }
 
-    /// Returns the grid width in cells (the x / column count).
     pub fn width(&self) -> usize {
         self.width
     }
 
-    /// Returns the grid height in cells (the y / row count).
     pub fn height(&self) -> usize {
         self.height
     }
 
-    /// Borrows the recorded CRS for this grid.
     pub fn crs(&self) -> &Crs {
         &self.crs
     }
 }
 
 /// Converts a coordinate axis's **first cell center** to its outer **cell edge**
-/// by the half-pixel rule (the prior-defect fix, pinned in code).
+/// by the half-pixel rule.
 ///
 /// CF / Zarr coordinate arrays store cell *centers*; the single grid convention
 /// records cell *edges*. The outer edge sits half a cell *outside* the first
@@ -300,7 +283,7 @@ mod tests {
 
     #[test]
     fn from_edge_origin_derives_far_edges_matching_cog_bounds() {
-        // The MS2-fixture 6×8 / 0.25° grid: NW edge origin 10.0/50.0.
+        // A 6×8 / 0.25° grid: NW edge origin 10.0/50.0.
         let extent = GridExtent::from_edge_origin(10.0, 50.0, 0.25, 6, 8);
         assert_eq!(extent.west(), 10.0);
         assert_eq!(extent.north(), 50.0);
@@ -332,7 +315,7 @@ mod tests {
 
     #[test]
     fn gridded_field_is_an_ordinary_field_with_no_magic() {
-        // A gridded field is just an MS1 Field: gridded quadrant + Some(GridLabel).
+        // A gridded field is just a Field: gridded quadrant + Some(GridLabel).
         // A `{source}_{variable}` companion-mask name carries no special handling —
         // it is recorded verbatim (spec §2).
         let field = Field::new(

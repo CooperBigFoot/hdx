@@ -19,12 +19,10 @@
 pub struct BasinId(String);
 
 impl BasinId {
-    /// Wraps a raw id string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying id string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -38,12 +36,10 @@ impl BasinId {
 pub struct FieldName(String);
 
 impl FieldName {
-    /// Wraps a raw field-name string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying field-name string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -59,12 +55,10 @@ impl FieldName {
 pub struct GridLabel(String);
 
 impl GridLabel {
-    /// Wraps a raw grid-label string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying grid-label string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -79,12 +73,10 @@ impl GridLabel {
 pub struct DelineationLabel(String);
 
 impl DelineationLabel {
-    /// Wraps a raw delineation-label string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying delineation-label string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -95,12 +87,10 @@ impl DelineationLabel {
 pub struct Crs(String);
 
 impl Crs {
-    /// Wraps a raw CRS string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying CRS string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -111,12 +101,10 @@ impl Crs {
 pub struct Cadence(String);
 
 impl Cadence {
-    /// Wraps a raw cadence string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying cadence string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -127,12 +115,10 @@ impl Cadence {
 pub struct DatasetName(String);
 
 impl DatasetName {
-    /// Wraps a raw dataset-name string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying dataset-name string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -143,12 +129,10 @@ impl DatasetName {
 pub struct ProducerVersion(String);
 
 impl ProducerVersion {
-    /// Wraps a raw producer-version string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
-    /// Borrows the underlying producer-version string.
     pub fn as_str(&self) -> &str {
         &self.0
     }

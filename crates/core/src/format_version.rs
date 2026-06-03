@@ -7,9 +7,7 @@
 //! that state is not representable, because the enum has no other arm to land in.
 //!
 //! The parse is exact-string (`"0.10"` is not `"0.1"`); HDX performs no numeric
-//! coercion. The wiring of the *read-first* ordering into the manifest parse is a
-//! later step (spec §14 M1); this module only supplies the type and its fallible
-//! parse.
+//! coercion.
 
 use std::fmt;
 use std::str::FromStr;
@@ -34,7 +32,6 @@ pub enum FormatVersion {
 }
 
 impl FormatVersion {
-    /// Borrows the canonical version string, `"0.1"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             FormatVersion::V0_1 => V0_1_STR,

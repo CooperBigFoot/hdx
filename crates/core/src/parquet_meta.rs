@@ -1,17 +1,12 @@
 //! Private parquet-metadata touchpoint for the scalar reader (architecture §1).
 //!
 //! This module is the crate's single entry into the pure-Rust `parquet`/`arrow`
-//! stack (the R1 decision; see `architecture.md` Amendments log, R1-parquet). It
-//! opens a parquet **byte source** and recovers its **metadata only** — the arrow
-//! [`Schema`] (column names + types) and the parquet file metadata (row-group
-//! metadata + per-column statistics) — never any gridded chunk or data-column
-//! values. This is the cheap discovery read that `validate`/`describe` are built
-//! on (architecture §1: read metadata, not chunks).
-//!
-//! MS3-S1 lands this helper plus its tests so the crate **exercises** the pinned
-//! dependency end-to-end before any reader module is built. S3 layers the scalar
-//! field catalog, `basin_id`/`time` descriptors, and the row-group-statistics time
-//! extent on top of this same metadata path.
+//! stack (see `architecture.md` Amendments log, R1-parquet). It opens a parquet
+//! **byte source** and recovers its **metadata only** — the arrow [`Schema`]
+//! (column names + types) and the parquet file metadata (row-group metadata +
+//! per-column statistics) — never any gridded chunk or data-column values. This is
+//! the cheap discovery read that `validate`/`describe` are built on (architecture
+//! §1: read metadata, not chunks).
 //!
 //! Scope: the helper is `pub(crate)` — it is an internal touchpoint, not public
 //! API. It reads only the footer/schema metadata; it decodes no row group.
@@ -38,21 +33,18 @@ pub(crate) struct ParquetMeta {
     /// The arrow schema decoded from the parquet footer (column names + types).
     schema: Arc<Schema>,
     /// The full parquet file metadata (footer): row-group metadata, statistics,
-    /// and per-column descriptors. S3 reads row-group `time` statistics from here.
+    /// and per-column descriptors. The scalar reader reads row-group `time`
+    /// statistics from here.
     file_metadata: Arc<ParquetMetaData>,
 }
 
 impl ParquetMeta {
-    /// Borrows the arrow schema decoded from the footer.
     pub(crate) fn schema(&self) -> &Schema {
         &self.schema
     }
 
     /// Borrows the full parquet file metadata (footer): row-group metadata and
-    /// per-column statistics.
-    ///
-    /// Used by the scalar reader to read row-group `time` statistics for the
-    /// per-basin time extent and the `time` sort order; it exposes no chunk data.
+    /// per-column statistics. Exposes no chunk data.
     pub(crate) fn file_metadata(&self) -> &ParquetMetaData {
         &self.file_metadata
     }

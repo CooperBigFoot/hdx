@@ -20,8 +20,7 @@
 //! | M4 | `created_at` is strict RFC 3339; `crs`/`cadence` are non-empty |
 //!
 //! The cross-file checks (M5 `crs` matches file georeferencing, M6 `cadence`
-//! matches the realized time axes) are **not** done here — they need dataset IO
-//! and land in a later milestone.
+//! matches the realized time axes) are **not** done here — they need dataset IO.
 //!
 //! Parsing proceeds in two stages. First the JSON is deserialized into a private
 //! raw DTO whose `#[serde(deny_unknown_fields)]` + required `String` fields catch
@@ -144,7 +143,6 @@ impl Manifest {
         self.format_version
     }
 
-    /// Borrows the dataset name.
     pub fn name(&self) -> &DatasetName {
         &self.name
     }
@@ -154,17 +152,14 @@ impl Manifest {
         self.created_at
     }
 
-    /// Borrows the producer version — the tool/version that wrote the dataset.
     pub fn producer_version(&self) -> &ProducerVersion {
         &self.producer_version
     }
 
-    /// Borrows the dataset-wide CRS.
     pub fn crs(&self) -> &Crs {
         &self.crs
     }
 
-    /// Borrows the dataset-wide cadence/calendar convention.
     pub fn cadence(&self) -> &Cadence {
         &self.cadence
     }
@@ -274,7 +269,7 @@ mod tests {
 
     #[test]
     fn five_field_manifest_is_rejected_as_missing_m3_too_few() {
-        // Omit `cadence` — M3 "too-few" direction (folds critique MED-3).
+        // Omit `cadence` — M3 "too-few" direction.
         let json = r#"{
             "format_version": "0.1",
             "name": "ds",
