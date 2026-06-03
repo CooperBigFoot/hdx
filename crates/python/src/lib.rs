@@ -182,8 +182,8 @@ mod tests {
 
     /// Asserts the import/link-proof function returns a non-empty version string.
     ///
-    /// This test builds against the `rlib` target (HIGH-2) and runs WITHOUT the
-    /// `extension-module` feature (HIGH-1) — the Rust-level macOS-link proof.
+    /// This test builds against the `rlib` target and runs with the
+    /// `extension-module` feature OFF — the Rust-level macOS-link proof.
     #[test]
     fn core_version_is_non_empty() {
         assert!(!__core_version().is_empty());

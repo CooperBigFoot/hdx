@@ -6,7 +6,7 @@
 //! verb's returned value as JSON, and print that JSON to **stdout**. It holds
 //! **no contract logic**: no §14 rule, no manifest parsing, no reader, no
 //! discovery lives here — all of that is in `hdx-core`. The wire shape is the
-//! MS5/MS6 serializer output, reused verbatim and never re-derived.
+//! `hdx-core` serializer output, reused verbatim and never re-derived.
 //!
 //! Output vs. diagnostics: the JSON on **stdout** is *output*. All diagnostics
 //! go through `tracing` to **stderr**; `println!` is used only to emit the JSON
@@ -52,12 +52,12 @@ struct Cli {
 /// dataset path.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Describe a dataset: print the `describe` JSON (MS5 shape) to stdout.
+    /// Describe a dataset: print the `describe` JSON to stdout.
     Describe {
         /// Path to the dataset root (the directory holding `manifest.json`).
         path: PathBuf,
     },
-    /// Validate a dataset: print the `ValidationReport` JSON (MS6 shape) to stdout.
+    /// Validate a dataset: print the `ValidationReport` JSON to stdout.
     Validate {
         /// Path to the dataset root (the directory holding `manifest.json`).
         path: PathBuf,
