@@ -32,3 +32,9 @@ target/wheels/
 # live outside these two trees and need no rule).
 conformance/valid/**
 conformance/invalid/**
+
+# Orchestration build audit (milestone plans + adversarial critiques). This is the
+# *process* trail that produced v0.1, not product: the durable rationale lives in
+# spec/HDX_SPEC.md, architecture.md's amendments log, and conformance/README.md.
+# Kept on disk + in git history (no rewrite), but not tracked going forward.
+planning/

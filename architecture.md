@@ -59,7 +59,7 @@ hdx/                              # repo root (= the "hdx/" in doc paths)
   architecture.md                 # this file
   schemas/                        # JSON Schema for manifest.json (+ describe output schema)
   conformance/                    # fixture datasets (valid + invalid) + golden describe outputs
-  planning/                       # milestone & step plans + critiques (orchestration artifacts)
+  planning/                       # milestone & step plans + critiques (orchestration artifacts; git-ignored — local + history only)
 ```
 
 **Placement rules (from spec §10/§13):**

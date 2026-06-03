@@ -138,8 +138,7 @@ Project conventions (see [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)):
 | `src/main.rs` | The thin `hdx` CLI (root binary). |
 | [`schemas/`](schemas/) | JSON Schemas for `manifest.json`, the `describe` output, and the `validate` report. |
 | [`conformance/`](conformance/) | Dev-only fixture generator + valid/invalid fixtures + golden outputs. |
-| [`planning/`](planning/) | Milestone & step plans ([`planning/milestones.md`](planning/milestones.md)). |
 
 ## Status
 
-**HDX v0.1 (`format_version = "0.1"`) is feature-complete.** The shared discovery layer and both verbs (`validate` over the full 20-check §14 `MUST` set, and `describe`) are implemented in `hdx-core` (pure-Rust readers, no GDAL); the thin `hdx` CLI wraps them with the `0`/`1`/`2` exit-code contract; the conformance suite covers every §14 id (regenerated fixtures + tracked goldens); and the PyO3 binding in `crates/python` mirrors the verbs into Python. Built milestone-by-milestone with an adversarial plan→critique→execute workflow; see [`planning/`](planning/) for the audit trail and [`architecture.md`](architecture.md) for the build decisions and amendments.
+**HDX v0.1 (`format_version = "0.1"`) is feature-complete.** The shared discovery layer and both verbs (`validate` over the full 20-check §14 `MUST` set, and `describe`) are implemented in `hdx-core` (pure-Rust readers, no GDAL); the thin `hdx` CLI wraps them with the `0`/`1`/`2` exit-code contract; the conformance suite covers every §14 id (regenerated fixtures + tracked goldens); and the PyO3 binding in `crates/python` mirrors the verbs into Python. Built milestone-by-milestone with an adversarial plan→critique→execute workflow; the durable build decisions and amendments live in [`architecture.md`](architecture.md) (the full per-milestone plan/critique trail is in git history, not the tracked tree).
