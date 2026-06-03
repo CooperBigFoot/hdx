@@ -13,26 +13,24 @@
 //!   the in-file `basin_id` is *authority*; this walk reads only the folder id).
 //! - for each basin, its artifact paths: `scalar_dynamic.parquet` (present/absent +
 //!   path) and the `gridded_static/` / `gridded_dynamic/` **subtree** presence +
-//!   paths, recorded for MS4 to parse — this walk does **not** descend into them.
+//!   paths, recorded for the gridded readers — this walk does **not** descend into them.
 //!
 //! ## Records facts, enforces nothing
 //!
-//! The walk is the **discovery** spine the scalar reader (MS3-S3) and the discovery
-//! assembler (MS3-S4) hang facts on. It **enforces no spec §14 check**: a missing
-//! root rollup is recorded as [`absent`](RootRollup::is_present) and the walk still
-//! succeeds (L1 enforcement is MS6); the gridded-subtree present-vs-absent
-//! distinction is recorded (for L2's later use, spec §14 L2), never decided here.
-//! The only error the walk raises is the structural [`CoreError::LayoutWalk`] when
-//! the dataset path itself is not a readable directory.
+//! The walk is the **discovery** spine the scalar reader and the discovery assembler
+//! hang facts on. It **enforces no spec §14 check**: a missing root rollup is
+//! recorded as [`absent`](RootRollup::is_present) and the walk still succeeds; the
+//! gridded-subtree present-vs-absent distinction is recorded (spec §14 L2), never
+//! decided here. The only error the walk raises is the structural
+//! [`CoreError::LayoutWalk`] when the dataset path itself is not a readable directory.
 //!
-//! ## Hidden / OS-cruft entries are ignored (pre-empts MS6 L3)
+//! ## Hidden / OS-cruft entries are ignored
 //!
 //! [`is_ignored_entry`] filters every directory entry: any name beginning with `.`
 //! (dotfiles and dot-dirs: `.DS_Store`, `.gitkeep`, `.git`, `.ipynb_checkpoints`, …)
 //! is skipped, so working-tree cruft is **never** enumerated as an HDX path or a
-//! basin dir. This is deliberate: it pre-empts an L3 stray-file false positive in
-//! MS6 (spec §14 L3 — "no stray/ragged files"), because such entries are not HDX
-//! paths and must not be counted as stray.
+//! basin dir. Such entries are not HDX paths, so they must not be counted as stray
+//! by the later L3 stray-file check (spec §14 L3 — "no stray/ragged files").
 //!
 //! ## Glossary
 //!
@@ -41,7 +39,7 @@
 //! | root rollup | a dataset-level artifact at the dataset root (`scalar_static.parquet`, `outlines.geoparquet`) — spec §4 |
 //! | basin dir | a `basin=<id>` partition directory holding one basin's per-basin data — spec §4 |
 //! | folder id | the `<id>` parsed from a `basin=<id>` directory name (locality, not authority) — spec §3 |
-//! | gridded subtree | the `gridded_static/` / `gridded_dynamic/` directory under a basin (paths recorded, parsed in MS4) — spec §4 |
+//! | gridded subtree | the `gridded_static/` / `gridded_dynamic/` directory under a basin (paths recorded, parsed by the gridded readers) — spec §4 |
 
 use std::ffi::OsStr;
 use std::fs;
@@ -91,7 +89,7 @@ impl RootRollupKind {
 /// it occupies (or would occupy), and whether it is present.
 ///
 /// This records a *fact*, never a verdict: an absent rollup is reported as
-/// `present == false` and the walk still succeeds — L1 enforcement is MS6.
+/// `present == false` and the walk still succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootRollup {
     kind: RootRollupKind,
@@ -119,8 +117,8 @@ impl RootRollup {
 /// An optional artifact path: the path it would occupy, plus whether it exists.
 ///
 /// Used for a basin's `scalar_dynamic.parquet` and its `gridded_static/` /
-/// `gridded_dynamic/` subtrees. Records the path **unconditionally** (so MS4 can
-/// find it) and the presence as a fact; it decides nothing.
+/// `gridded_dynamic/` subtrees. Records the path **unconditionally** (so the gridded
+/// readers can find it) and the presence as a fact; it decides nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactPath {
     path: PathBuf,
@@ -144,9 +142,9 @@ impl ArtifactPath {
 /// Carries the **folder id** ([`BasinId`]) parsed from the directory name (spec §3
 /// — locality, not the authoritative in-file id), the directory path, and the
 /// per-basin artifact facts: the `scalar_dynamic.parquet` path (present/absent) and
-/// the two gridded subtree paths (present/absent), recorded for MS4 to parse.
+/// the two gridded subtree paths (present/absent), recorded for the gridded readers.
 ///
-/// It records facts; it does **not** decide L2 (spec §14 L2) — that is MS6.
+/// It records facts; it does **not** decide L2 (spec §14 L2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasinDir {
     folder_id: BasinId,
@@ -160,7 +158,7 @@ impl BasinDir {
     /// Borrows the folder id parsed from the `basin=<id>` directory name (spec §3).
     ///
     /// This is the **locality** id; the authoritative in-file `basin_id` column is
-    /// read by the scalar reader (MS3-S3) and paired with this for MS6's I2 check.
+    /// read by the scalar reader and paired with this for the I2 cross-check (spec §14).
     pub fn folder_id(&self) -> &BasinId {
         &self.folder_id
     }
@@ -175,12 +173,12 @@ impl BasinDir {
         &self.scalar_dynamic
     }
 
-    /// Borrows the `gridded_static/` subtree fact (path + presence), parsed in MS4.
+    /// Borrows the `gridded_static/` subtree fact (path + presence).
     pub fn gridded_static(&self) -> &ArtifactPath {
         &self.gridded_static
     }
 
-    /// Borrows the `gridded_dynamic/` subtree fact (path + presence), parsed in MS4.
+    /// Borrows the `gridded_dynamic/` subtree fact (path + presence).
     pub fn gridded_dynamic(&self) -> &ArtifactPath {
         &self.gridded_dynamic
     }
@@ -188,11 +186,10 @@ impl BasinDir {
 
 /// The typed in-memory model of one dataset's on-disk layout (spec §4).
 ///
-/// Produced by [`walk_layout`]; consumed by the scalar reader (MS3-S3) and the
-/// discovery assembler (MS3-S4). It holds the two root-rollup presence facts and
-/// the enumerated basins. It is **inert/agnostic** (spec §1): every field is a
-/// structural path or presence fact — no transform, role, semantic type, or
-/// provenance.
+/// Produced by [`walk_layout`]; consumed by the scalar reader and the discovery
+/// assembler. It holds the two root-rollup presence facts and the enumerated basins.
+/// It is **inert/agnostic** (spec §1): every field is a structural path or presence
+/// fact — no transform, role, semantic type, or provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutModel {
     root: PathBuf,
@@ -224,7 +221,7 @@ impl LayoutModel {
 }
 
 /// Returns `true` if a directory entry name is hidden / OS cruft and MUST be
-/// skipped by the walk (pre-empts an MS6 L3 false positive, spec §14 L3).
+/// skipped by the walk (spec §14 L3).
 ///
 /// Any name beginning with `.` is ignored: dotfiles and dot-directories such as
 /// `.DS_Store`, `.gitkeep`, `.git`, `.ipynb_checkpoints`, and editor/OS scratch
@@ -256,7 +253,7 @@ pub fn parse_basin_dir_name(name: &str) -> Option<BasinId> {
 
 /// Builds an [`ArtifactPath`] for a child of `dir`, recording its existence as a fact.
 ///
-/// The path is recorded unconditionally (so MS4 can resolve it even when absent);
+/// The path is recorded unconditionally (so it can be resolved even when absent);
 /// presence is read from the filesystem. No bytes inside the artifact are read.
 fn artifact_at(dir: &Path, name: &str) -> ArtifactPath {
     let path = dir.join(name);
@@ -268,7 +265,7 @@ fn artifact_at(dir: &Path, name: &str) -> ArtifactPath {
 ///
 /// `folder_id` is the already-parsed id; `path` is the basin directory. This reads
 /// only the *presence* of `scalar_dynamic.parquet` and the two gridded subtrees — it
-/// descends into neither (MS4 parses the gridded subtrees).
+/// descends into neither.
 fn read_basin_dir(folder_id: BasinId, path: PathBuf) -> BasinDir {
     let scalar_dynamic = artifact_at(&path, SCALAR_DYNAMIC_FILE);
     let gridded_static = artifact_at(&path, GRIDDED_STATIC_DIR);
@@ -302,8 +299,8 @@ fn read_basin_dir(folder_id: BasinId, path: PathBuf) -> BasinDir {
 /// id for a stable, reproducible model.
 ///
 /// This **records facts, enforces nothing**: an absent root rollup is reported (not
-/// raised), and the gridded-subtree present-vs-absent distinction is recorded for
-/// MS6's L2 use. The only failure is structural — see Errors.
+/// raised), and the gridded-subtree present-vs-absent distinction is recorded (spec
+/// §14 L2). The only failure is structural — see Errors.
 ///
 /// # Errors
 ///
@@ -415,7 +412,7 @@ mod tests {
     /// Resolves a path under the committed `conformance/` fixture tree.
     ///
     /// `CARGO_MANIFEST_DIR` is `crates/core`; the fixtures live two levels up at the
-    /// workspace root, so the walk is exercised against the real MS2 trees.
+    /// workspace root, so the walk is exercised against the real conformance trees.
     fn conformance(rel: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../conformance")
@@ -506,7 +503,7 @@ mod tests {
                 basin.folder_id().as_str()
             );
             // The gridded subtree paths are recorded (and present in this fixture)
-            // for MS4 to parse — the walk does not descend into them.
+            // for the gridded readers — the walk does not descend into them.
             assert!(basin.gridded_static().is_present());
             assert!(basin.gridded_dynamic().is_present());
             assert!(basin.gridded_static().path().ends_with("gridded_static"));
@@ -517,7 +514,7 @@ mod tests {
     #[test]
     fn missing_root_rollup_is_recorded_not_raised() {
         let model = walk_layout(conformance("invalid/missing-root-rollup"))
-            .expect("the walk records the absent rollup, it does NOT fail (L1 is MS6)");
+            .expect("the walk records the absent rollup, it does NOT fail (L1 is enforced later)");
 
         // `outlines.geoparquet` is the absent rollup in this fixture; the fact is
         // recorded as absent, and the walk still succeeds.

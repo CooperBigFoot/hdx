@@ -2,14 +2,14 @@
 //! [`Discovery`] model both verbs consume (architecture §3.5/§5, spec §4/§7/§8/§9).
 //!
 //! [`discover_gridded`] is the single boundary function that ties the layout walk
-//! ([`walk_layout`](crate::layout::walk_layout)) and the three MS4 readers — the COG
-//! reader ([`read_cog_grid`](crate::cog_reader::read_cog_grid)), the Zarr reader
+//! ([`walk_layout`](crate::layout::walk_layout)) and the three gridded readers — the
+//! COG reader ([`read_cog_grid`](crate::cog_reader::read_cog_grid)), the Zarr reader
 //! ([`read_zarr_grid`](crate::zarr_reader::read_zarr_grid)), and the geoparquet reader
 //! ([`read_outlines`](crate::geoparquet_reader::read_outlines)) — into one typed
-//! in-memory model ([`GriddedDiscovery`]) that sits **alongside** MS3's
+//! in-memory model ([`GriddedDiscovery`]) that sits **alongside** the
 //! [`ScalarDiscovery`](crate::discovery::ScalarDiscovery). The [`Discovery`] struct
-//! **pairs** the two halves without reshaping either, so MS5 (`describe`) and MS6
-//! (`validate`) consume **one** model.
+//! **pairs** the two halves without reshaping either, so `describe` and `validate`
+//! consume **one** model.
 //!
 //! It walks the basin-first hive and, for each basin with a present `gridded_static`
 //! / `gridded_dynamic` subtree, enumerates the `<label>.tif` / `<label>.zarr`
@@ -23,27 +23,26 @@
 //! - the homogeneous gridded field catalog ([`GriddedDiscovery::gridded_fields`]) —
 //!   the `GriddedStatic` band fields plus the `GriddedDynamic` data-variable fields
 //!   from a representative basin (spec §5 — one-basin discovery; cross-basin
-//!   enforcement is MS6);
+//!   enforcement is a `validate` concern);
 //! - the distinct delineation labels ([`GriddedDiscovery::delineations`]) from
 //!   `outlines.geoparquet` (spec §9);
 //! - the per-basin observed facts ([`GriddedDiscovery::per_basin`]) — one
 //!   [`BasinGridded`] per basin: the grid labels observed in *each* subtree (the
 //!   **G2 precondition fact**), the static/dynamic [`GridInfo`]s, and the Zarr
-//!   consolidated-metadata path taken (MED-5).
+//!   consolidated-metadata path taken.
 //!
 //! ## The G2 alignment precondition is *observed*, never enforced (spec §8/§14 G2)
 //!
 //! When the *same* grid label appears across the `gridded_static` (COG) and
 //! `gridded_dynamic` (Zarr) subtrees, spec §8 says the two artifacts are
-//! cell-for-cell aligned. MS4 **records that fact** — the shared label and the two
-//! [`GridInfo`] extents — so MS6 can *enforce* alignment. Because both readers build
-//! their [`GridExtent`](crate::grid::GridExtent) in the single cell-edge convention
-//! ([`grid`](crate::grid)), two genuinely-aligned artifacts now yield **identical**
-//! extents (`10.0`/`50.0` on the fixture) — the prior structural-misread defect's
-//! end-to-end fix. MS4 observes this; it renders **no verdict** (G2 enforcement is
-//! MS6).
+//! cell-for-cell aligned. This **records that fact** — the shared label and the two
+//! [`GridInfo`] extents — so `validate` can *enforce* alignment. Because both readers
+//! build their [`GridExtent`](crate::grid::GridExtent) in the single cell-edge
+//! convention ([`grid`](crate::grid)), two genuinely-aligned artifacts yield
+//! **identical** extents (`10.0`/`50.0` on the fixture). Discovery observes this; it
+//! renders **no verdict**.
 //!
-//! ## Records facts, never a verdict (spec §14 — enforcement is MS6)
+//! ## Records facts, never a verdict (spec §14 — enforcement is a `validate` concern)
 //!
 //! Like the scalar assembler it parallels, this surfaces **gaps as facts**. A basin
 //! with no `gridded_static` / `gridded_dynamic` subtree records an *empty*
@@ -66,8 +65,8 @@
 //! |---|---|
 //! | gridded field catalog | the homogeneous gridded schema (`GriddedStatic` bands + a representative basin's `GriddedDynamic` vars), spec §5 |
 //! | shared grid label ⇒ alignment | a label seen in *both* gridded subtrees signals cell-for-cell alignment (spec §8); the G2 precondition |
-//! | G2 precondition fact | the per-basin observed grid labels + coinciding extents MS6 enforces G2 over |
-//! | MED-5 Zarr path | which path the Zarr reader took (consolidated/live vs an R3 skip), recorded for honest downstream reporting |
+//! | G2 precondition fact | the per-basin observed grid labels + coinciding extents G2 is enforced over |
+//! | Zarr path taken | which path the Zarr reader took (consolidated/live vs a skip), recorded for honest downstream reporting |
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -111,7 +110,7 @@ impl StaticArtifact {
     }
 }
 
-/// The discovered gridded·dynamic facts of one Zarr store (spec §7/§8, MED-5).
+/// The discovered gridded·dynamic facts of one Zarr store (spec §7/§8).
 ///
 /// Pairs the store's grid label (its file stem) with the per-store [`GridInfo`] and
 /// the [`ConsolidatedMetadataSource`] path the Zarr reader took (recorded for honest
@@ -134,7 +133,7 @@ impl DynamicArtifact {
         &self.grid_info
     }
 
-    /// Borrows the consolidated-metadata path the Zarr reader took (MED-5).
+    /// Borrows the consolidated-metadata path the Zarr reader took.
     pub fn consolidated_source(&self) -> &ConsolidatedMetadataSource {
         &self.consolidated_source
     }
@@ -145,10 +144,10 @@ impl DynamicArtifact {
 /// Records, per basin, the grid labels observed in **each** gridded subtree — the
 /// **G2 precondition fact** (a label seen in *both* subtrees signals cell-for-cell
 /// alignment, spec §8). Holds the static / dynamic artifacts (each with its
-/// [`GridInfo`]) so MS6 can compare the two subtrees' extents for the shared label.
+/// [`GridInfo`]) so `validate` can compare the two subtrees' extents for the shared label.
 ///
 /// A basin with no gridded subtree records empty artifact lists — a fact, not a
-/// verdict (the gaps-as-facts discipline; L2 enforcement is MS6). Inert/agnostic.
+/// verdict (the gaps-as-facts discipline; L2 enforcement is a `validate` rule). Inert/agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasinGridded {
     basin_id_folder: BasinId,
@@ -175,8 +174,8 @@ impl BasinGridded {
     /// Returns the distinct grid labels observed in the `gridded_static` subtree.
     ///
     /// First-seen order; one of the two halves of the **G2 precondition fact** (the
-    /// other being [`dynamic_grid_labels`](Self::dynamic_grid_labels)). MS6 enforces
-    /// that a label seen in *both* implies coinciding extents.
+    /// other being [`dynamic_grid_labels`](Self::dynamic_grid_labels)). `validate`
+    /// enforces that a label seen in *both* implies coinciding extents.
     pub fn static_grid_labels(&self) -> Vec<&GridLabel> {
         self.static_artifacts
             .iter()
@@ -202,7 +201,7 @@ impl BasinGridded {
 /// [`ScalarDiscovery`](crate::discovery::ScalarDiscovery) in the combined
 /// [`Discovery`]. Holds the per-grid-label representative geometries, the homogeneous
 /// gridded field catalog, the distinct delineation labels, and the per-basin observed
-/// facts (the G2 precondition + the MED-5 Zarr path). It is **inert/agnostic** (spec
+/// facts (the G2 precondition + the Zarr path taken). It is **inert/agnostic** (spec
 /// §1): every field is a structural fact, and it adds no manifest-floor or derivable
 /// field. It records facts; it enforces nothing.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,8 +226,8 @@ impl GriddedDiscovery {
     /// fields followed by the
     /// [`Quadrant::GriddedDynamic`](crate::field::Quadrant::GriddedDynamic)
     /// data-variable fields from a representative basin (one-basin discovery;
-    /// cross-basin enforcement is MS6). The fields are ordinary — no name-pattern
-    /// special-casing (spec §2).
+    /// cross-basin enforcement is a `validate` concern). The fields are ordinary — no
+    /// name-pattern special-casing (spec §2).
     pub fn gridded_fields(&self) -> &[Field] {
         &self.gridded_fields
     }
@@ -240,21 +239,19 @@ impl GriddedDiscovery {
     }
 
     /// Borrows the per-basin observed gridded facts, one [`BasinGridded`] per basin
-    /// in basin order (the G2 precondition + the MED-5 Zarr path).
+    /// in basin order (the G2 precondition + the Zarr path taken).
     pub fn per_basin(&self) -> &[BasinGridded] {
         &self.per_basin
     }
 
     /// Borrows the discovered `outlines.geoparquet` facts, or `None` when the outlines
-    /// rollup is absent (a recorded gap; L1 is the absence's concern, not Geo1).
+    /// rollup is absent (a recorded gap; absence is an L1 concern, not Geo1).
     ///
-    /// **Additive accessor (the MS6-S2 Geo1 / I1-outlines / M5-outlines seam).** The
-    /// full [`OutlinesInfo`] (column presence, the not-partitioned fact, the recorded
-    /// [`Crs`](crate::newtypes::Crs)) is read inside [`discover_gridded`] but only its
-    /// `delineations()` were surfaced until MS6 needed the rest. This accessor only
-    /// **exposes** the already-read facts — it is **never** a reshape of the MS4
-    /// contract (the four original accessors, including [`delineations`](Self::delineations),
-    /// are untouched and still populated identically).
+    /// The full [`OutlinesInfo`] (column presence, the not-partitioned fact, the
+    /// recorded [`Crs`](crate::newtypes::Crs)) is read inside [`discover_gridded`];
+    /// this accessor only **exposes** the already-read facts (the Geo1 / I1-outlines /
+    /// M5-outlines checks read its column-presence + CRS facts). The
+    /// [`delineations`](Self::delineations) accessor is populated identically.
     pub fn outlines(&self) -> Option<&OutlinesInfo> {
         self.outlines.as_ref()
     }
@@ -349,7 +346,7 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
     }
 
     // gridded_dynamic: each `<label>.zarr` → one Zarr read (center→edge GridInfo +
-    // data-var fields + the MED-5 path taken).
+    // data-var fields + the consolidated-metadata path taken).
     let mut dynamic_artifacts: Vec<DynamicArtifact> = Vec::new();
     if basin.gridded_dynamic().is_present() {
         for path in list_subtree(basin.gridded_dynamic().path())? {
@@ -386,7 +383,8 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
 /// data-variable field(s). Because the COG reader exposes the band field on the
 /// [`CogGrid`] and the Zarr reader exposes the data-var fields on the [`ZarrGrid`],
 /// this re-reads the representative artifacts once to recover their fields (the
-/// per-basin model carries only the geometry). Cross-basin H1 enforcement is MS6.
+/// per-basin model carries only the geometry). Cross-basin H1 enforcement is a
+/// `validate` rule.
 ///
 /// # Errors
 ///
@@ -454,12 +452,12 @@ fn dynamic_artifact_path(
 /// artifacts, and reads `outlines.geoparquet` once (when present). Assembles a
 /// [`GriddedDiscovery`]: the per-grid representative geometries, the homogeneous
 /// gridded field catalog, the distinct delineation labels, and the per-basin observed
-/// facts (the G2 precondition + the MED-5 Zarr path).
+/// facts (the G2 precondition + the Zarr path taken).
 ///
 /// **Surfaces gaps as facts, never a verdict.** A basin with no gridded subtree yields
 /// an empty [`BasinGridded`]; an absent `outlines.geoparquet` yields an empty
-/// delineation list (L1 / G2 enforcement is MS6). Only structural failures
-/// (unreadable directory, undecodable present artifact) propagate as errors.
+/// delineation list (L1 / G2 enforcement is a `validate` concern). Only structural
+/// failures (unreadable directory, undecodable present artifact) propagate as errors.
 ///
 /// # Errors
 ///
@@ -473,7 +471,7 @@ fn dynamic_artifact_path(
 pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, CoreError> {
     let layout: LayoutModel = walk_layout(path)?;
 
-    // Per-basin gridded facts (the G2 precondition + MED-5 path; gaps-as-facts).
+    // Per-basin gridded facts (the G2 precondition + Zarr path taken; gaps-as-facts).
     let mut per_basin: Vec<BasinGridded> = Vec::with_capacity(layout.basins().len());
     for basin in layout.basins() {
         per_basin.push(discover_basin_gridded(basin)?);
@@ -481,7 +479,7 @@ pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, Core
 
     // Representative per-grid geometries: every observed artifact's GridInfo, in
     // basin → static → dynamic order (the COG and Zarr GridInfo for a shared label
-    // sit side by side so MS6 can compare them — the G2 precondition).
+    // sit side by side so `validate` can compare them — the G2 precondition).
     let grids: Vec<GridInfo> = per_basin
         .iter()
         .flat_map(|b| {
@@ -496,8 +494,8 @@ pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, Core
     let gridded_fields = assemble_gridded_field_catalog(&layout, &per_basin)?;
 
     // The outlines geometry, read once at the root when present (gaps-as-facts). The
-    // full `OutlinesInfo` is now retained on the model (additively) so MS6's Geo1 /
-    // I1-outlines / M5-outlines legs can read its column-presence + CRS facts.
+    // full `OutlinesInfo` is retained on the model so the Geo1 / I1-outlines /
+    // M5-outlines checks can read its column-presence + CRS facts.
     let outlines: Option<OutlinesInfo> = if layout.outlines().is_present() {
         Some(read_outlines(layout.outlines().path())?)
     } else {
@@ -529,11 +527,11 @@ pub fn discover_gridded(path: impl AsRef<Path>) -> Result<GriddedDiscovery, Core
 
 /// The **combined** shared discovery model both verbs consume (architecture §3.5).
 ///
-/// Pairs the scalar half ([`ScalarDiscovery`](crate::discovery::ScalarDiscovery), MS3)
-/// with the gridded / geometry half ([`GriddedDiscovery`], MS4) **without reshaping
-/// either** — MS5 (`describe`) *reports* it and MS6 (`validate`) *checks rules over
-/// it*. The unified view (architecture §3.5: `basins`, `fields = scalar ⊕ gridded`,
-/// `grids`, `delineations`) is exposed by accessors that **borrow** through to the two
+/// Pairs the scalar half ([`ScalarDiscovery`](crate::discovery::ScalarDiscovery))
+/// with the gridded / geometry half ([`GriddedDiscovery`]) **without reshaping
+/// either** — `describe` *reports* it and `validate` *checks rules over it*. The
+/// unified view (architecture §3.5: `basins`, `fields = scalar ⊕ gridded`, `grids`,
+/// `delineations`) is exposed by accessors that **borrow** through to the two
 /// sub-models, so the underlying types are never copied or restructured.
 ///
 /// Inert / agnostic (spec §1): it composes two fact-only sub-models and adds nothing.
@@ -551,13 +549,13 @@ impl Discovery {
         Self { scalar, gridded }
     }
 
-    /// Borrows the scalar half **unchanged** (the four MS3 accessors are reachable
-    /// through it: `basins` / `scalar_fields` / `per_basin` / `root_rollups`).
+    /// Borrows the scalar half **unchanged** (its accessors are reachable through it:
+    /// `basins` / `scalar_fields` / `per_basin` / `root_rollups`).
     pub fn scalar(&self) -> &ScalarDiscovery {
         &self.scalar
     }
 
-    /// Borrows the gridded / geometry half (the MS4 accessors: `grids` /
+    /// Borrows the gridded / geometry half (its accessors: `grids` /
     /// `gridded_fields` / `delineations` / `per_basin`).
     pub fn gridded(&self) -> &GriddedDiscovery {
         &self.gridded
@@ -602,10 +600,10 @@ impl Discovery {
 /// Discovers the **complete** shared discovery model in one call — both halves
 /// (architecture §3.5/§5, spec §4/§5/§7/§8/§9).
 ///
-/// Runs [`discover_scalar`](crate::discovery::discover_scalar) (MS3) and
+/// Runs [`discover_scalar`](crate::discovery::discover_scalar) and
 /// [`discover_gridded`] over the same dataset `path` and pairs them in a [`Discovery`]
-/// without reshaping either. This is the single model MS5 (`describe`) and MS6
-/// (`validate`) consume.
+/// without reshaping either. This is the single model `describe` and `validate`
+/// consume.
 ///
 /// **Surfaces gaps as facts, never a verdict** (the discipline of both halves).
 ///
@@ -670,16 +668,16 @@ mod tests {
         dst
     }
 
-    // --- G2 precondition observed (the prior HIGH defect's end-to-end fix) -------
+    // --- G2 precondition observed ------------------------------------------------
 
     #[test]
     fn g2_precondition_observed_cog_and_zarr_extents_coincide_at_10_50() {
-        // G2 PRECONDITION (observed, NOT enforced — enforcement is MS6): for basin
-        // 0001 the COG `<label>` and the Zarr `<label>` are BOTH `era5` (a shared
-        // label across the two subtrees), AND the COG GridInfo.extent equals the Zarr
-        // GridInfo.extent. This passes because both readers build edge-based extents:
-        // two genuinely-aligned artifacts look aligned (the structural-misread defect
-        // is gone). MS4 records this fact; it renders no verdict.
+        // G2 PRECONDITION (observed, NOT enforced — enforcement is a validate rule):
+        // for basin 0001 the COG `<label>` and the Zarr `<label>` are BOTH `era5` (a
+        // shared label across the two subtrees), AND the COG GridInfo.extent equals
+        // the Zarr GridInfo.extent. This passes because both readers build edge-based
+        // extents: two genuinely-aligned artifacts look aligned. Discovery records
+        // this fact; it renders no verdict.
         let gridded: GriddedDiscovery = discover_gridded(conformance("valid/minimal"))
             .expect("the valid fixture must discover the gridded half");
 
@@ -798,7 +796,7 @@ mod tests {
         );
     }
 
-    // --- MED-5 surfaced at the assembler level -----------------------------------
+    // --- Zarr path taken, surfaced at the assembler level ------------------------
 
     #[test]
     fn med5_zarr_path_recorded_as_consolidated_at_the_assembler_level() {
@@ -806,7 +804,7 @@ mod tests {
             .expect("the valid fixture must discover");
 
         // The combined model records which Zarr path was taken (consolidated/live or
-        // an R3 skip) so MS5/MS6 can report it honestly.
+        // a skip) so the verbs can report it honestly.
         for basin in gridded.per_basin() {
             for dynamic in basin.dynamic_artifacts() {
                 match dynamic.consolidated_source() {
@@ -828,7 +826,7 @@ mod tests {
         let discovery: Discovery =
             discover(conformance("valid/minimal")).expect("the valid fixture must discover both");
 
-        // SEAM TEST: the scalar half is exposed UNCHANGED — the four MS3 accessors
+        // SEAM TEST: the scalar half is exposed UNCHANGED — its four accessors
         // still pass through `Discovery::scalar()`.
         let scalar: &ScalarDiscovery = discovery.scalar();
         let scalar_ids: Vec<&str> = scalar.basins().iter().map(BasinId::as_str).collect();
@@ -865,8 +863,8 @@ mod tests {
         assert_eq!(discovery.delineations().len(), 2);
     }
 
-    /// Compile-level seam check: both halves' accessors are pinned so MS5 builds on a
-    /// stable shape and cannot silently reshape either half.
+    /// Compile-level seam check: both halves' accessors are pinned so consumers build
+    /// on a stable shape and cannot silently reshape either half.
     #[test]
     fn discovery_pins_both_halves_accessors() {
         let discovery = discover(conformance("valid/minimal")).expect("must discover");
@@ -897,9 +895,9 @@ mod tests {
     #[test]
     fn basin_without_a_gridded_subtree_discovers_with_empty_gridded_facts() {
         // Gaps-as-facts: a tree where a basin lacks a gridded subtree discovers
-        // SUCCESSFULLY with empty gridded facts for that basin (no verdict; L2 is
-        // MS6). Build it from the valid fixture by deleting basin 0003's gridded
-        // subtrees in a temp copy.
+        // SUCCESSFULLY with empty gridded facts for that basin (no verdict; L2 is a
+        // validate rule). Build it from the valid fixture by deleting basin 0003's
+        // gridded subtrees in a temp copy.
         let temp = copy_fixture_to_temp("nogridded");
         let basin0003 = temp.join("basin=0003");
         std::fs::remove_dir_all(basin0003.join("gridded_static")).expect("rm gridded_static");

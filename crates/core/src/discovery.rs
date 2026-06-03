@@ -5,34 +5,33 @@
 //! ([`read_scalar_static`](crate::scalar_reader::read_scalar_static) /
 //! [`read_scalar_dynamic`](crate::scalar_reader::read_scalar_dynamic) /
 //! [`time_extent`](crate::scalar_reader::time_extent)) into one typed in-memory
-//! model — [`ScalarDiscovery`] — that **both** verbs will later consume (`describe`
-//! MS5 *reports* it; `validate` MS6 *checks rules over it*). It walks the basin-first
-//! hive, reads every scalar artifact, and returns:
+//! model — [`ScalarDiscovery`] — that **both** verbs consume (`describe` *reports* it;
+//! `validate` *checks rules over it*). It walks the basin-first hive, reads every
+//! scalar artifact, and returns:
 //!
 //! - the **basin list** ([`ScalarDiscovery::basins`]) — the folder ids from the walk,
 //!   in stable sorted order;
 //! - the **scalar field catalog** ([`ScalarDiscovery::scalar_fields`]) — the
 //!   homogeneous scalar schema as discovered: the [`Quadrant::ScalarStatic`] fields
 //!   from `scalar_static.parquet` plus the [`Quadrant::ScalarDynamic`] fields from a
-//!   representative basin (spec §5 — one-basin discovery; H1 *enforcement* across
-//!   basins is MS6);
+//!   representative basin (spec §5 — one-basin discovery; cross-basin H1 enforcement
+//!   is a `validate` rule, not done here);
 //! - the **per-basin facts** ([`ScalarDiscovery::per_basin`]) — one [`BasinScalar`]
-//!   per basin: the folder-vs-in-file `basin_id` pair (recorded side by side for
-//!   MS6's I2 cross-check — never compared here), the `time` descriptor, the
-//!   per-basin `time` extent with its provenance, and the basin's own scalar field
-//!   list;
+//!   per basin: the folder-vs-in-file `basin_id` pair (recorded side by side for the
+//!   I2 cross-check — never compared here), the `time` descriptor, the per-basin
+//!   `time` extent with its provenance, and the basin's own scalar field list;
 //! - the **root-rollup presence facts** ([`ScalarDiscovery::root_rollups`]).
 //!
-//! ## Records facts, never a verdict (spec §14 — enforcement is MS6)
+//! ## Records facts, never a verdict (spec §14 — enforcement is a `validate` concern)
 //!
 //! Like the layout walk and the scalar reader it composes, this assembler **surfaces
 //! gaps as facts, never a verdict**. A missing root rollup is recorded in
-//! [`RootRollupPresence`] and discovery still succeeds (L1 enforcement is MS6); a
-//! basin with no readable in-file `basin_id` records `basin_id_in_file == None`; the
-//! three basins' extents may differ (§6.1 ragged extents) and are surfaced as facts.
-//! The only failures are structural — an unreadable dataset directory, or a present
-//! scalar artifact whose bytes/metadata cannot be decoded — which propagate as the
-//! typed [`CoreError`] the underlying layer raised.
+//! [`RootRollupPresence`] and discovery still succeeds; a basin with no readable
+//! in-file `basin_id` records `basin_id_in_file == None`; the basins' extents may
+//! differ (§6.1 ragged extents) and are surfaced as facts. The only failures are
+//! structural — an unreadable dataset directory, or a present scalar artifact whose
+//! bytes/metadata cannot be decoded — which propagate as the typed [`CoreError`] the
+//! underlying layer raised.
 //!
 //! ## Inert / agnostic (spec §1/§11)
 //!
@@ -44,26 +43,26 @@
 //! untouched. Scalar fields are catalogued purely by physical schema, inheriting the
 //! scalar reader's no-name-magic discipline (spec §2).
 //!
-//! ## The MS4 seam (the gridded / geometry half attaches here)
+//! ## The gridded / geometry half attaches alongside
 //!
-//! This is the **scalar half** of architecture §3.5's discovery inputs. MS4 attaches
-//! the gridded / geometry half **without reshaping** this model:
+//! This is the **scalar half** of architecture §3.5's discovery inputs. The gridded /
+//! geometry half attaches **without reshaping** this model:
 //!
 //! - the per-basin **gridded subtree paths** are already recorded on the
 //!   [`LayoutModel`](crate::layout::LayoutModel) ([`BasinDir::gridded_static`] /
-//!   [`BasinDir::gridded_dynamic`]) — MS4's COG/Zarr readers consume those paths;
+//!   [`BasinDir::gridded_dynamic`]) — the COG/Zarr readers consume those paths;
 //! - architecture §3.5's `grids: Vec<GridInfo>` (per grid-label extent/affine/res/crs)
-//!   and `delineations: Vec<DelineationLabel>` (from `outlines.geoparquet`) are the
-//!   two MS4-owned additions; they sit **alongside** [`ScalarDiscovery`] in the eventual
-//!   combined discovery model, not inside [`BasinScalar`]. MS3 leaves the `outlines`
-//!   presence fact on [`RootRollupPresence`] as the seam MS4's geometry reader keys off.
+//!   and `delineations: Vec<DelineationLabel>` (from `outlines.geoparquet`) sit
+//!   **alongside** [`ScalarDiscovery`] in the combined discovery model, not inside
+//!   [`BasinScalar`]. The `outlines` presence fact on [`RootRollupPresence`] is the
+//!   seam the geometry reader keys off.
 //!
 //! ## Glossary
 //!
 //! | Term | Meaning |
 //! |---|---|
 //! | scalar field catalog | the homogeneous scalar schema (static rollup + representative dynamic basin), spec §5 |
-//! | folder id vs in-file `basin_id` | the locality id (`basin=<id>` dir) paired with the authoritative in-file id (spec §3); recorded for MS6 I2 |
+//! | folder id vs in-file `basin_id` | the locality id (`basin=<id>` dir) paired with the authoritative in-file id (spec §3); recorded for the I2 cross-check |
 //! | root-rollup presence | whether each dataset-level rollup (`scalar_static.parquet`, `outlines.geoparquet`) exists (spec §4/§14 L1) |
 
 use std::path::Path;
@@ -82,9 +81,9 @@ use crate::scalar_reader::{
 ///
 /// Carried verbatim from the layout walk: whether `scalar_static.parquet` and
 /// `outlines.geoparquet` exist at the dataset root. This records *facts*, never a
-/// verdict — an absent rollup is reported as `false` and discovery still succeeds
-/// (L1 enforcement is MS6). The `outlines` flag is the seam MS4's geometry reader
-/// keys off (the schema is parsed in MS4, not here).
+/// verdict — an absent rollup is reported as `false` and discovery still succeeds.
+/// The `outlines` flag is the seam the geometry reader keys off (the schema is parsed
+/// by the geometry half, not here).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootRollupPresence {
     scalar_static: bool,
@@ -98,7 +97,7 @@ impl RootRollupPresence {
     }
 
     /// Returns `true` iff `outlines.geoparquet` is present at the dataset root
-    /// (the MS4 geometry-reader seam — schema parsed in MS4, not here).
+    /// (the geometry-reader seam — the schema is parsed by the geometry half, not here).
     pub fn outlines_present(&self) -> bool {
         self.outlines
     }
@@ -109,8 +108,8 @@ impl RootRollupPresence {
 /// Pairs the **folder id** ([`basin_id_folder`](Self::basin_id_folder), parsed from
 /// the `basin=<id>` directory — locality) with the **authoritative in-file
 /// `basin_id`** ([`basin_id_in_file`](Self::basin_id_in_file), read from the column —
-/// `None` if the column is absent). MS3 records the pair side by side for MS6's I2
-/// cross-check; it does **not** decide agreement here.
+/// `None` if the column is absent). The pair is recorded side by side for the I2
+/// cross-check; agreement is **not** decided here.
 ///
 /// It also carries the basin's `time` descriptor, its `time` extent (with
 /// provenance), and the basin's own scalar field list. Every field is a structural
@@ -134,8 +133,8 @@ impl BasinScalar {
     /// `None` if the column is absent / carried no value (spec §3).
     ///
     /// A conformant per-basin table holds exactly one distinct value; this records
-    /// the first such value (or `None`). MS6's I2 check pairs it with
-    /// [`basin_id_folder`](Self::basin_id_folder) — MS3 decides nothing.
+    /// the first such value (or `None`). The I2 check pairs it with
+    /// [`basin_id_folder`](Self::basin_id_folder) — discovery decides nothing.
     pub fn basin_id_in_file(&self) -> Option<&BasinId> {
         self.basin_id_in_file.as_ref()
     }
@@ -160,12 +159,12 @@ impl BasinScalar {
 
 /// The **scalar half** of the shared discovery model (architecture §3.5/§5).
 ///
-/// Produced in one call by [`discover_scalar`]; consumed by `describe` (MS5) and
-/// `validate` (MS6). Holds the basin list, the homogeneous scalar field catalog, the
+/// Produced in one call by [`discover_scalar`]; consumed by `describe` and
+/// `validate`. Holds the basin list, the homogeneous scalar field catalog, the
 /// per-basin facts, and the root-rollup presence facts. It is **inert/agnostic**
 /// (spec §1): every field is a structural fact, and it adds no manifest-floor or
-/// derivable field. MS4 attaches the gridded / geometry half alongside it without
-/// reshaping it (see the module-level **MS4 seam**).
+/// derivable field. The gridded / geometry half attaches alongside it without
+/// reshaping it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarDiscovery {
     basins: Vec<BasinId>,
@@ -186,8 +185,8 @@ impl ScalarDiscovery {
     /// The [`Quadrant::ScalarStatic`](crate::field::Quadrant::ScalarStatic) fields
     /// from `scalar_static.parquet` followed by the
     /// [`Quadrant::ScalarDynamic`](crate::field::Quadrant::ScalarDynamic) fields from
-    /// a representative basin (one-basin discovery; H1 enforcement across basins is
-    /// MS6). The fields are ordinary — no name-pattern special-casing (spec §2).
+    /// a representative basin (one-basin discovery; cross-basin H1 enforcement is a
+    /// `validate` rule). The fields are ordinary — no name-pattern special-casing (spec §2).
     pub fn scalar_fields(&self) -> &[Field] {
         &self.scalar_fields
     }
@@ -205,14 +204,11 @@ impl ScalarDiscovery {
     /// Returns whether `scalar_static.parquet`'s `basin_id` column is present
     /// (spec §3/§14 I1), or `None` when the static rollup is absent.
     ///
-    /// **Additive accessor (the MS6-S2 I1 static-rollup seam).** The presence fact is
-    /// read inside [`discover_scalar`] via
-    /// [`ScalarStaticTable::has_basin_id`](crate::scalar_reader::ScalarStaticTable::has_basin_id)
-    /// but was not surfaced on this model until MS6 needed it for I1. This accessor only
-    /// **exposes** the already-read fact — it is **never** a reshape of the MS3 contract
-    /// (the four original accessors are untouched). `None` distinguishes "the rollup was
-    /// absent, so the column-presence question does not apply here" (that absence is an
-    /// L1 concern) from `Some(false)` ("the rollup is present but lacks the column").
+    /// `None` distinguishes "the rollup was absent, so the column-presence question
+    /// does not apply here" (an L1 concern) from `Some(false)` ("the rollup is present
+    /// but lacks the column"). The fact is read inside [`discover_scalar`] via
+    /// [`ScalarStaticTable::has_basin_id`](crate::scalar_reader::ScalarStaticTable::has_basin_id);
+    /// this accessor only **exposes** it.
     pub fn scalar_static_has_basin_id(&self) -> Option<bool> {
         self.scalar_static_has_basin_id
     }
@@ -222,10 +218,10 @@ impl ScalarDiscovery {
 ///
 /// When the artifact is **absent**, the basin is recorded as a fact with no in-file
 /// id, no `time` descriptor, no extent, and an empty field list — discovery does not
-/// fail (L2/T1 enforcement is MS6). When the artifact is **present**, its bytes are
-/// read for the scalar field catalog, the in-file `basin_id` (the first distinct
-/// value, paired with the folder id for MS6's I2), the `time` descriptor, and the
-/// `time` extent (with provenance).
+/// fail (L2/T1 enforcement is a `validate` concern). When the artifact is **present**,
+/// its bytes are read for the scalar field catalog, the in-file `basin_id` (the first
+/// distinct value, paired with the folder id for the I2 cross-check), the `time`
+/// descriptor, and the `time` extent (with provenance).
 ///
 /// # Errors
 ///
@@ -237,7 +233,7 @@ impl ScalarDiscovery {
 fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
     let folder_id = basin.folder_id().clone();
 
-    // The artifact may legitimately be absent (recorded as a fact; L2 is MS6).
+    // The artifact may legitimately be absent (recorded as a fact; L2 is a `validate` rule).
     if !basin.scalar_dynamic().is_present() {
         debug!(
             basin = folder_id.as_str(),
@@ -256,8 +252,8 @@ fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
     let table = read_scalar_dynamic(path)?;
     let extent = time_extent(path)?;
 
-    // The authoritative in-file id: the first distinct value, or `None`. MS6's I2
-    // cross-check pairs this with the folder id — MS3 records, never compares.
+    // The authoritative in-file id: the first distinct value, or `None`. The I2
+    // cross-check pairs this with the folder id — discovery records, never compares.
     let basin_id_in_file = table.basin_id_values().first().cloned();
 
     debug!(
@@ -281,8 +277,8 @@ fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
 /// The [`Quadrant::ScalarStatic`](crate::field::Quadrant::ScalarStatic) fields read
 /// from `scalar_static.parquet` (empty if the rollup is absent), followed by the
 /// [`Quadrant::ScalarDynamic`](crate::field::Quadrant::ScalarDynamic) fields of the
-/// first basin that exposed any (spec §5 — a representative one-basin read). H1
-/// enforcement across basins is MS6; here we surface the discovered schema as a fact.
+/// first basin that exposed any (spec §5 — a representative one-basin read). Cross-basin
+/// H1 enforcement is a `validate` rule; here we surface the discovered schema as a fact.
 fn assemble_field_catalog(static_fields: &[Field], per_basin: &[BasinScalar]) -> Vec<Field> {
     let mut catalog: Vec<Field> = static_fields.to_vec();
     if let Some(first_dynamic) = per_basin.iter().find(|b| !b.fields().is_empty()) {
@@ -300,11 +296,11 @@ fn assemble_field_catalog(static_fields: &[Field], per_basin: &[BasinScalar]) ->
 /// per-basin facts (folder-vs-in-file `basin_id` pair, `time` descriptor + extent
 /// with provenance, basin field list), and the root-rollup presence facts.
 ///
-/// **Surfaces gaps as facts, never a verdict.** An absent root rollup is recorded
-/// (L1 is MS6); an absent per-basin `scalar_dynamic.parquet` yields a `BasinScalar`
-/// with no in-file id / descriptor / extent; ragged extents across basins (§6.1) are
-/// surfaced. Only structural failures (unreadable directory, undecodable present
-/// artifact) propagate as errors.
+/// **Surfaces gaps as facts, never a verdict.** An absent root rollup is recorded;
+/// an absent per-basin `scalar_dynamic.parquet` yields a `BasinScalar` with no in-file
+/// id / descriptor / extent; ragged extents across basins (§6.1) are surfaced. Only
+/// structural failures (unreadable directory, undecodable present artifact) propagate
+/// as errors.
 ///
 /// # Errors
 ///
@@ -324,9 +320,9 @@ pub fn discover_scalar(path: impl AsRef<Path>) -> Result<ScalarDiscovery, CoreEr
     };
 
     // The dataset-level static rollup: read its fields if present, else an empty
-    // catalog (its absence is a fact in `root_rollups`; L1 is MS6). The `basin_id`
-    // column-presence fact (the MS6 I1 static-rollup leg) is captured here when the
-    // rollup is present, and surfaced additively on the model — `None` when absent.
+    // catalog (its absence is a fact in `root_rollups`; L1 is a `validate` rule). The
+    // `basin_id` column-presence fact (the I1 static-rollup leg) is captured here when
+    // the rollup is present, and surfaced on the model — `None` when absent.
     let (static_fields, scalar_static_has_basin_id): (Vec<Field>, Option<bool>) =
         if layout.scalar_static().is_present() {
             let table = read_scalar_static(layout.scalar_static().path())?;
@@ -380,7 +376,7 @@ mod tests {
     /// Resolves a path under the committed `conformance/` fixture tree.
     ///
     /// `CARGO_MANIFEST_DIR` is `crates/core`; the fixtures live two levels up at the
-    /// workspace root, so discovery runs against the real MS2 trees.
+    /// workspace root, so discovery runs against the real conformance trees.
     fn conformance(rel: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../conformance")
@@ -429,7 +425,7 @@ mod tests {
         for basin in discovery.per_basin() {
             // I2 SEAM (documented, NOT enforced): the folder id and the in-file id
             // are recorded as a pair. The test asserts them equal to document the
-            // seam — MS3 does NOT enforce agreement (that is MS6).
+            // seam — discovery does NOT enforce agreement (that is a `validate` rule).
             assert_eq!(
                 basin.basin_id_in_file(),
                 Some(basin.basin_id_folder()),
@@ -499,9 +495,9 @@ mod tests {
     #[test]
     fn missing_root_rollup_discovers_successfully_with_the_gap_recorded() {
         // Gaps-as-facts: discovery SUCCEEDS (no verdict) on the missing-root-rollup
-        // tree and reports the absent rollup + the present basins. L1 is MS6.
+        // tree and reports the absent rollup + the present basins. L1 is a `validate` rule.
         let discovery = discover_scalar(conformance("invalid/missing-root-rollup"))
-            .expect("discovery must SUCCEED and record the gap (L1 enforcement is MS6)");
+            .expect("discovery must SUCCEED and record the gap (L1 enforcement is a validate rule)");
 
         // `outlines.geoparquet` is the absent rollup in this fixture.
         assert!(discovery.root_rollups().scalar_static_present());
@@ -551,22 +547,22 @@ mod tests {
     }
 
     /// Compile-level seam check: [`ScalarDiscovery`] exposes exactly the scalar-half
-    /// data MS4 extends. The gridded `GridInfo` + `delineations` (architecture §3.5)
-    /// attach **alongside** this model — the per-basin gridded subtree paths already
-    /// live on the `LayoutModel`, and the `outlines` presence fact is the geometry
-    /// reader's seam. This test pins the four scalar-half accessors so MS4 cannot
-    /// silently reshape them.
+    /// data the gridded half extends. The gridded `GridInfo` + `delineations`
+    /// (architecture §3.5) attach **alongside** this model — the per-basin gridded
+    /// subtree paths already live on the `LayoutModel`, and the `outlines` presence
+    /// fact is the geometry reader's seam. This test pins the four scalar-half
+    /// accessors so they cannot be silently reshaped.
     #[test]
     fn scalar_discovery_exposes_the_ms4_seam_accessors() {
         let discovery = discover_scalar(conformance("valid/minimal"))
             .expect("the valid fixture must discover");
 
-        // The four scalar-half accessors MS4 builds on (compile + shape check).
+        // The four scalar-half accessors the gridded half builds on (compile + shape check).
         let _basins: &[BasinId] = discovery.basins();
         let _fields: &[crate::field::Field] = discovery.scalar_fields();
         let _per_basin: &[crate::discovery::BasinScalar] = discovery.per_basin();
         let rollups = discovery.root_rollups();
-        // The `outlines` presence is the MS4 geometry-reader seam.
+        // The `outlines` presence is the geometry-reader seam.
         assert!(rollups.outlines_present());
     }
 }
