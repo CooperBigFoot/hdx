@@ -6,7 +6,7 @@ HDX is a prescriptive, cloud-optimized **data interface** for per-basin hydrolog
 
 HDX is **inert** and **agnostic**. A conformant reader/writer carries, requires, and interprets **none** of the following: transform / normalization params (μ/σ, log-ε), field **roles** (target / forcing / future-known), **semantic types** (continuous / categorical), the gridded→lumped **reduction**, or any **provenance of computation**. HDX does not know whether a dataset is raw forcing or model output — **a prediction dataset is just an HDX dataset**, validated by the same rules. Field names are opaque producer strings; HDX parses none of them.
 
-This repository is the **contract executed**: a pure-Rust core (`hdx-core`) implementing the two contract-executing verbs `validate` and `describe`, a thin JSON-emitting CLI over them, and a checked-in conformance fixture suite. The canonical contract is [`spec/HDX_SPEC.md`](spec/HDX_SPEC.md); the living build doc is [`architecture.md`](architecture.md).
+This repository is the **contract executed**: a pure-Rust core (`hdx-core`) implementing the two contract-executing verbs `validate` and `describe`, a thin JSON-emitting CLI over them, a PyO3 Python binding, and a conformance fixture suite (a deterministic generator + tracked goldens). The canonical contract is [`spec/HDX_SPEC.md`](spec/HDX_SPEC.md); the living build doc is [`architecture.md`](architecture.md).
 
 ## The field — the spine of HDX
 
@@ -76,7 +76,7 @@ Both verbs perform the §0 hard version cut and the six-field manifest boundary-
 
 ### The `hdx` CLI
 
-A thin, JSON-emitting, LLM-drivable binary (root package, [`src/main.rs`](src/main.rs)) wraps the two verbs — arg-parse → call `hdx-core` → serialize result to stdout → exit code. JSON is *output* (stdout); diagnostics go through `tracing` to stderr. The intended v0.1 surface:
+A thin, JSON-emitting, LLM-drivable binary (root package, [`src/main.rs`](src/main.rs)) wraps the two verbs — arg-parse → call `hdx-core` → serialize result to stdout → exit code. JSON is *output* (stdout); diagnostics go through `tracing` to stderr. The v0.1 surface:
 
 ```sh
 hdx describe ./my-dataset    # prints the Description JSON to stdout
