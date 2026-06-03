@@ -13,51 +13,44 @@
 //! [`CheckResult::Fail`] ⇒ `conformant: false` — *never* a returned `Err`. A
 //! [`ValidateError`] is reserved for **structural / entry** failures: an unreadable
 //! `manifest.json`, the §0 hard version cut, an undecodable present artifact. This split
-//! mirrors `describe` and lets the CLI (MS7) map a `ValidateError` to a distinct exit
-//! code from a `conformant: false` verdict.
+//! mirrors `describe` and lets the CLI map a `ValidateError` to a distinct exit code from
+//! a `conformant: false` verdict.
 //!
 //! ## The §0 entry gate runs FIRST (spec §0 entry discipline)
 //!
-//! [`validate`] mirrors `describe`'s proven, statically-guaranteed stage order so the §0
-//! hard cut precedes any other file read:
+//! [`validate`] mirrors `describe`'s statically-guaranteed stage order so the §0 hard cut
+//! precedes any other file read:
 //!
 //! 1. read `<path>/manifest.json` (a filesystem failure → [`ValidateError::ManifestUnreadable`]);
 //! 2. [`Manifest::from_json`] — whose **first** act is the §0/§14 M2 `format_version`
 //!    hard cut; an unknown version (or any malformed manifest — M3/M4) returns
 //!    **before [`discover`] is ever called** as [`ValidateError::Manifest`];
-//! 3. [`discover`] (MS3+MS4) — only now is any other file touched (a structural failure
+//! 3. [`discover`] — only now is any other file touched (a structural failure
 //!    → [`ValidateError::Discovery`]);
 //! 4. build the [`ValidationReport`] by running the §14 rules over the assembled model.
 //!
-//! ## The §14 checklist (MS6-S1 + MS6-S2)
+//! ## The §14 checklist
 //!
-//! MS6-S1 froze the report wire shape + the per-check rule-function surface and
-//! implemented every check whose rule is a **pure function over the already-typed
-//! discovery model and is falsifiable in-memory without differently-shaped on-disk
-//! bytes** (the MED-2 fold): **H1, H2, I3, T1, G1**, plus the entry-gate **M1, M2, M3,
-//! M4** (folded into [`Manifest::from_json`]).
+//! Most checks are a **pure function over the already-typed discovery model**, falsifiable
+//! in-memory without differently-shaped on-disk bytes: **H1, H2, I3, T1, G1**, plus the
+//! entry-gate **M1, M2, M3, M4** (folded into [`Manifest::from_json`]). The rest need the
+//! **full discovery layer assembled from on-disk bytes**: **L1, L2, L3, I1, I2, M5, M6,
+//! T2, G2, G3, Geo1**. Every §14 id ends up either `ran` (pass/fail) or **honestly
+//! `skipped` with a reason** under R3; the report states which ran (spec §14 note).
 //!
-//! MS6-S2 completes the checklist with the checks whose rule needs the **full discovery
-//! layer assembled from on-disk bytes**: **L1, L2, L3, I1, I2, M5, M6, T2, G2, G3,
-//! Geo1**. Every §14 id now ends up either `ran` (pass/fail) or **honestly `skipped`
-//! with a reason** under R3; the report states which ran (spec §14 note). The legs that
-//! genuinely need a byte-deep / on-disk-shape-dependent read are honest R3 skips:
+//! A handful of legs genuinely need a byte-deep / on-disk-shape-dependent read, so they
+//! are honest R3 skips:
 //!
 //! - **M6 rule (b)** — per-basin axis *regularity* needs the full 1-D `time` array;
 //!   v0.1 discovery surfaces only a two-point `[start, end]` extent + sortedness, so the
 //!   regularity leg is [`DepthClass::ByteDeep`]-skipped (rule (a), cadence-non-empty,
-//!   runs and passes). See [`check_m6`] for the FOLD MED-1 rule verbatim.
+//!   runs and passes). See [`check_m6`] for the M6 rule.
 //! - **T2** — cross-artifact *full* time-axis identity between the scalar and gridded
 //!   dynamic axes needs both full 1-D axes; the cheap leg confirmable from metadata runs,
-//!   else the leg is an honest R3 skip (the on-disk negative is MS8).
+//!   else the leg is an honest R3 skip.
 //!
-//! The **on-disk negative matrix** (I2 folder mismatch, T2 cross-artifact axis, G2
-//! misaligned-shared-grid, G3 missing georef, L1/L2/L3 layout mutations, Geo1
-//! column/partition, M5 file crs-mismatch) is completed in **MS8** — MS6 makes **no**
-//! claim of an on-disk negative for those (see the test-module deferral comment).
-//!
-//! No check decodes a gridded chunk or pixel raster (LOW-3): every check runs over the
-//! discovery layer + the 1-D index reads MS3/MS4 already perform.
+//! No check decodes a gridded chunk or pixel raster: every check runs over the discovery
+//! layer + the 1-D index reads discovery already performs.
 //!
 //! ## Glossary
 //!
@@ -92,7 +85,7 @@ use crate::scalar_reader::TimeColumn;
 ///
 /// Ids are an enum (never strings) so a typo cannot mint a non-existent check and the
 /// report's id space is exhaustive. [`as_str`](CheckId::as_str) yields the stable spec id
-/// (`"M1"`…`"Geo1"`) for the wire shape (MS6-S3 serializes it).
+/// (`"M1"`…`"Geo1"`) for the wire shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckId {
     /// `manifest.json` exists, is valid JSON, `format_version` read first (§14 M1).
@@ -167,9 +160,7 @@ impl CheckId {
 
 /// The full ordered list of the 20 §14 check ids, in spec order.
 ///
-/// Used by the verb to enumerate every id in the report (the S1-owned ones with a real
-/// outcome, the cross-file ones with a `skipped` placeholder) so the report shape lists
-/// every §14 id from S1 onward.
+/// Used by the verb to enumerate every id in the report so its shape lists every §14 id.
 const ALL_CHECK_IDS: [CheckId; 20] = [
     CheckId::M1,
     CheckId::M2,
@@ -240,11 +231,11 @@ impl CheckResult {
 
 /// The R3 enforcement-depth class of a check (architecture §7 R3).
 ///
-/// Records how deep into the bytes a check reached. Every MS6-S1 check is
-/// [`DepthClass::MetadataDeep`] — it runs over the discovery layer + the 1-D index reads
-/// MS3/MS4 already perform, never a gridded chunk or pixel raster (LOW-3). The
+/// Records how deep into the bytes a check reached. Most checks are
+/// [`DepthClass::MetadataDeep`] — they run over the discovery layer + the 1-D index reads
+/// discovery already performs, never a gridded chunk or pixel raster. The
 /// [`DepthClass::ByteDeep`] class is reserved for the genuinely byte-level legs (e.g. the
-/// MS6-S2 per-basin axis-regularity leg) that v0.1 honestly skips.
+/// per-basin axis-regularity leg) that v0.1 honestly skips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthClass {
     /// The check was decided from metadata + 1-D index reads only (no chunk/pixel read).
@@ -479,14 +470,13 @@ impl<'a> CheckOutcomeDto<'a> {
     }
 }
 
-// --- The pure in-memory rule functions (MS6-S1) --------------------------------------
+// --- The pure in-memory rule functions ------------------------------------------------
 //
 // Each rule is a pure function over borrowed pieces of the already-typed discovery model
 // and returns a single `CheckOutcome`. Each is falsifiable in-memory without
-// differently-shaped on-disk bytes (the MED-2 fold), and each is `MetadataDeep` (no
-// chunk/pixel read). M3/M4 are *not* here — they are folded into the entry gate via
-// `Manifest::from_json` (a parsed manifest ⇒ M3/M4 pass; a parse error ⇒ a typed `Err`),
-// and exercised in-memory by calling `from_json` on hand-built JSON strings.
+// differently-shaped on-disk bytes, and each is `MetadataDeep` (no chunk/pixel read).
+// M3/M4 are *not* here — they are folded into the entry gate via `Manifest::from_json`
+// (a parsed manifest ⇒ M3/M4 pass; a parse error ⇒ a typed `Err`).
 
 /// Checks H1 — every basin has the identical field schema (spec §5/§14 H1).
 ///
@@ -680,8 +670,8 @@ pub fn check_t1(per_basin_time: &[(&BasinId, Option<&TimeColumn>)]) -> CheckOutc
 /// G1 verifies the catalog is built so that **one artifact = one grid** and every gridded
 /// field carries its own grid label (the CF variable / COG band description *is* the field
 /// name). [`Field::new`] already makes a label-less gridded field unrepresentable, so the
-/// **in-memory-falsifiable form** of G1 (the MED-2 fold) is: feed the rule a field list and
-/// confirm it `ran:pass` **iff every gridded field self-names** (carries `Some(GridLabel)`);
+/// **in-memory-falsifiable form** of G1 is: feed the rule a field list and confirm it
+/// `ran:pass` **iff every gridded field self-names** (carries `Some(GridLabel)`);
 /// a gridded field whose label is absent ⇒ `ran:fail`. Because the invariant holds by
 /// construction, a conformant catalog always passes — but the rule is the explicit check
 /// that no gridded field was admitted without its label (no positional channel axis).
@@ -713,16 +703,16 @@ pub fn check_g1(fields: &[&Field]) -> CheckOutcome {
     CheckOutcome::ran_pass(CheckId::G1, DepthClass::MetadataDeep)
 }
 
-// --- The cross-file / cross-basin rule functions (MS6-S2) ----------------------------
+// --- The cross-file / cross-basin rule functions -------------------------------------
 //
 // Each rule below needs the full discovery layer assembled from on-disk bytes (the
-// layout walk + the metadata readers MS3/MS4 already ran). They reference the reserved
+// layout walk + the metadata readers already ran). They reference the reserved
 // `CoreError` detail vocabulary (`MissingRootRollup`, `BasinIdFolderMismatch`,
 // `RaggedSchema`, `GridLabelMismatchAcrossBasins`, `NonMonotonicTime`) in their fail
 // messages, but a violated MUST is a recorded fail `CheckOutcome`, never a returned
-// `Err` (the report-vs-error split). No rule decodes a gridded chunk or pixel raster
-// (LOW-3) — each is `MetadataDeep` unless its rule genuinely needs a byte-deep read,
-// in which case that leg is an honest R3 `Skipped`-with-reason (`ByteDeep`).
+// `Err` (the report-vs-error split). No rule decodes a gridded chunk or pixel raster —
+// each is `MetadataDeep` unless its rule genuinely needs a byte-deep read, in which case
+// that leg is an honest R3 `Skipped`-with-reason (`ByteDeep`).
 
 /// The two root-rollup artifact names (spec §4/§14 L1) — the detail vocabulary.
 const SCALAR_STATIC_ARTIFACT: &str = "scalar_static.parquet";
@@ -772,7 +762,7 @@ pub fn check_l1(discovery: &Discovery) -> CheckOutcome {
 ///
 /// A missing required artifact ⇒ `ran:fail`. The reverse direction — a gridded subtree
 /// *present on disk* with **no** gridded fields — needs the raw subtree-directory
-/// presence fact (an on-disk-shape mutation), so it is the MS8 negative; the forward
+/// presence fact (an on-disk-shape mutation) and is not asserted here; the forward
 /// direction (the fixture's positive path) runs here. R3: `MetadataDeep`.
 #[instrument(skip(discovery))]
 pub fn check_l2(discovery: &Discovery) -> CheckOutcome {
@@ -842,19 +832,16 @@ pub fn check_l2(discovery: &Discovery) -> CheckOutcome {
 /// successfully (a structurally bad artifact would have failed discovery as an `Err`).
 /// What L3 *also* forbids — a producer encoding a field's absence as a *missing file*
 /// rather than a NaN-filled column — is a value-shape mutation only a byte-deep read of
-/// the actual cell payloads could detect, which `validate` deliberately never does
-/// (LOW-3). v0.1 therefore confirms the **metadata-deep** legs (no stray entries
-/// enumerated; every present artifact decoded) and honestly **R3-skips** the byte-deep
-/// absence-vs-NaN leg with a reason. R3: `ByteDeep` (the deferred leg).
+/// the actual cell payloads could detect, which `validate` deliberately never does. v0.1
+/// therefore confirms the **metadata-deep** legs (no stray entries enumerated; every
+/// present artifact decoded) and honestly **R3-skips** the byte-deep absence-vs-NaN leg
+/// with a reason. R3: `ByteDeep` (the deferred leg).
 #[instrument(skip(_discovery))]
 pub fn check_l3(_discovery: &Discovery) -> CheckOutcome {
     CheckOutcome::skipped(
         CheckId::L3,
         DepthClass::ByteDeep,
-        "the metadata-deep legs hold by construction (the walk ignores dot-cruft and \
-         every present artifact decoded during discovery); the absence-is-NaN-not-a- \
-         missing-file leg needs a byte-deep read of the cell payloads, which validate \
-         never performs (LOW-3) — deferred to the MS8 on-disk matrix",
+        "the metadata-deep legs hold by construction: the walk ignores dot-cruft and every present artifact decoded during discovery. The remaining leg — that a field's absence is a NaN-filled column, never a missing file (spec §5) — needs a byte-deep read of the cell payloads, which validate deliberately never performs; it is an honest skip",
     )
 }
 
@@ -869,7 +856,7 @@ pub fn check_l3(_discovery: &Discovery) -> CheckOutcome {
 /// - the `scalar_static` leg uses the additive
 ///   [`scalar_static_has_basin_id`](crate::discovery::ScalarDiscovery::scalar_static_has_basin_id)
 ///   accessor (`None` ⇒ the rollup is absent, an L1 concern, so this leg does not fail);
-/// - the `outlines` leg uses MS4's read: the geoparquet reader *requires*
+/// - the `outlines` leg uses the geoparquet read: the reader *requires*
 ///   `basin_id`/`delineation`/`geometry` and errors otherwise, so a present-and-readable
 ///   outlines satisfies the column-presence leg (and an absent outlines is an L1 fail,
 ///   not an I1 fail).
@@ -961,10 +948,10 @@ pub fn check_i2(per_basin: &[(&BasinId, Option<&BasinId>)]) -> CheckOutcome {
 ///
 /// The manifest `crs` MUST equal the [`Crs`] recorded on **every** [`GridInfo`] and on
 /// the `outlines.geoparquet`; a mismatch ⇒ `ran:fail`. A file whose CRS could not be
-/// resolved to a comparable `EPSG:<code>` (recorded raw with an
-/// [`CrsSource::RawProjjsonR3`](crate::geoparquet_reader::CrsSource::RawProjjsonR3) flag
-/// by MS4) makes that file's M5 leg an honest `skipped`-with-reason, never a silent pass
-/// — but on the fixture every file resolves a comparable `EPSG:4326`, so M5 runs. R3:
+/// resolved to a comparable `EPSG:<code>` (recorded raw with a
+/// [`CrsSource::RawProjjsonR3`](crate::geoparquet_reader::CrsSource::RawProjjsonR3) flag)
+/// makes that file's M5 leg an honest `skipped`-with-reason, never a silent pass — but on
+/// the fixture every file resolves a comparable `EPSG:4326`, so M5 runs. R3:
 /// `MetadataDeep`.
 #[instrument(skip(manifest_crs, grids, outlines))]
 pub fn check_m5(
@@ -998,8 +985,7 @@ pub fn check_m5(
     if let Some(outlines) = outlines {
         match outlines.crs_source() {
             // The raw-PROJJSON file cannot be compared to the manifest cheaply: an
-            // honest R3 skip-with-reason rather than a silent pass (the on-disk
-            // crs-mismatch negative is MS8).
+            // honest R3 skip-with-reason rather than a silent pass.
             CrsSource::RawProjjsonR3 => {
                 return CheckOutcome::skipped(
                     CheckId::M5,
@@ -1029,9 +1015,9 @@ pub fn check_m5(
 
 /// Checks M6 — the cadence convention vs the realized `time` axes (spec §6.4/§14 M6).
 ///
-/// **FOLD MED-1 — the load-bearing M6 rule.** HDX **parses no cadence semantics**
-/// (spec §1/§6.4) and §6.1 explicitly permits **ragged per-basin time extents**. So M6
-/// is implemented as EXACTLY two rules and nothing more:
+/// **The load-bearing M6 rule.** HDX **parses no cadence semantics** (spec §1/§6.4) and
+/// §6.1 explicitly permits **ragged per-basin time extents**. So M6 is implemented as
+/// EXACTLY two rules and nothing more:
 ///
 /// - **rule (a)** — `cadence` is a **non-empty string** (this is also M4; M6 references
 ///   it, it does not re-own it). On the fixture this **runs and passes**.
@@ -1084,17 +1070,14 @@ pub fn check_m6(cadence: &Cadence) -> CheckOutcome {
 /// the **identical** time axis (§6.2). v0.1 discovery surfaces the scalar `[start, end]`
 /// extent and the Zarr per-grid geometry, but **not** the Zarr `time` coordinate axis as
 /// a comparable 1-D array on the model — so the cross-artifact full-axis identity is the
-/// genuinely on-disk-shape-dependent leg reserved for **MS8**. v0.1 therefore reports T2
-/// as an honest R3 `Skipped`-with-reason. R3: `ByteDeep`.
+/// genuinely on-disk-shape-dependent leg, which v0.1 reports as an honest R3
+/// `Skipped`-with-reason. R3: `ByteDeep`.
 #[instrument(skip(_discovery))]
 pub fn check_t2(_discovery: &Discovery) -> CheckOutcome {
     CheckOutcome::skipped(
         CheckId::T2,
         DepthClass::ByteDeep,
-        "intra-basin scalar-vs-gridded full time-axis identity needs both 1-D axes; \
-         v0.1 discovery surfaces the scalar [start,end] extent but not a comparable \
-         gridded time axis on the model — byte-deep cross-artifact axis identity \
-         deferred to the MS8 on-disk matrix",
+        "intra-basin scalar-vs-gridded full time-axis identity needs both 1-D axes; v0.1 discovery surfaces the scalar [start,end] extent but not a comparable gridded time axis on the model, so this byte-deep cross-artifact axis-identity leg is an honest skip (spec §6.2)",
     )
 }
 
@@ -1105,10 +1088,10 @@ pub fn check_t2(_discovery: &Discovery) -> CheckOutcome {
 /// `gridded_dynamic` (Zarr) subtrees, the two [`GridInfo`]s MUST **coincide** in extent,
 /// resolution, and pixel dimensions (spec §8 — one artifact = one grid, a shared label
 /// signals alignment). A shared-but-misaligned label ⇒ `ran:fail`. **Its positive path
-/// is exercised on the MS2 valid fixture** (critique H-1): both subtrees report `era5`
-/// and coincide at `10.0/50.0/11.5/48.0`, 6×8 ⇒ `ran:pass`. A dataset with no shared
-/// label has nothing to enforce and trivially passes. R3: `MetadataDeep` (the geometry
-/// was already metadata-decoded by MS4 — no chunk read here).
+/// is exercised on the valid fixture**: both subtrees report `era5` and coincide at
+/// `10.0/50.0/11.5/48.0`, 6×8 ⇒ `ran:pass`. A dataset with no shared label has nothing to
+/// enforce and trivially passes. R3: `MetadataDeep` (the geometry was already
+/// metadata-decoded by discovery — no chunk read here).
 #[instrument(skip(per_basin))]
 pub fn check_g2(per_basin: &[&BasinGridded]) -> CheckOutcome {
     for basin in per_basin {
@@ -1153,7 +1136,7 @@ pub fn check_g2(per_basin: &[&BasinGridded]) -> CheckOutcome {
 /// Checks G3 — every grid carries resolvable CF / GeoTIFF georeferencing (spec §7/§14 G3).
 ///
 /// Each gridded artifact MUST be georeferenced (Zarr via a CF `grid_mapping`, COG via the
-/// standard GeoTIFF tags). MS4's readers already error
+/// standard GeoTIFF tags). The metadata readers already error
 /// [`MissingGridGeoref`](crate::error::CoreError::MissingGridGeoref) when a present
 /// artifact has none, so a discovered [`GridInfo`] carrying a recorded [`Crs`] satisfies
 /// G3 (its georef was resolved to record the extent + CRS). A dataset with no grids has
@@ -1182,7 +1165,7 @@ pub fn check_g3(grids: &[GridInfo]) -> CheckOutcome {
 /// label column is `delineation`, and it is **not** partitioned by delineation
 /// (spec §9/§14 Geo1).
 ///
-/// MS4's geoparquet reader already enforces the three required columns (erroring
+/// The geoparquet reader already enforces the three required columns (erroring
 /// [`MissingGeometryColumn`](crate::error::CoreError::MissingGeometryColumn) otherwise)
 /// and reads a **single root file** (recording
 /// [`partitioned_by_delineation`](crate::geoparquet_reader::OutlinesInfo::partitioned_by_delineation)
@@ -1291,7 +1274,7 @@ pub fn validate(path: impl AsRef<Path>) -> Result<ValidationReport, ValidateErro
 }
 
 /// Validates a dataset and serializes the [`ValidationReport`] to its stable JSON string
-/// (the wire shape the CLI (MS7) and the PyO3 binding (MS9) consume, spec §10/§14).
+/// (the wire shape the CLI and the PyO3 binding consume, spec §10/§14).
 ///
 /// A thin wrapper over [`validate`] + [`ValidationReport::to_json_string`]; the same §0
 /// entry discipline and report-vs-error split apply. A **violated `MUST`** is carried in
@@ -1325,7 +1308,7 @@ pub fn validate_json(path: impl AsRef<Path>) -> Result<String, ValidateError> {
 /// (b), T2, and Geo1 when outlines is absent) are honest R3 `Skipped`-with-reason. Pure:
 /// no IO (discovery already read every byte it will read).
 fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport {
-    // The in-memory checks (MS6-S1), computed from the discovery accessors.
+    // The in-memory checks, computed from the discovery accessors.
     let fields_by_basin = fields_by_basin(discovery);
     let h1 = check_h1(&fields_by_basin);
 
@@ -1341,7 +1324,7 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     let all_fields = discovery.fields();
     let g1 = check_g1(&all_fields);
 
-    // The cross-file / cross-basin checks (MS6-S2).
+    // The cross-file / cross-basin checks.
     let l1 = check_l1(discovery);
     let l2 = check_l2(discovery);
     let l3 = check_l3(discovery);
@@ -1372,7 +1355,7 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
             // `Err` before discovery). Entry-gate checks are `MetadataDeep`.
             // This `ran_pass` is the already-cleared-at-the-entry-gate convention, NOT a
             // second enforcement site — the only M1–M4 enforcement is `Manifest::from_json`
-            // (the early `?` at validate.rs:1275); this arm is never reached on a violation.
+            // (the early `?` in `validate`); this arm is never reached on a violation.
             CheckId::M1 | CheckId::M2 | CheckId::M3 | CheckId::M4 => {
                 CheckOutcome::ran_pass(id, DepthClass::MetadataDeep)
             }
@@ -1403,9 +1386,8 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
 /// Pairs each basin's folder id with its dynamic-scalar fields followed by its gridded
 /// fields, in basin order. The dataset-wide static fields (the `scalar_static` rollup and
 /// the gridded catalog) are homogeneous by discovery construction; the per-basin slice the
-/// model surfaces today is the dynamic-scalar schema, which is what S1's in-memory H1 leg
-/// compares. (MS6-S2 may widen the per-basin schema once the full per-basin catalog is
-/// surfaced; the rule signature is already general.)
+/// model surfaces today is the dynamic-scalar schema, which is what the in-memory H1 leg
+/// compares (the rule signature is already general enough to widen later).
 fn fields_by_basin(discovery: &Discovery) -> Vec<(&BasinId, Vec<&Field>)> {
     discovery
         .scalar()
@@ -1438,7 +1420,7 @@ fn labels_by_basin(discovery: &Discovery) -> Vec<(&BasinId, Vec<&GridLabel>)> {
 /// Builds the in-file `basin_id` list the I3 rule consumes.
 ///
 /// One entry per basin that surfaced an in-file `basin_id` value (a basin with no value is
-/// an I1 concern handled in MS6-S2, not an I3 duplicate).
+/// an I1 concern, not an I3 duplicate).
 fn in_file_basin_ids(discovery: &Discovery) -> Vec<&BasinId> {
     discovery
         .scalar()
@@ -1591,18 +1573,17 @@ mod tests {
         }
     }
 
-    // --- M3 / M4 on-disk entry-gate negatives (Bucket-A, MS8-S2) ----------------------
+    // --- M3 / M4 on-disk entry-gate negatives ----------------------------------------
     //
     // These exercise the committed conformance fixtures `invalid/extra-manifest-field/`
     // (M3: a 7th manifest field) and `invalid/empty-cadence/` (M4: an empty cadence),
-    // each one surgical mutation off the valid baseline (LOW-2; the generator's
-    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at
-    // generation time). Their negative is an ENTRY-GATE `Err`, NOT a `conformant:false`
-    // report: `validate` reads `manifest.json` then `Manifest::from_json` (the early
-    // `?`), whose M3/M4 boundary checks fire BEFORE `discover` is ever called — so the
-    // verb returns `Err(ValidateError::Manifest(..))` and `build_report` (where M1–M4
-    // are listed `ran:pass` by the entry-gate convention) is never reached. The CLI
-    // (MS7) maps this `Err` to a distinct exit code from a `conformant:false` verdict.
+    // each one surgical mutation off the valid baseline. Their negative is an ENTRY-GATE
+    // `Err`, NOT a `conformant:false` report: `validate` reads `manifest.json` then
+    // `Manifest::from_json` (the early `?`), whose M3/M4 boundary checks fire BEFORE
+    // `discover` is ever called — so the verb returns `Err(ValidateError::Manifest(..))`
+    // and `build_report` (where M1–M4 are listed `ran:pass` by the entry-gate convention)
+    // is never reached. The CLI maps this `Err` to a distinct exit code from a
+    // `conformant:false` verdict.
 
     #[test]
     fn m3_extra_field_fixture_errs_at_entry_gate() {
@@ -1747,7 +1728,7 @@ mod tests {
         );
     }
 
-    // --- G1 in-memory-falsifiable form (MED-2) ----------------------------------------
+    // --- G1 in-memory-falsifiable form ------------------------------------------------
 
     #[test]
     fn g1_passes_only_when_every_gridded_field_self_names() {
@@ -1859,24 +1840,15 @@ mod tests {
         assert_eq!(CheckId::G3.as_str(), "G3");
     }
 
-    // --- MS6-S2: cross-file checks + the three milestone verdicts ---------------------
+    // --- Cross-file checks + the positive/in-memory verdicts --------------------------
     //
-    // MS8 DEFERRAL STATEMENT (FOLD MED-2). The genuinely on-disk-shape-dependent
-    // negatives are reserved for the MS8 invalid family + golden regression matrix, and
-    // MS6 makes NO claim of an on-disk negative for any of them:
-    //
-    //   - I2  — an on-disk folder/in-file `basin_id` mismatch tree;
-    //   - T2  — an on-disk scalar-vs-gridded cross-artifact time-axis mismatch;
-    //   - G2  — an on-disk shared-but-misaligned grid label tree;
-    //   - G3  — an on-disk gridded artifact missing its georeferencing;
-    //   - L1/L2/L3 — on-disk layout mutations (stray/ragged files, a missing per-basin
-    //                artifact, a gridded subtree present with no gridded fields);
-    //   - Geo1 — an on-disk outlines missing a required column / partitioned by
-    //            delineation;
-    //   - M5  — an on-disk file whose CRS differs from the manifest's.
-    //
-    // MS6 proves the POSITIVE paths on the valid fixture and the in-memory-falsifiable
-    // legs (M5 crs-mismatch, I2 folder-mismatch, M6 cadence) over the typed model.
+    // The tests below prove the POSITIVE paths on the valid fixture and the
+    // in-memory-falsifiable legs (M5 crs-mismatch, I2 folder-mismatch, M6 cadence) over
+    // the typed model. The genuinely on-disk-shape-dependent negatives (an on-disk
+    // folder/in-file mismatch, a cross-artifact time-axis mismatch, a shared-but-misaligned
+    // grid label, a missing georef, layout mutations, an outlines column/partition fault,
+    // a file CRS differing from the manifest) are covered by the on-disk invalid fixtures
+    // exercised further down.
 
     /// The valid fixture's manifest crs/cadence, parsed (for the M5/M6 in-memory legs).
     fn valid_manifest() -> Manifest {
@@ -1898,14 +1870,14 @@ mod tests {
         )
     }
 
-    // --- The milestone POSITIVE verdict: conformant:true on the valid fixture ---------
+    // --- The POSITIVE verdict: conformant:true on the valid fixture -------------------
 
     #[test]
     fn valid_fixture_is_conformant_with_no_ran_fail() {
         let report = validate(conformance("valid/minimal")).expect("the valid fixture validates");
 
-        // The milestone positive proof: conformant, and NO check is ran:fail (every
-        // applicable check is ran:pass or honestly skipped with a reason).
+        // The positive proof: conformant, and NO check is ran:fail (every applicable
+        // check is ran:pass or honestly skipped with a reason).
         assert!(report.conformant(), "the valid fixture must be conformant");
         for outcome in report.checks() {
             assert_ne!(
@@ -1928,7 +1900,7 @@ mod tests {
         assert_eq!(report.checks().len(), 20, "the report lists every §14 id");
     }
 
-    // --- G2 positive path fired (FOLD critique H-1) -----------------------------------
+    // --- G2 positive path fired -------------------------------------------------------
 
     #[test]
     fn g2_positive_path_fires_on_the_shared_aligned_era5_label() {
@@ -1958,13 +1930,13 @@ mod tests {
         assert_eq!(cog.extent().south(), 48.0);
     }
 
-    // --- conformant:false on wrong-format-version (entry gate, FOLD H-3) --------------
+    // --- conformant:false on wrong-format-version (entry gate) ------------------------
 
     #[test]
     fn wrong_format_version_never_reports_conformant_true() {
         // The §0 hard cut wins before discovery (matching `describe`): the verb returns
         // Err(Manifest(UnknownFormatVersion)), so the wrong-version tree never produces a
-        // conformant:true report. The CLI (MS7) maps this Err to exit 2.
+        // conformant:true report. The CLI maps this Err to a distinct exit code.
         match validate(conformance("invalid/wrong-format-version")) {
             Err(ValidateError::Manifest(CoreError::UnknownFormatVersion { found })) => {
                 assert_eq!(found, "0.2");
@@ -1978,7 +1950,7 @@ mod tests {
         // The M2 fail-outcome FORM (a conformant:false consequence) is proven by feeding
         // a hand-built wrong-version manifest through the M2 rule (Manifest::from_json):
         // it rejects "0.2" at the boundary, the §0 hard cut. The on-disk negative through
-        // the verb is the Err above; the exhaustive on-disk matrix is MS8.
+        // the verb is the Err above.
         let wrong = r#"{
             "format_version": "0.2",
             "name": "ds",
@@ -1993,7 +1965,7 @@ mod tests {
         ));
     }
 
-    // --- conformant:false on missing-root-rollup (L1, FOLD H-3) -----------------------
+    // --- conformant:false on missing-root-rollup (L1) ---------------------------------
 
     #[test]
     fn missing_root_rollup_pins_exactly_l1_and_is_non_conformant() {
@@ -2031,7 +2003,7 @@ mod tests {
         assert_eq!(geo1.status(), CheckStatus::Skipped, "Geo1 honestly skips");
     }
 
-    // --- M6 rule (FOLD MED-1) ---------------------------------------------------------
+    // --- M6 rule ----------------------------------------------------------------------
 
     #[test]
     fn m6_on_valid_fixture_is_not_a_fail_and_names_the_regularity_leg() {
@@ -2081,11 +2053,11 @@ mod tests {
 
     #[test]
     fn irregular_time_axis_skips_m6_and_stays_conformant() {
-        // MS8-S3: the still-conformant M6 case. One basin's scalar `time` axis (and its
-        // matching Zarr `time` coordinate) is irregular but strictly ascending, non-null
-        // (days [0,1,3,7] off its start). There is NO enforceable M6 negative in v0.1 —
-        // the regularity leg (rule b) is R3 ByteDeep-skipped because discovery surfaces
-        // only a two-point [start,end] extent + sortedness. So `validate` reports M6
+        // The still-conformant M6 case. One basin's scalar `time` axis (and its matching
+        // Zarr `time` coordinate) is irregular but strictly ascending, non-null (days
+        // [0,1,3,7] off its start). There is NO enforceable M6 negative in v0.1 — the
+        // regularity leg (rule b) is R3 ByteDeep-skipped because discovery surfaces only a
+        // two-point [start,end] extent + sortedness. So `validate` reports M6
         // skipped-with-reason and the dataset STILL `conformant:true`.
         let name = "valid/irregular-time-axis";
         let report = validate(conformance(name)).expect("the irregular-time fixture validates");
@@ -2222,7 +2194,7 @@ mod tests {
         );
     }
 
-    // --- MS6-S3: the report wire-shape lock (validate.schema.json + golden snapshot) ---
+    // --- The report wire-shape lock (validate.schema.json + golden snapshot) ----------
 
     /// Resolves a path under the repository-root `schemas/` directory.
     ///
@@ -2262,8 +2234,8 @@ mod tests {
     }
 
     /// R4 schema test (jsonschema dev-dep). The committed golden validate report of the
-    /// MS2 valid fixture **validates** against the committed `validate.schema.json`,
-    /// pinning the validate half of R4 (architecture §7).
+    /// valid fixture **validates** against the committed `validate.schema.json`, pinning
+    /// the validate half of R4 (architecture §7).
     #[test]
     fn golden_validates_against_validate_schema() {
         let validator = validate_validator();
@@ -2293,8 +2265,8 @@ mod tests {
         );
     }
 
-    /// Report-states-which-ran (FOLD honesty / spec §14 note). The golden's `checks`
-    /// array contains **all 20** §14 ids; the v0.1 honest skips (M6 regularity leg, L3
+    /// Report-states-which-ran (spec §14 note). The golden's `checks` array contains
+    /// **all 20** §14 ids; the v0.1 honest skips (M6 regularity leg, L3
     /// absence-vs-NaN leg, T2 cross-artifact axis leg) appear with `status:"skipped"` +
     /// a non-empty `detail`; every other check is `status:"ran"` with `result:"pass"`;
     /// top-level `conformant:true`. This pins, in the committed artifact, that the report
@@ -2408,12 +2380,12 @@ mod tests {
         );
     }
 
-    /// Both invalids' reports serialize over the wire (smoke test, spec §14). Each MS2
+    /// Both invalids' reports serialize over the wire (smoke test, spec §14). Each
     /// invalid's report is produced as valid JSON: the `missing-root-rollup` tree
     /// serializes with `conformant:false` and `L1` `result:"fail"` (the wire shape
     /// carries a fail correctly); the `wrong-format-version` tree is an entry-gate `Err`
     /// (the §0 hard cut), so `validate_json` surfaces it as a `ValidateError`, never a
-    /// `conformant:true` report. The exhaustive per-check golden matrix is MS8.
+    /// `conformant:true` report.
     #[test]
     fn both_invalids_reports_serialize_carrying_the_verdict() {
         // missing-root-rollup → a conformant:false report with L1 result:fail, valid JSON.
@@ -2456,14 +2428,14 @@ mod tests {
         }
     }
 
-    // --- MS8-S3: Bucket-B one-violation invalids (I1/I2/I3/H1/T1/L2) ------------------
+    // --- One-violation invalids (I1/I2/I3/H1/T1/L2) -----------------------------------
     //
-    // Each fixture is one surgical mutation off the valid baseline (LOW-2; the
-    // generator's `assert_differs_in_exactly_one_way` proves the one-mutation invariant
-    // at generation time). Its negative is a CLEAN `conformant:false` report with exactly
-    // ONE §14 check `ran:fail` and every other check `pass`-or-`skip`. Each test pins the
-    // exact failing id, runs the purity assertion (no second check trips), and snapshots
-    // the report against the committed per-fixture golden under
+    // Each fixture is one surgical mutation off the valid baseline (the generator's
+    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at generation
+    // time). Its negative is a CLEAN `conformant:false` report with exactly ONE §14 check
+    // `ran:fail` and every other check `pass`-or-`skip`. Each test pins the exact failing
+    // id, runs the purity assertion (no second check trips), and snapshots the report
+    // against the committed per-fixture golden under
     // `conformance/goldens/invalid-<name>.validate.json`.
 
     /// Reads a committed per-fixture golden validate report as a parsed `Value`.
@@ -2487,7 +2459,7 @@ mod tests {
         serde_json::from_str(&raw).expect("the golden must be valid JSON")
     }
 
-    /// Asserts a Bucket-B fixture pins **exactly** one §14 check `ran:fail`.
+    /// Asserts a one-violation fixture pins **exactly** one §14 check `ran:fail`.
     ///
     /// Shared `(fixture, pinned_id)` helper: validates the fixture (which discovers — the
     /// violation is a check fail, not an `Err`), asserts `conformant:false`, the pinned id
@@ -2589,13 +2561,12 @@ mod tests {
         assert_pins_exactly("invalid/missing-gridded-dynamic-subtree", CheckId::L2);
     }
 
-    // --- MS8-S2: georef / grid-label one-violation invalids (M5/G2/H2) ----------------
+    // --- Georef / grid-label one-violation invalids (M5/G2/H2) ------------------------
     //
     // Each is one surgical mutation off the valid baseline (the generator's
     // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at generation
     // time) and produces a CLEAN `conformant:false` report with exactly ONE §14 check
-    // `ran:fail`. The purity legs were confirmed empirically before committing (see each
-    // test's note); `assert_pins_exactly` re-checks purity + snapshots against the golden.
+    // `ran:fail`. `assert_pins_exactly` re-checks purity + snapshots against the golden.
 
     #[test]
     fn crs_mismatch_pins_exactly_m5() {
