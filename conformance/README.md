@@ -5,7 +5,7 @@ dataset plus two minimal invalid datasets** — and the dev-only Python harness
 that generates them under [`generator/`](generator/).
 
 There is **no HDX writer in v0.1** (spec §10; architecture §7 **R2**): `validate`
-and `describe` are read-only. Yet MS3/MS4 readers and MS6 `validate` need real
+and `describe` are read-only. Yet the `hdx-core` readers and `validate` need real
 on-disk parquet / Zarr / COG / geoparquet bytes to test against. This harness
 fills that gap by *emitting bytes a reader will later read* — it is a test fixture
 tool, **not** part of the shipped contract.
@@ -25,12 +25,10 @@ tool, **not** part of the shipped contract.
 > generator never touches. This keeps binary fixture blobs out of git history
 > while preserving reproducibility.
 
-The fixture set is now **complete for the §14 matrix (MS8)**: one valid
-four-quadrant baseline, the still-conformant `valid/irregular-time-axis` case (the
-M6 R3 skip), and the **12** fail-closed invalids — one surgical mutation each,
-each pinning exactly one §14 check. MS2 shipped the first two pinned invalids
-(`wrong-format-version`, `missing-root-rollup`); MS8 completed the rest. The full
-classification of all 20 §14 ids lives in the
+The fixture set covers the full **§14 matrix**: one valid four-quadrant
+baseline, the still-conformant `valid/irregular-time-axis` case (the M6 R3 skip),
+and the **12** fail-closed invalids — one surgical mutation each, each pinning
+exactly one §14 check. The full classification of all 20 §14 ids lives in the
 [§14 check-id classification matrix](#14-check-id-classification-matrix).
 
 ## Regenerate
@@ -51,15 +49,14 @@ target**. One run:
    exact-version closure from
    [`generator/requirements.lock`](generator/requirements.lock);
 2. smoke-imports every pinned dependency (proving the pins resolve);
-3. emits the valid baseline `valid/minimal/` — the **scalar** half (S2) then the
-   **gridded** half (S3) — and **derives every fixture the `mutate.Invalid` enum
+3. emits the valid baseline `valid/minimal/` — the **scalar** half then the
+   **gridded** half — and **derives every fixture the `mutate.Invalid` enum
    declares** from it (the 12 fail-closed invalids under `invalid/<name>/` plus the
-   still-conformant `valid/irregular-time-axis/` — one surgical mutation each,
-   LOW-2);
+   still-conformant `valid/irregular-time-axis/` — one surgical mutation each);
 4. runs **every** load-bearing self-assertion — including, per derived fixture,
    the `assert_differs_in_exactly_one_way` one-mutation check — and **exits
    non-zero if any fails**, so a broken property aborts the whole regenerate and a
-   non-conformant tree is never produced (milestones.md MS2 exit criterion).
+   non-conformant tree is never produced.
 
 **Determinism.** A run is **byte-deterministic**: `created_at` is a fixed
 constant, every data series is a deterministic function of basin identity, and
@@ -105,7 +102,7 @@ conformance/
   invalid/divergent-grid-label-set/       # pins H2 — one surgical mutation off the baseline (git-ignored data)
 ```
 
-> **The fixture set is now complete for the §14 matrix.** The 13 derived fixtures
+> **The fixture set covers the full §14 matrix.** The 13 derived fixtures
 > above (12 fail-closed invalids + the still-conformant `valid/irregular-time-axis`)
 > are exactly one per `mutate.Invalid` variant, and exactly the rows in the
 > [fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid)
@@ -161,7 +158,7 @@ Annotated, engineered properties:
   companion-mask field using the `{field}_was_filled` pattern
   (**`era5_precipitation_was_filled`**). Both are **ordinary** Zarr variables —
   the generator attaches no role, belongs-to link, or suffix/prefix magic. They
-  exist only to prove later milestones give them **no** special handling (§2).
+  exist only to prove the verbs give them **no** special handling (§2).
   The §6.2 NaN-fill convention is exercised: the first timestep of
   `era5_precipitation` is NaN and the mask marks exactly that timestep.
 - **Delineation-neutral grids (§9).** Both gridded artifacts are dense
@@ -202,15 +199,15 @@ hand-edited: run `describe` over `valid/minimal`, pretty-print it
 (`Description::to_json_pretty`), and overwrite
 `conformance/goldens/valid-minimal.describe.json`. Do this **only** when the describe
 shape legitimately changes (a `format_version` bump). A drift caught by the snapshot
-test that is **not** an intended shape change is a bug, not a golden-refresh. (MS8
-extends this golden-output discipline to the wider fixture family.)
+test that is **not** an intended shape change is a bug, not a golden-refresh. The
+same golden-output discipline extends to the wider fixture family.
 
-> **MS8 added no field.** The exhaustive-invalids milestone introduced no new
-> domain field and mutated no manifest floor field, so this baseline
-> `goldens/valid-minimal.describe.json` is **byte-unchanged** across all of MS8 —
-> the green floor every MS8 invalid fixture is derived from (each invalid is one
-> surgical mutation off this baseline). The MS8 invalid family pins `validate`
-> reports only; it touches no `describe` golden.
+> **The invalid family adds no field.** No invalid fixture introduces a new
+> domain field or mutates a manifest floor field, so this baseline
+> `goldens/valid-minimal.describe.json` is the **byte-unchanged** green floor every
+> invalid fixture is derived from (each invalid is one surgical mutation off this
+> baseline). The invalid family pins `validate` reports only; it touches no
+> `describe` golden.
 
 ### `goldens/valid-minimal.validate.json` — the pinned `validate` report (R4)
 
@@ -253,14 +250,14 @@ hand-edited: run `validate` over the fixture, pretty-print it
 `invalid-<fixture>.validate.json` for an invalid (the fixture path flattened with
 `/` → `-`). Do this **only** when the report shape legitimately changes (a
 `format_version` bump). A drift caught by the snapshot test that is **not** an
-intended shape change is a bug, not a golden-refresh. (MS8 extends this
-golden-output discipline to the wider invalid fixture family — the exhaustive
-one-violation-per-check golden report matrix.)
+intended shape change is a bug, not a golden-refresh. The same golden-output
+discipline extends to the wider invalid fixture family — the
+one-violation-per-check golden report matrix.
 
-> **MS8 added no field.** The exhaustive-invalids milestone introduced no new
-> domain field and mutated no manifest floor field, so this baseline
-> `goldens/valid-minimal.validate.json` is **byte-unchanged** across all of MS8 —
-> the green floor every MS8 invalid fixture is derived from. The still-conformant
+> **The invalid family adds no field.** No invalid fixture introduces a new
+> domain field or mutates a manifest floor field, so this baseline
+> `goldens/valid-minimal.validate.json` is the **byte-unchanged** green floor every
+> invalid fixture is derived from. The still-conformant
 > `goldens/valid-irregular-time-axis.validate.json` is even byte-identical to this
 > baseline (the irregular spacing is byte-deep invisible to `validate`). Each
 > fail-closed invalid gets its own `goldens/invalid-<fixture>.validate.json`
@@ -290,7 +287,7 @@ spacing is byte-deep invisible to `validate`). The pinned regression test is
 `irregular_time_axis_skips_m6_and_stays_conformant` in `crates/core/src/validate.rs`.
 
 **Why there is NO enforceable M6 negative in v0.1.** `check_m6` is exactly two
-rules (FOLD MED-1): rule (a) — `cadence` is a non-empty string (this also is M4;
+rules: rule (a) — `cadence` is a non-empty string (this also is M4;
 M6 references it) — and rule (b) — each basin's realized `time` axis is
 **internally regular** (a constant interior step, the §6.2 consequence of
 NaN-filled gaps). Rule (b) is honestly **R3 `ByteDeep`-skipped**: the v0.1
@@ -335,7 +332,7 @@ file is absent; nothing is added, and no remaining file's bytes differ.
 ## Fixture → one-pinned-check map (every committed/generated invalid)
 
 Each invalid is **derived programmatically** from the valid baseline via **exactly
-one surgical mutation** (LOW-2; the generator's
+one surgical mutation** (the generator's
 `assert_differs_in_exactly_one_way` self-assertion proves the one-mutation
 invariant at generation time) and pins **exactly one** spec §14 check. The table
 lists **every** fixture a clean `regenerate.sh` emits beyond the valid baseline:
@@ -362,9 +359,8 @@ emitted fixture appears here.
 | **H2** — the grid-label set is identical across basins (§8). | `invalid/divergent-grid-label-set/` | `conformant:false` | Re-emit one basin's COG **and** Zarr under a divergent `era5b` label (`era5.*` → `era5b.*`); that basin's label set becomes `{era5b}` while every other basin's is `{era5}`. |
 | **M6 (skip)** — *no enforceable negative*; M6 rule (b) regularity is R3-skipped. STILL **`conformant:true`** (a valid-shaped fixture, not a fail-closed invalid). | `valid/irregular-time-axis/` | still-conformant (M6 skip) | Rewrite one basin's `scalar_dynamic` `time` to an irregular but strictly-ascending, non-null axis (days `[0,1,3,7]`) **and** its matching Zarr `time` to the identical axis. See [the M6 subsection](#the-still-conformant-m6-case-no-enforceable-m6-negative-in-v01). |
 
-> **The exhaustive one-invalid-per-check family is now complete.** MS2 shipped the
-> first two pinned invalids (M2, L1); MS8 added the rest — the entry-gate M3/M4,
-> the Bucket-B I1/I2/H1/T1/L2 parquet/layout negatives, the M5/G2/H2
+> **The one-invalid-per-check family is exhaustive.** It spans the entry-gate
+> M2/M3/M4, the I1/I2/H1/T1/L2 parquet/layout negatives, the M5/G2/H2
 > georef/grid-label negatives, and the still-conformant M6 case. **The 13 rows
 > above are exactly the fixtures a clean `regenerate.sh` emits** (one per
 > `mutate.Invalid` variant). The full §14 classification matrix — every check id
@@ -413,17 +409,17 @@ check `ran:fail`.
 These checks **run and pass** on the valid fixture (they are real `check_*` rules,
 not skips), but v0.1 cannot construct a fixture that makes **only** this check
 `ran:fail` while every other check passes. The reason is code-grounded in each
-case below; the **fail-path of each rule is proven by an MS6 in-memory unit test**
+case below; the **fail-path of each rule is proven by an in-memory unit test**
 (a hand-built input that falsifies the rule directly, without differently-shaped
-on-disk bytes — the MED-2 fold).
+on-disk bytes).
 
-| Id | Why no isolable on-disk negative exists (code-grounded) | Fail-path proof (MS6 in-memory test) |
+| Id | Why no isolable on-disk negative exists (code-grounded) | Fail-path proof (in-memory test) |
 |---|---|---|
 | **M1** | `manifest.json` existence + valid-JSON + `format_version`-read-first is the §0 entry gate itself; a missing or non-JSON manifest is a structural `Err` (`ValidateError::ManifestUnreadable` / a parse error from `Manifest::from_json`), **not** a `conformant:false` report with M1 `ran:fail` — so there is no fixture that isolates an M1 *report* failure. M1 is the precondition for every later check, not a checkable report row. | `entry_gate_reports_unreadable_manifest_for_missing_manifest_json` (the `Err` form) |
 | **I3** | I3 (`basin_id` unique) **co-trips I2** on any on-disk mutation: a duplicate `basin_id` in a per-basin `scalar_dynamic` necessarily disagrees with that basin's `basin=<id>` folder, so `check_i2` *also* fails — never I3-alone. The other place a duplicate could live — the `scalar_static` rollup — is never read for its `basin_id` *values* (the rollup's per-basin values are not surfaced as I3 input; only the per-basin in-file ids feed `in_file_basin_ids`), so a rollup duplicate yields `conformant:true`. Either way, no fixture isolates I3. | `i3_negative_on_duplicate_positive_on_distinct` (`check_i3` over a hand-built duplicate list ⇒ `ran:fail`) |
 | **G1** | `Field::new` makes a **label-less gridded field unrepresentable** (a gridded `Field` carries `Some(GridLabel)` by construction — see `check_g1`'s doc), so no on-disk tree with a "positional channel axis" (a gridded field that fails to self-name) is constructible: discovery would never build such a `Field`. The rule still runs (the explicit no-positional-channel-axis check), but it cannot be made to fail on disk. | `g1_passes_only_when_every_gridded_field_self_names` (the in-memory falsifiable form) |
-| **G3** | The MS4 gridded readers **error `MissingGridGeoref`** the moment a present artifact lacks georeferencing, so an on-disk no-georef tree fails **discovery** as an `Err` (`ValidateError::Discovery`) — it never reaches `build_report` to produce a `G3 ran:fail` report. `check_g3`'s falsifiable form is an empty-CRS `GridInfo`, which discovery can never build. | `data_var_without_grid_mapping_target_returns_missing_grid_georef` (the reader-side `Err`) |
-| **Geo1** | The MS4 geoparquet reader **requires** `basin_id`/`delineation`/`geometry` and errors (`MissingGeometryColumn`) otherwise, and reads a single root file (recording `partitioned_by_delineation=false`). So a missing-column or partitioned outlines fails **discovery** as an `Err`, never yielding a `Geo1 ran:fail` report. (An *absent* outlines is an L1 fail; Geo1 then honestly `skipped`.) | covered by the geoparquet-reader error tests + `check_geo1`'s skip path on the L1 fixture (`missing_root_rollup_pins_exactly_l1_and_is_non_conformant`) |
+| **G3** | The gridded readers **error `MissingGridGeoref`** the moment a present artifact lacks georeferencing, so an on-disk no-georef tree fails **discovery** as an `Err` (`ValidateError::Discovery`) — it never reaches `build_report` to produce a `G3 ran:fail` report. `check_g3`'s falsifiable form is an empty-CRS `GridInfo`, which discovery can never build. | `data_var_without_grid_mapping_target_returns_missing_grid_georef` (the reader-side `Err`) |
+| **Geo1** | The geoparquet reader **requires** `basin_id`/`delineation`/`geometry` and errors (`MissingGeometryColumn`) otherwise, and reads a single root file (recording `partitioned_by_delineation=false`). So a missing-column or partitioned outlines fails **discovery** as an `Err`, never yielding a `Geo1 ran:fail` report. (An *absent* outlines is an L1 fail; Geo1 then honestly `skipped`.) | covered by the geoparquet-reader error tests + `check_geo1`'s skip path on the L1 fixture (`missing_root_rollup_pins_exactly_l1_and_is_non_conformant`) |
 
 ### (c) R3-skipped in v0.1 — 3 ids
 
@@ -435,7 +431,7 @@ skip **never** flips `conformant`, so the valid fixture stays `conformant:true`.
 | Id | Skipped leg | Why byte-deep (code-grounded) | `validate.rs` site |
 |---|---|---|---|
 | **M6** | rule (b) per-basin axis **regularity** | discovery surfaces only a two-point `[start,end]` extent + a `sorted_ascending` flag — a constant interior step is not derivable without the full 1-D `time` array. Rule (a) (cadence non-empty) runs and passes. | `check_m6` |
-| **L3** | absence-is-NaN-not-a-missing-file | the metadata-deep legs hold by construction (the walk ignores dot-cruft; every present artifact decoded during discovery); the absence-vs-NaN leg needs a byte-deep read of the cell payloads, which `validate` never performs (LOW-3). | `check_l3` |
+| **L3** | absence-is-NaN-not-a-missing-file | the metadata-deep legs hold by construction (the walk ignores dot-cruft; every present artifact decoded during discovery); the absence-vs-NaN leg needs a byte-deep read of the cell payloads, which `validate` never performs. | `check_l3` |
 | **T2** | cross-artifact **full** time-axis identity | the scalar `[start,end]` extent and the Zarr per-grid geometry are surfaced, but **not** a comparable 1-D gridded `time` axis on the model — full-axis identity needs both 1-D axes. | `check_t2` |
 
 > **Bucket arithmetic (the closed 20).** (a) 12 + (b) 5 + (c) 3 = **20** — every
@@ -475,34 +471,34 @@ every fixture in this suite.
 
 ## Seeding, not enforcement
 
-MS2 ships **no Rust and enforces nothing.** The valid fixture engineers the
-on-disk **preconditions** for the later-enforced §14 checks; **enforcement is
-MS6.** The table below maps each seeded check to the property the valid fixture
-provides and where it is engineered. This is a **seeding** claim — read "seeds the
-precondition for", never "enforces".
+The generator ships **no Rust and enforces nothing.** The valid fixture engineers
+the on-disk **preconditions** for the §14 checks; enforcement lives in `hdx-core`'s
+`validate`. The table below maps each check to the property the valid fixture
+provides and which generator module engineers it. This is a **seeding** claim —
+read "seeds the precondition for", never "enforces".
 
-| Check (§14) | Seeded on-disk precondition (the valid fixture provides…) | Where engineered |
+| Check (§14) | Seeded on-disk precondition (the valid fixture provides…) | Generator module |
 |---|---|---|
-| **L1** | both root rollups (`scalar_static.parquet`, `outlines.geoparquet`) present | scalar + outlines (S2) |
-| **L2** | every basin dir is `basin=<id>` with `scalar_dynamic.parquet` + `gridded_static/`/`gridded_dynamic/` | scalar (S2) + grids (S3) |
-| **L3** | no stray/ragged files; a field's gap is NaN-filled, never a missing file (the Zarr NaN-fill) | grids (S3) |
-| **I1** | `basin_id` is a real in-file column in `scalar_static`, every `scalar_dynamic`, and `outlines` | scalar + outlines (S2) |
-| **I2** | in-file `basin_id` agrees with the `basin=<id>` folder for every basin | scalar (S2) |
-| **I3** | `basin_id` is unique across the dataset (one rollup row per basin) | scalar (S2) |
-| **H1** | every basin carries the identical field schema (same names, dtypes, quadrants) | scalar (S2) + grids (S3) |
-| **H2** | the grid-label set (`{era5}`) is identical across basins | grids (S3) |
-| **T1** | the scalar `time` column is named `time`, full timestamp, non-nullable, sorted ascending | scalar (S2) |
-| **T2** | within each basin the `scalar_dynamic` and Zarr `gridded_dynamic` share the identical time axis; gaps NaN-filled | scalar (S2) + grids (S3) |
-| **G1** | one artifact = one grid; fields self-name (COG band description / CF variable = field name); no positional channel axis | grids (S3) |
-| **G2** | a shared grid label across the static/dynamic subtrees that **does** exhibit cell-for-cell alignment | grids (S3) |
-| **G3** | Zarr CF georef (explicit `lat`/`lon` + `grid_mapping`); COG standard georeferencing tags | grids (S3) |
-| **Geo1** | `outlines.geoparquet` rows `(basin_id, delineation, geometry)`; label column `delineation`; not partitioned | outlines (S2) |
-| **M5** | the manifest `crs` (EPSG:4326) matches the CRS carried in every georeferenced file | manifest (S2) + grids (S3) |
-| **M6** | the manifest `cadence` ("daily") is consistent with the realized daily `time` axes | manifest + scalar (S2) |
+| **L1** | both root rollups (`scalar_static.parquet`, `outlines.geoparquet`) present | scalar + outlines |
+| **L2** | every basin dir is `basin=<id>` with `scalar_dynamic.parquet` + `gridded_static/`/`gridded_dynamic/` | scalar + grids |
+| **L3** | no stray/ragged files; a field's gap is NaN-filled, never a missing file (the Zarr NaN-fill) | grids |
+| **I1** | `basin_id` is a real in-file column in `scalar_static`, every `scalar_dynamic`, and `outlines` | scalar + outlines |
+| **I2** | in-file `basin_id` agrees with the `basin=<id>` folder for every basin | scalar |
+| **I3** | `basin_id` is unique across the dataset (one rollup row per basin) | scalar |
+| **H1** | every basin carries the identical field schema (same names, dtypes, quadrants) | scalar + grids |
+| **H2** | the grid-label set (`{era5}`) is identical across basins | grids |
+| **T1** | the scalar `time` column is named `time`, full timestamp, non-nullable, sorted ascending | scalar |
+| **T2** | within each basin the `scalar_dynamic` and Zarr `gridded_dynamic` share the identical time axis; gaps NaN-filled | scalar + grids |
+| **G1** | one artifact = one grid; fields self-name (COG band description / CF variable = field name); no positional channel axis | grids |
+| **G2** | a shared grid label across the static/dynamic subtrees that **does** exhibit cell-for-cell alignment | grids |
+| **G3** | Zarr CF georef (explicit `lat`/`lon` + `grid_mapping`); COG standard georeferencing tags | grids |
+| **Geo1** | `outlines.geoparquet` rows `(basin_id, delineation, geometry)`; label column `delineation`; not partitioned | outlines |
+| **M5** | the manifest `crs` (EPSG:4326) matches the CRS carried in every georeferenced file | manifest + grids |
+| **M6** | the manifest `cadence` ("daily") is consistent with the realized daily `time` axes | manifest + scalar |
 
-> The valid fixture also carries the two **MED-5** at-risk properties — parquet
+> The valid fixture also carries the two at-risk properties — parquet
 > `time` **row-group statistics** (§8) and Zarr **consolidated metadata** (§8) —
-> which §8 mandates and which MS3/MS4 confirm from the Rust side (see Rule 3).
+> which §8 mandates and which the Rust readers confirm (see Rule 3).
 
 ---
 
@@ -521,7 +517,8 @@ The generator lives **only** under `conformance/generator/`. It is:
 - **not an HDX writer** — HDX defines no writer in v0.1. The generator does not
   implement or execute any contract logic (that lives exclusively in `hdx-core`,
   per architecture §2). It engineers the on-disk *preconditions* for the spec
-  checks so MS3–MS6 can read and enforce them; it enforces nothing itself.
+  checks so the Rust readers and `validate` can read and enforce them; it enforces
+  nothing itself.
 
 Its own checks are **writer-side self-assertions** (Python), distinct from the
 Rust-side enforcement in `validate`. Diagnostics in the generator go through the
@@ -529,12 +526,11 @@ standard `logging` machinery (to stderr), never raw `print`; the single
 user-facing status line is *output* — mirroring the architecture §2 split between
 diagnostics and output.
 
-This is the milestones.md MS2 "generator masquerading as a writer" risk, closed
-explicitly.
+This closes the "generator masquerading as a writer" risk explicitly.
 
-### Rule 2 — LOW-2: derived, not hand-authored (HARD RULE)
+### Rule 2 — Derived, not hand-authored (HARD RULE)
 
-Every invalid fixture (and the larger MS8 invalid family later) **MUST** be
+Every invalid fixture **MUST** be
 generated **programmatically from the single valid baseline via exactly one
 surgical mutation each**. The generator builds the valid baseline once, then
 derives each invalid by applying one targeted mutation (e.g. overwrite
@@ -550,26 +546,26 @@ self-assertion (`assertions.assert_differs_in_exactly_one_way`) confirms each
 invalid differs from the baseline in exactly the one intended way, aborting the
 regenerate otherwise.
 
-### Rule 3 — MED-5: Rust-side confirmation hand-off (MS3 / MS4)
+### Rule 3 — Rust-side confirmation hand-off
 
 The generator's self-assertions are **Python-side**: they assert what the
 *writer* intended, which cannot prove what a *Rust reader* recovers from the same
 bytes. Two engineered properties are most at risk of a writer/reader mismatch:
 
-1. **Parquet `time` row-group statistics → confirmed in MS3 (Rust).** pyarrow may
+1. **Parquet `time` row-group statistics.** pyarrow may
    or may not emit usable min/max statistics for the timestamp logical type under
    the chosen settings. The generator self-asserts the *written file* carries them
-   (`assertions.assert_time_column_and_statistics`); **MS3 MUST confirm from the
-   Rust side** (`arrow`/`parquet`) that the time extent is sourced from those
+   (`assertions.assert_time_column_and_statistics`); the Rust side confirms
+   (`arrow`/`parquet`) that the time extent is sourced from those
    statistics (not a bounded-scan fallback) on the valid fixture.
-2. **Zarr v3 consolidated metadata → confirmed in MS4 (Rust).** `zarr-python`'s v3
+2. **Zarr v3 consolidated metadata.** `zarr-python`'s v3
    consolidated-metadata layout must be readable by Rust `zarrs`. The generator
    self-asserts consolidated metadata is present
-   (`assertions.assert_zarr_consolidated_and_sharded`); **MS4 MUST confirm from
-   the Rust side** that it reads the store's metadata via the §8 consolidated path
-   (or explicitly classify it an R3 byte-deep skip, with a stated reason).
+   (`assertions.assert_zarr_consolidated_and_sharded`); the Rust side confirms
+   that it reads the store's metadata via the §8 consolidated path
+   (or explicitly classifies it an R3 byte-deep skip, with a stated reason).
 
-> **The hand-off rule:** if MS3/MS4 find the Rust reader cannot recover a property
+> **The hand-off rule:** if the Rust reader cannot recover a property
 > the generator asserted, the fix is to **REGENERATE the fixture** (adjust the
 > generator and re-emit) — **never** to add a reader workaround. A mismatch is a
 > generator bug, not a reader bug.
@@ -582,7 +578,7 @@ bytes. Two engineered properties are most at risk of a writer/reader mismatch:
 `name`, `created_at`, `producer_version`, `crs`, `cadence`. No content hash, no
 data-version, no field catalog, no basin list, no transform/role/semantic/
 provenance key. Field names are opaque producer strings; the `{source}_{variable}`
-and companion-mask `{field}_was_filled` patterns appear **only to prove later
-milestones give them no special handling**. `delineation` labels are neutral, not
+and companion-mask `{field}_was_filled` patterns appear **only to prove the verbs
+give them no special handling**. `delineation` labels are neutral, not
 trusted "hydrofabric" sources. `format_version` is a **hard cut** (`"0.1"` in the
 baseline).
