@@ -13,7 +13,7 @@
 //! 1. read `<path>/manifest.json` (a filesystem failure → [`DescribeError::ManifestUnreadable`]);
 //! 2. [`Manifest::from_json`] — whose **first** act is the §0/§14 M2 `format_version`
 //!    hard cut; an unknown version returns **before [`discover`] is ever called**;
-//! 3. [`discover`] (MS3+MS4) — only now is any other file touched;
+//! 3. [`discover`] — only now is any other file touched;
 //! 4. [`Description::from_discovery`] — the pure assembler.
 //!
 //! [`describe_json`] is the same verb plus serialization to the stable R4 JSON string.
@@ -36,8 +36,8 @@
 //! ## Facts only — no verdict (spec §10)
 //!
 //! `describe` **reports facts, never a conformance verdict**. There is no `conformant`
-//! key, no §14 check outcome, anywhere in this shape (that is `validate`, a later
-//! milestone). A discovery gap is reported as a **fact**: a basin with no
+//! key, no §14 check outcome, anywhere in this shape (a verdict is `validate`'s job, not
+//! `describe`'s). A discovery gap is reported as a **fact**: a basin with no
 //! `scalar_dynamic.parquet` has its time-extent entry serialized with a `null` extent
 //! (the §6.1 ragged fact), and an absent `outlines.geoparquet` yields an empty
 //! `delineations` array — never a raised error or a verdict.
@@ -136,8 +136,8 @@ impl Description {
     /// pure mapping, **no IO** (spec §10, architecture §3.5/§5).
     ///
     /// Reads through the documented public accessors only; it does **not** reshape
-    /// [`Discovery`] (the MS3/MS4 contract). Each member is sourced from exactly one
-    /// place (the floor stress test, spec §10/§11):
+    /// [`Discovery`]. Each member is sourced from exactly one place (the floor stress
+    /// test, spec §10/§11):
     ///
     /// | `Description` member | Single source |
     /// |---|---|
@@ -290,8 +290,8 @@ impl Description {
 ///    wrapped in [`DescribeError::Manifest`]. **This stage returns on error before
 ///    [`discover`] is called** (the cut precedes discovery by construction — the
 ///    `discover` call below is unreachable until `from_json` succeeds).
-/// 3. [`discover`] — the MS3+MS4 layout walk + metadata readers. Any structural
-///    failure surfaces as [`DescribeError::Discovery`].
+/// 3. [`discover`] — the layout walk + metadata readers. Any structural failure
+///    surfaces as [`DescribeError::Discovery`].
 /// 4. [`Description::from_discovery`] — the pure assembler (`Manifest ⊕ Discovery →
 ///    Description`), which never fails.
 ///
@@ -340,7 +340,7 @@ pub fn describe(path: impl AsRef<Path>) -> Result<Description, DescribeError> {
 }
 
 /// Describes a dataset and serializes the result to the stable JSON string (the R4 wire
-/// shape) the CLI (MS7) and the PyO3 binding (MS9) surface.
+/// shape) the CLI and the PyO3 binding surface.
 ///
 /// A thin wrapper over [`describe`] + [`Description::to_json_string`]; the same §0 entry
 /// discipline and facts-only contract apply.
@@ -634,7 +634,7 @@ mod tests {
             .join(rel)
     }
 
-    /// The exact six-field manifest of the MS2 valid fixture (decoded facts).
+    /// The exact six-field manifest of the valid fixture (decoded facts).
     const VALID_MANIFEST: &str = r#"{
   "format_version": "0.1",
   "name": "hdx-conformance-valid-minimal",
@@ -896,7 +896,7 @@ mod tests {
         }
     }
 
-    // --- MS5-S2: the `describe` boundary verb ---------------------------------------
+    // --- the `describe` boundary verb -----------------------------------------------
 
     /// §0 entry-discipline test (spec §0/§14 M2 hard cut). `describe` over the
     /// `invalid/wrong-format-version/` fixture (`format_version:"0.2"`) returns the
@@ -921,7 +921,7 @@ mod tests {
         }
     }
 
-    /// Valid-fixture happy path: `describe` of the MS2 valid fixture is `Ok` and every
+    /// Valid-fixture happy path: `describe` of the valid fixture is `Ok` and every
     /// fact round-trips (manifest, basins, the five-field unified catalog in order, the
     /// `era5` grid geometry, the three ragged extents, the delineations).
     #[test]
@@ -1002,7 +1002,7 @@ mod tests {
 
     /// Facts-only / no-verdict: `describe_json` parsed back to a `Value` has **no**
     /// `conformant` key and no §14 check-outcome list (spec §10). `describe` reports
-    /// facts; the verdict is a later milestone.
+    /// facts; the verdict is `validate`'s job.
     #[test]
     fn describe_json_emits_facts_only_no_verdict() {
         let json = describe_json(conformance("valid/minimal")).expect("describe_json succeeds");
@@ -1093,7 +1093,7 @@ mod tests {
         );
     }
 
-    // --- MS5-S3: the R4 contract lock (describe.schema.json + golden snapshot) -------
+    // --- the R4 contract lock (describe.schema.json + golden snapshot) ---------------
 
     /// Resolves a path under the repository-root `schemas/` directory.
     ///
@@ -1133,7 +1133,7 @@ mod tests {
     }
 
     /// R4 schema test (jsonschema dev-dep). The committed golden describe output of the
-    /// MS2 valid fixture **validates** against the committed `describe.schema.json`,
+    /// valid fixture **validates** against the committed `describe.schema.json`,
     /// pinning the describe half of R4 (architecture §7).
     #[test]
     fn golden_validates_against_describe_schema() {
