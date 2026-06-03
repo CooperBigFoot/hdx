@@ -2,17 +2,11 @@
 //!
 //! Every fallible path in the contract logic returns [`CoreError`]. Variants use
 //! named fields (never tuples) and each is doc-commented with *when* it fires, so
-//! a reader can map an error back to the spec rule that produced it. Several
-//! variants are intentional skeletons for later milestones: they are listed here
-//! up front so the error surface is stable and later steps slot in without
-//! reshaping the enum.
+//! a reader can map an error back to the spec rule that produced it.
 
 /// Errors produced by `hdx-core` contract logic.
 ///
 /// Library code never panics; every recoverable failure is one of these variants.
-/// Variants are grouped by the milestone that first fires them. Variants marked as
-/// reserved are wired in by later milestones; they are declared now to keep the
-/// error surface stable across steps.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CoreError {
@@ -93,10 +87,10 @@ pub enum CoreError {
     /// Fires when a parquet artifact cannot be opened or its metadata fails to
     /// decode (spec §4/§8, architecture §1): the byte source is not a valid parquet
     /// file, its footer/metadata is malformed, or the arrow schema cannot be read.
-    /// MS3's scalar reader uses this as its typed surface so a corrupt or
-    /// non-parquet input is reported, never panicked over. The variant stays
-    /// **inert/agnostic**: it carries only the artifact name and an opaque detail
-    /// string from the underlying reader — no domain field, no provenance.
+    /// The scalar reader uses this as its typed surface so a corrupt or non-parquet
+    /// input is reported, never panicked over. The variant stays **inert/agnostic**:
+    /// it carries only the artifact name and an opaque detail string from the
+    /// underlying reader — no domain field, no provenance.
     #[error("failed to read parquet metadata for {artifact:?}: {detail}")]
     ParquetRead {
         /// A name for the artifact that failed (a path or `"<in-memory>"`); used
@@ -111,7 +105,7 @@ pub enum CoreError {
     /// entries cannot be listed (a permissions/IO failure). The walk reports this
     /// typed error instead of panicking; it is a structural failure of the walk
     /// itself, distinct from the *facts* the walk records (a missing root rollup is
-    /// recorded as absent, never raised — L1 enforcement is MS6). The variant stays
+    /// recorded as absent, never raised — spec §4/§14 L1). The variant stays
     /// **inert/agnostic** (spec §1): it carries only the offending path and an
     /// opaque detail string from the underlying filesystem error — no domain field.
     #[error("failed to walk dataset layout at {path:?}: {detail}")]
@@ -144,7 +138,7 @@ pub enum CoreError {
     /// Fires when a Zarr v3 store cannot be opened or its metadata fails to decode
     /// (spec §7/§8, architecture §1): the store's root `zarr.json` is missing or
     /// malformed, its consolidated metadata cannot be parsed, or a 1-D coordinate
-    /// array's metadata is unreadable. MS4's Zarr reader uses this as its typed
+    /// array's metadata is unreadable. The Zarr reader uses this as its typed
     /// surface so a corrupt or non-Zarr input is reported, never panicked over. The
     /// reader reads metadata + 1-D coordinate arrays only — never a data chunk. The
     /// variant stays **inert/agnostic** (spec §1): it carries only the artifact name
@@ -160,7 +154,7 @@ pub enum CoreError {
 
     /// Fires when a COG / GeoTIFF artifact cannot be opened or its tags fail to
     /// decode (spec §7/§8, architecture §1): the byte source is not a valid TIFF,
-    /// its IFD is malformed, or a required tag cannot be read. MS4's COG reader uses
+    /// its IFD is malformed, or a required tag cannot be read. The COG reader uses
     /// this as its typed surface so a corrupt or non-TIFF input is reported, never
     /// panicked over. The reader reads tags + band metadata + georef only — never a
     /// pixel raster. The variant stays **inert/agnostic** (spec §1): it carries only
@@ -177,7 +171,7 @@ pub enum CoreError {
     /// Fires when the `outlines.geoparquet` artifact cannot be opened or its
     /// metadata fails to decode (spec §9, architecture §1): the byte source is not a
     /// valid parquet file, its footer/`geo` key-value metadata is malformed, or the
-    /// arrow schema cannot be read. MS4's geoparquet reader uses this as its typed
+    /// arrow schema cannot be read. The geoparquet reader uses this as its typed
     /// surface so a corrupt input is reported, never panicked over. The reader reads
     /// the schema + the 1-D `basin_id`/`delineation` columns + the `geo` KV only —
     /// never the `geometry` blob. The variant stays **inert/agnostic** (spec §1): it
@@ -242,9 +236,8 @@ pub enum CoreError {
         column: String,
     },
 
-    // --- Reserved for later milestones (skeleton variants) ---
-    /// Reserved for MS6: fires when an in-file `basin_id` disagrees with its
-    /// `basin=<id>` partition folder (spec §3/§14 I2).
+    /// Fires when an in-file `basin_id` disagrees with its `basin=<id>` partition
+    /// folder (spec §3/§14 I2).
     #[error("basin_id {in_file:?} does not match its partition folder {folder:?}")]
     BasinIdFolderMismatch {
         /// The `basin_id` value read from inside the file.
@@ -253,33 +246,30 @@ pub enum CoreError {
         folder: String,
     },
 
-    /// Reserved for MS6: fires when a basin's field schema differs from the
-    /// dataset's homogeneous schema (spec §5/§14 H1).
+    /// Fires when a basin's field schema differs from the dataset's homogeneous
+    /// schema (spec §5/§14 H1).
     #[error("ragged schema: basin {basin:?} does not share the dataset field schema")]
     RaggedSchema {
         /// The `basin_id` whose schema diverged.
         basin: String,
     },
 
-    /// Reserved for MS6: fires when the set of grid labels differs across basins
-    /// (spec §8/§14 H2).
+    /// Fires when the set of grid labels differs across basins (spec §8/§14 H2).
     #[error("grid-label set differs across basins for label {label:?}")]
     GridLabelMismatchAcrossBasins {
         /// The grid label that is not present uniformly across basins.
         label: String,
     },
 
-    /// Reserved for MS6: fires when a required root rollup
-    /// (`scalar_static.parquet` or `outlines.geoparquet`) is absent
-    /// (spec §4/§14 L1).
+    /// Fires when a required root rollup (`scalar_static.parquet` or
+    /// `outlines.geoparquet`) is absent (spec §4/§14 L1).
     #[error("missing root rollup {artifact:?}")]
     MissingRootRollup {
         /// The name of the missing root artifact.
         artifact: String,
     },
 
-    /// Reserved for MS6: fires when a `time` axis is not sorted strictly
-    /// ascending (spec §6/§14 T1).
+    /// Fires when a `time` axis is not sorted strictly ascending (spec §6/§14 T1).
     #[error("non-monotonic time axis in {artifact:?}")]
     NonMonotonicTime {
         /// The artifact whose `time` axis was not monotonically increasing.
@@ -295,7 +285,7 @@ pub enum CoreError {
 /// the `manifest.json` file is absent/unreadable) and otherwise **wraps `CoreError`
 /// unchanged**, so the §0 hard-cut [`CoreError::UnknownFormatVersion`] and every
 /// discovery error surface verbatim through this enum. The wrapping is deliberate (a
-/// thin newtype-style enum over `CoreError`, the decision recorded in MS5-S2): the
+/// thin newtype-style enum over `CoreError`): the
 /// caller can match on `Manifest(UnknownFormatVersion { .. })` to observe the hard cut
 /// without `describe` having to re-export or re-interpret the inner variant. Library
 /// code never panics; every recoverable failure is one of these variants.
@@ -364,13 +354,13 @@ pub enum DescribeError {
 /// ([`ManifestUnreadable`]) plus thin wrappers over [`CoreError`] for the §0 hard cut /
 /// malformed manifest ([`Manifest`]) and structural discovery faults ([`Discovery`]).
 ///
-/// **The report-vs-error split is load-bearing (recorded in MS6-S1).** A **violated
+/// **The report-vs-error split is load-bearing.** A **violated
 /// `MUST` that ran** is *never* a `ValidateError`: it is a recorded
 /// [`CheckOutcome`](crate::validate::CheckOutcome) with
 /// [`CheckResult::Fail`](crate::validate::CheckResult::Fail), which makes the
 /// [`ValidationReport`](crate::validate::ValidationReport) non-`conformant`. A
 /// `ValidateError` is only for **structural / entry** failures — an unreadable manifest,
-/// the §0 hard version cut, an undecodable present artifact — so the CLI (MS7) can map a
+/// the §0 hard version cut, an undecodable present artifact — so the CLI can map a
 /// `ValidateError` to a distinct exit code from a `conformant: false` verdict. Library
 /// code never panics; every recoverable failure is one of these variants.
 ///
@@ -420,7 +410,7 @@ pub enum ValidateError {
     #[error("discovery failed: {0}")]
     Discovery(#[source] CoreError),
 
-    /// Reserved for MS6-S3: fires when an assembled
+    /// Fires when an assembled
     /// [`ValidationReport`](crate::validate::ValidationReport) cannot be serialized to
     /// its JSON wire shape. Like [`DescribeError::Serialize`], this branch is
     /// effectively unreachable (the report carries only stable enum strings, ids, and
