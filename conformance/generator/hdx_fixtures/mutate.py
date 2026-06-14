@@ -102,10 +102,11 @@ from hdx_fixtures.grids import (
 from hdx_fixtures.manifest import MANIFEST_FIELDS
 from hdx_fixtures.scalar import BASINS, DYNAMIC_FIELD, TIME_TYPE, basin_dir
 
-# The mutated format_version for the wrong-format-version invalid. Any value other
-# than the baseline "0.1" is rejected outright by M2 (the §0 hard cut); "0.2" is a
-# plausible future version that the v0.1 reader MUST reject.
-WRONG_FORMAT_VERSION: str = "0.2"
+# The mutated format_version for the wrong-format-version invalid. Any value the
+# reader does not implement is rejected outright by M2 (the §0 hard cut). "9.9" is a
+# version no HDX build implements (0.1 and 0.2 are the recognized contracts), so the
+# reader MUST reject it.
+WRONG_FORMAT_VERSION: str = "9.9"
 
 # The single root rollup deleted by the missing-root-rollup invalid. L1 requires
 # BOTH scalar_static.parquet AND outlines.geoparquet at the root (spec §4); this

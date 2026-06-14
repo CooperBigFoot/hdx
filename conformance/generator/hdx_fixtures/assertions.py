@@ -1048,8 +1048,8 @@ def assert_differs_in_exactly_one_way(
 
     * :attr:`Invalid.WRONG_FORMAT_VERSION` — the trees have the **same file set**;
       exactly **one** file (``manifest.json``) differs, and it differs **only** in
-      the ``format_version`` value (``"0.1"`` → ``"0.2"``), every other manifest
-      field byte-identical (pins **M2**).
+      the ``format_version`` value (``"0.1"`` → :data:`WRONG_FORMAT_VERSION`),
+      every other manifest field byte-identical (pins **M2**).
     * :attr:`Invalid.EXTRA_MANIFEST_FIELD` — the trees have the **same file set**;
       exactly **one** file (``manifest.json``) differs, and its key set is the six
       floor fields **plus** the one extra :data:`EXTRA_MANIFEST_FIELD` key (whose

@@ -1,10 +1,12 @@
 //! The one contract-version axis for HDX, encoded as a hard version cut.
 //!
-//! [`FormatVersion`] has exactly one arm, [`FormatVersion::V0_1`]. Parsing a raw
-//! `format_version` string succeeds **only** on `"0.1"` and errors on anything
-//! else (spec §0/§14 M2): the version is a hard cut, read before any other field
-//! and rejected outright when unknown. There are **no multi-version readers** —
-//! that state is not representable, because the enum has no other arm to land in.
+//! [`FormatVersion`] enumerates the contract versions this build implements:
+//! [`FormatVersion::V0_1`] and [`FormatVersion::V0_2`] (the geometry-optional
+//! relaxation). Parsing a raw `format_version` string succeeds **only** on
+//! `"0.1"` or `"0.2"` and errors on anything else (spec §0/§14 M2): the version
+//! is a hard cut, read before any other field and rejected outright when
+//! unknown. A parsed value is, by construction, one of the versions this build
+//! understands — an unknown string is never representable as a [`FormatVersion`].
 //!
 //! The parse is exact-string (`"0.10"` is not `"0.1"`); HDX performs no numeric
 //! coercion.
@@ -16,25 +18,31 @@ use tracing::warn;
 
 use crate::error::CoreError;
 
-/// The canonical `format_version` string this build implements.
+/// The `format_version` string for the 0.1 contract.
 const V0_1_STR: &str = "0.1";
 
-/// The only contract-version axis HDX recognizes (spec §0/§11).
+/// The `format_version` string for the 0.2 contract (geometry-optional).
+const V0_2_STR: &str = "0.2";
+
+/// The contract-version axis HDX recognizes (spec §0/§11).
 ///
-/// The single arm makes the hard cut a type-level invariant: a value of this
-/// type is, by construction, the one version this build implements. Parsing is
-/// the only way to obtain one, and parsing rejects every string but `"0.1"`, so
-/// no multi-version reader can exist.
+/// The closed arm set makes the hard cut a type-level invariant: a value of this
+/// type is, by construction, one of the versions this build implements. Parsing
+/// is the only way to obtain one, and parsing rejects every string but `"0.1"`
+/// and `"0.2"`, so no reader for an unknown version can exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatVersion {
-    /// HDX `format_version = "0.1"` — the sole version defined by this spec.
+    /// HDX `format_version = "0.1"` — the original geometry-mandatory contract.
     V0_1,
+    /// HDX `format_version = "0.2"` — the geometry-optional contract.
+    V0_2,
 }
 
 impl FormatVersion {
     pub fn as_str(&self) -> &'static str {
         match self {
             FormatVersion::V0_1 => V0_1_STR,
+            FormatVersion::V0_2 => V0_2_STR,
         }
     }
 }
@@ -44,17 +52,18 @@ impl FromStr for FormatVersion {
 
     /// Parses a raw `format_version` string under the hard version cut.
     ///
-    /// The match is exact: only `"0.1"` is accepted (no numeric coercion, so
-    /// `"0.10"`, `"0.1.0"`, and `"1.0"` all fail).
+    /// The match is exact: only `"0.1"` and `"0.2"` are accepted (no numeric
+    /// coercion, so `"0.10"`, `"0.1.0"`, and `"1.0"` all fail).
     ///
     /// # Errors
     ///
     /// | Condition | Error |
     /// |---|---|
-    /// | `s` is any string other than `"0.1"` | [`CoreError::UnknownFormatVersion`] (with `found` echoing `s`) |
+    /// | `s` is any string other than `"0.1"` or `"0.2"` | [`CoreError::UnknownFormatVersion`] (with `found` echoing `s`) |
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             V0_1_STR => Ok(FormatVersion::V0_1),
+            V0_2_STR => Ok(FormatVersion::V0_2),
             other => {
                 warn!(found = other, "rejecting unknown format_version (hard cut)");
                 Err(CoreError::UnknownFormatVersion {
@@ -72,7 +81,8 @@ impl TryFrom<&str> for FormatVersion {
     ///
     /// # Errors
     ///
-    /// Returns [`CoreError::UnknownFormatVersion`] for any string but `"0.1"`.
+    /// Returns [`CoreError::UnknownFormatVersion`] for any string but `"0.1"`
+    /// or `"0.2"`.
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         value.parse()
     }
@@ -110,9 +120,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_0_2_and_round_trips() {
+        // The HDX 0.2 contract arm: `"0.2"` parses to `FormatVersion::V0_2` and
+        // round-trips bit-for-bit through `as_str()` and `Display`.
+        assert_eq!(
+            FormatVersion::from_str("0.2").expect("\"0.2\" must parse to the V0_2 arm"),
+            FormatVersion::V0_2
+        );
+        assert_eq!(FormatVersion::V0_2.as_str(), "0.2");
+        assert_eq!(FormatVersion::V0_2.to_string(), "0.2");
+        // Display output re-parses to the same value.
+        assert_eq!(
+            FormatVersion::from_str(&FormatVersion::V0_2.to_string())
+                .expect("Display output must re-parse"),
+            FormatVersion::V0_2
+        );
+    }
+
+    #[test]
     fn rejects_every_other_string_with_echoed_input() {
         // Exact-string match, no numeric coercion: "0.10" != "0.1", etc.
-        for input in ["0.2", "1.0", "", "0.1.0", "0.10"] {
+        // ("0.2" is now an accepted contract version; see parses_0_2_and_round_trips.)
+        for input in ["1.0", "", "0.1.0", "0.10"] {
             match FormatVersion::from_str(input) {
                 Err(CoreError::UnknownFormatVersion { found }) => {
                     assert_eq!(found, input, "the error must echo the rejected input");
@@ -124,8 +153,8 @@ mod tests {
 
     #[test]
     fn try_from_rejects_unknown_versions() {
-        match FormatVersion::try_from("0.2") {
-            Err(CoreError::UnknownFormatVersion { found }) => assert_eq!(found, "0.2"),
+        match FormatVersion::try_from("1.0") {
+            Err(CoreError::UnknownFormatVersion { found }) => assert_eq!(found, "1.0"),
             other => panic!("expected UnknownFormatVersion, got {other:?}"),
         }
     }

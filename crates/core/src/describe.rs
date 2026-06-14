@@ -899,14 +899,14 @@ mod tests {
     // --- the `describe` boundary verb -----------------------------------------------
 
     /// §0 entry-discipline test (spec §0/§14 M2 hard cut). `describe` over the
-    /// `invalid/wrong-format-version/` fixture (`format_version:"0.2"`) returns the
+    /// `invalid/wrong-format-version/` fixture (`format_version:"9.9"`) returns the
     /// **version** error — NOT a discovery error — proving the hard cut wins and runs
     /// **before** discovery.
     ///
     /// The cut is statically guaranteed to precede discovery by the function order in
     /// [`describe`]: stage 2 (`Manifest::from_json`) returns via `?` on an unknown
     /// version, so stage 3 (`discover`) is never reached. This test confirms the
-    /// observable consequence: the error is `Manifest(UnknownFormatVersion{found:"0.2"})`,
+    /// observable consequence: the error is `Manifest(UnknownFormatVersion{found:"9.9"})`,
     /// never a `Discovery(..)`.
     #[test]
     fn describe_hard_cuts_unknown_format_version_before_discovery() {
@@ -915,7 +915,7 @@ mod tests {
 
         match err {
             DescribeError::Manifest(CoreError::UnknownFormatVersion { found }) => {
-                assert_eq!(found, "0.2", "the raw rejected version surfaces unchanged");
+                assert_eq!(found, "9.9", "the raw rejected version surfaces unchanged");
             }
             other => panic!("expected the version hard cut, not a discovery error: {other:?}"),
         }

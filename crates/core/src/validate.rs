@@ -1501,7 +1501,7 @@ mod tests {
         // UnknownFormatVersion, never a discovery error or a `conformant:false` report.
         match validate(conformance("invalid/wrong-format-version")) {
             Err(ValidateError::Manifest(CoreError::UnknownFormatVersion { found })) => {
-                assert_eq!(found, "0.2");
+                assert_eq!(found, "9.9");
             }
             other => panic!("expected Manifest(UnknownFormatVersion), got {other:?}"),
         }
@@ -1939,7 +1939,7 @@ mod tests {
         // conformant:true report. The CLI maps this Err to a distinct exit code.
         match validate(conformance("invalid/wrong-format-version")) {
             Err(ValidateError::Manifest(CoreError::UnknownFormatVersion { found })) => {
-                assert_eq!(found, "0.2");
+                assert_eq!(found, "9.9");
             }
             other => panic!("expected Manifest(UnknownFormatVersion), got {other:?}"),
         }
@@ -1949,10 +1949,10 @@ mod tests {
     fn m2_fail_outcome_form_proven_by_a_hand_built_wrong_version_manifest() {
         // The M2 fail-outcome FORM (a conformant:false consequence) is proven by feeding
         // a hand-built wrong-version manifest through the M2 rule (Manifest::from_json):
-        // it rejects "0.2" at the boundary, the §0 hard cut. The on-disk negative through
+        // it rejects "9.9" at the boundary, the §0 hard cut. The on-disk negative through
         // the verb is the Err above.
         let wrong = r#"{
-            "format_version": "0.2",
+            "format_version": "9.9",
             "name": "ds",
             "created_at": "2026-06-01T00:00:00Z",
             "producer_version": "p",
@@ -2422,7 +2422,7 @@ mod tests {
         // wrong-format-version → the §0 hard cut wins: an entry-gate Err, never a report.
         match validate_json(conformance("invalid/wrong-format-version")) {
             Err(ValidateError::Manifest(CoreError::UnknownFormatVersion { found })) => {
-                assert_eq!(found, "0.2");
+                assert_eq!(found, "9.9");
             }
             other => panic!("expected the §0 hard cut Err, got {other:?}"),
         }

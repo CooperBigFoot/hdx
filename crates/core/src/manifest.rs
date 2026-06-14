@@ -290,7 +290,7 @@ mod tests {
         // `format_version` is read and hard-cut FIRST (M1/M2): even though `crs`
         // is also empty here, the version error must be the one returned.
         let json = r#"{
-            "format_version": "0.2",
+            "format_version": "9.9",
             "name": "ds",
             "created_at": "2026-06-01T00:00:00Z",
             "producer_version": "tool/1.0",
@@ -300,7 +300,7 @@ mod tests {
         match Manifest::from_json(json) {
             Err(CoreError::UnknownFormatVersion { found }) => {
                 assert_eq!(
-                    found, "0.2",
+                    found, "9.9",
                     "the version error must win over the empty crs"
                 );
             }
