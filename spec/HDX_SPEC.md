@@ -18,7 +18,16 @@
 1. `format_version` **MUST** be readable before anything else in the dataset.
 2. `format_version` is a **HARD version cut**: a reader **MUST** reject any
    version it does not implement. There are **no multi-version readers**. This
-   spec defines `format_version = "0.1"` only.
+   spec defines `format_version = "0.1"` and `format_version = "0.2"`.
+   - **`"0.2"` (geometry-optional).** `0.2` relaxes the geometry mandate:
+     `outlines.geoparquet` becomes **OPTIONAL** (§4 L1, §9 Geo1, §3 I1), so a
+     pure-scalar series (e.g. streamflow with no delineation) is conformant. The
+     basin-set source-of-truth moves from `outlines.basin_id` to the still-mandatory
+     `scalar_static.basin_id`; `describe.delineations` MAY be empty. Honors the
+     hard-version-cut discipline: **a relaxation still bumps the version** — a `0.1`
+     reader still rejects a `0.2` dataset, and a `0.2` reader admits both shapes.
+     This is the first deliberate contract change since `0.1` froze; the engine
+     mints `"0.2"` **wholesale** (every producer build, geometry-bearing or not).
 3. HDX versions **the contract, not the content**. There is **no content hash**
    and **no data-version field** in HDX. (Resolved open question 5.)
    - "data version" (`v1`/`v2`) is the experiment workspace's label — not HDX's.
@@ -122,6 +131,11 @@ on them.
 - `basin_id` is the **authoritative in-file id**; the `basin=<id>` folder gives
   locality. A validator **MUST** cross-check that the in-file `basin_id` agrees
   with its `basin=<id>` partition folder.
+- **Under `0.2`**, the `outlines` leg of the in-file `basin_id` check (I1) is
+  **conditional** on geometry being present: `outlines.geoparquet` is OPTIONAL
+  (§9), so its `basin_id` column is checked only when outlines ship. The
+  `scalar_static` and `scalar_dynamic` `basin_id` legs stay **unconditionally**
+  enforced, and `scalar_static.basin_id` is the basin-set source-of-truth.
 
 ---
 
@@ -150,6 +164,15 @@ structure *is* the contract; only the file format changes across the 2×2 (scala
   `outlines.geoparquet`.
 - Only the *large* per-basin data lives under `basin=<id>/`:
   `scalar_dynamic.parquet`, `gridded_static/`, `gridded_dynamic/`.
+
+**Geometry-optional under `0.2`.** `scalar_static.parquet` is the dataset-level
+floor and is **always required** (it carries the basin-set source-of-truth
+`basin_id`, §3). Under `format_version = "0.2"`, `outlines.geoparquet` becomes
+**OPTIONAL**: a geometry-less dataset (a pure-scalar series) omits it and is still
+conformant. The L1 conformance check (§14) splits accordingly — `scalar_static` is
+unconditional, the `outlines` leg is conditional on a **geometry-expected**
+predicate carried by the schema. Under `0.1`, `outlines.geoparquet` remains
+mandatory.
 
 `scalar_static` rolls up to one table because static-scalar data *is* a
 basins×attributes table, the access pattern is cross-basin (cohort/clustering),
@@ -261,6 +284,12 @@ encoding rules:
   or NaN'd to any one outline.
 - **Clipping / masking / area-weighting is a downstream operation** (trivial
   because of §7.3) — out of HDX scope.
+- **Under `0.2`, outlines are OPTIONAL** (§0, §4). When `outlines.geoparquet` is
+  absent the Geo1 check (§14) is **skipped** (None → Skipped), not failed; the
+  dataset is a geometry-less pure-scalar series. When outlines DO ship, the full
+  Geo1 shape (`(basin_id, delineation, geometry)`, `delineation`-labeled, not
+  partitioned by delineation) is enforced unchanged. Outlines are load-bearing
+  only for downstream clip/mask/area-reduce, which HDX does not own (§13).
 
 ---
 
@@ -313,7 +342,7 @@ These are the **only** manifest fields. Field meanings and rules:
 
 | Field | Rule |
 |---|---|
-| `format_version` | MUST be read first; **hard cut** (reject unknown). `"0.1"` here. |
+| `format_version` | MUST be read first; **hard cut** (reject unknown). `"0.1"` or `"0.2"` (§0); `"0.2"` = geometry-optional. |
 | `name` | dataset identity — generic, *not* "I am ensemble member 3". |
 | `created_at` | RFC 3339 timestamp. |
 | `producer_version` | the tool/version that wrote the dataset. |
@@ -379,22 +408,28 @@ requirements.)
 
 **Manifest**
 - M1 `manifest.json` exists, is valid JSON, and `format_version` is read first.
-- M2 `format_version == "0.1"`; any other value is rejected outright (hard cut).
+- M2 `format_version` is `"0.1"` or `"0.2"`; any other value is rejected outright
+  (hard cut). `"0.2"` admits the geometry-optional shape (L1/Geo1/I1 below).
 - M3 Exactly the six floor fields are present (§11); no derivable fields added.
 - M4 `created_at` is RFC 3339; `crs`, `cadence` are non-empty strings.
 - M5 `crs` matches the CRS carried in every georeferenced file.
 - M6 `cadence` is consistent with the realized `time` axes.
 
 **Layout**
-- L1 `scalar_static.parquet` and `outlines.geoparquet` exist at the root.
+- L1 `scalar_static.parquet` exists at the root (unconditional floor).
+  `outlines.geoparquet` exists at the root **under `0.1`**; **under `0.2`** the
+  outlines leg is conditional on the geometry-expected predicate (OPTIONAL when
+  geometry-less, §4/§9).
 - L2 Every basin directory matches `basin=<id>` and contains
   `scalar_dynamic.parquet` (and `gridded_static/` / `gridded_dynamic/` artifacts
   iff the schema declares gridded fields).
 - L3 No stray/ragged files; absence of a field is NaN, never a missing file (§5).
 
 **Identity**
-- I1 `basin_id` is a real in-file column in `scalar_static`, every
-  `scalar_dynamic`, and `outlines`.
+- I1 `basin_id` is a real in-file column in `scalar_static` and every
+  `scalar_dynamic` (unconditional); and in `outlines` when outlines ship (the
+  outlines leg is conditional under `0.2`, §3). `scalar_static.basin_id` is the
+  basin-set source-of-truth.
 - I2 In-file `basin_id` agrees with the `basin=<id>` folder (§3).
 - I3 `basin_id` is unique within the dataset.
 
@@ -419,7 +454,9 @@ requirements.)
 
 **Geometry**
 - Geo1 `outlines.geoparquet` has rows `(basin_id, delineation, geometry)`; the
-  label column is `delineation`; not partitioned by delineation.
+  label column is `delineation`; not partitioned by delineation. **Under `0.2`,
+  when outlines are absent this check is skipped** (None → Skipped, §9); when they
+  ship it is enforced unchanged.
 
 > **Note on enforcement depth.** Some checks (e.g. byte-level Zarr/COG internals,
 > full sharding/overview verification) MAY be implemented incrementally; the
