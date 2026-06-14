@@ -88,6 +88,20 @@ const GRID_MAPPING_ATTR: &str = "grid_mapping";
 /// The CF attribute carrying a variable's units (spec §2).
 const UNITS_ATTR: &str = "units";
 
+/// The number of microseconds in one whole day (`86_400_000_000`).
+///
+/// The gridded·dynamic Zarr `time` coordinate is stored as int64 **days** (units
+/// `days since 1970-01-01`); the scalar/reduced axis HDX compares against is i64
+/// **microseconds** since the unix epoch. This is the exact, integral day→micros
+/// scale ([`normalize_days_to_micros`]) — it mirrors the producer's own conversion
+/// (orthographos `axis.rs` / `exec.rs`) so the two axes are bit-comparable.
+//
+// Pre-landed ahead of its consumer: exercised by the round-trip test now (PRE-LAND
+// GATE i), and consumed on the non-test path when `check_t2`/`check_m6(b)` are
+// unskipped in `validate.rs` (S5/S6). The `allow` is removed when that caller lands.
+#[allow(dead_code)]
+pub(crate) const MICROS_PER_DAY: i64 = 86_400_000_000;
+
 /// Which path the reader used to learn the store (spec §8).
 ///
 /// An enum, never a `bool`, so the path taken is self-documenting at every call site
@@ -284,6 +298,97 @@ fn read_coord_f64(
             f64::from_le_bytes(buf)
         })
         .collect())
+}
+
+/// Decompresses a 1-D coordinate chunk and returns its decoded little-endian `i64`
+/// values (the `time` int64 day-count array).
+///
+/// Reads exactly the chunk at `<store>/<coord>/c/0` — a 1-D coordinate read
+/// (architecture §1), never a `c/0/0/0` data chunk. The fixture stores the chunk
+/// `bytes` (little-endian) + `zstd`-framed, so it is zstd-decoded with the same
+/// pure-Rust `ruzstd` decoder [`read_coord_f64`] uses, then read as **8-byte
+/// little-endian `i64`** — the correct decode for the int64 `time` coordinate (units
+/// `days since 1970-01-01`), which the f64 leg would misread. No second store opener
+/// and no `zarrs`/`ndarray` dependency: only the shared raw-chunk infra.
+///
+/// The returned values are the **raw day-counts** stored on disk; the day→microsecond
+/// normalization is the separate [`normalize_days_to_micros`] helper, so callers (and
+/// the round-trip test) can assert the decoded days before any scaling.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |---|---|
+/// | the `<coord>/c/0` chunk is absent (the coordinate array is unread/unreadable) | [`CoreError::MissingGriddedCoordinate`] (the structurally required coordinate is missing) |
+/// | the chunk cannot be zstd-decoded, or its length is not a multiple of 8 | [`CoreError::ZarrRead`] |
+//
+// Pre-landed ahead of its consumer (PRE-LAND GATE i): the round-trip test exercises it
+// now; the non-test caller arrives when `check_t2`/`check_m6(b)` are unskipped in
+// `validate.rs` (S5/S6). The `allow` is removed when that caller lands.
+#[allow(dead_code)]
+pub(crate) fn read_coord_i64(
+    store: &Path,
+    artifact: &str,
+    coord: &str,
+) -> Result<Vec<i64>, CoreError> {
+    let chunk = store.join(coord).join("c").join("0");
+    let raw = std::fs::read(&chunk).map_err(|_| CoreError::MissingGriddedCoordinate {
+        artifact: artifact.to_string(),
+        coordinate: coord.to_string(),
+    })?;
+    debug!(
+        coordinate = coord,
+        bytes = raw.len(),
+        "read 1-D coordinate chunk as int64 (c/0, never c/0/0/0)"
+    );
+
+    let mut decoder =
+        StreamingDecoder::new(std::io::Cursor::new(raw)).map_err(|e| CoreError::ZarrRead {
+            artifact: artifact.to_string(),
+            detail: format!("coordinate {coord:?} chunk is not a valid zstd frame: {e}"),
+        })?;
+    let mut decoded: Vec<u8> = Vec::new();
+    decoder
+        .read_to_end(&mut decoded)
+        .map_err(|e| CoreError::ZarrRead {
+            artifact: artifact.to_string(),
+            detail: format!("coordinate {coord:?} chunk failed to decompress: {e}"),
+        })?;
+
+    if !decoded.len().is_multiple_of(8) {
+        return Err(CoreError::ZarrRead {
+            artifact: artifact.to_string(),
+            detail: format!(
+                "coordinate {coord:?} decoded to {} bytes, not a multiple of 8 (i64)",
+                decoded.len()
+            ),
+        });
+    }
+    Ok(decoded
+        .chunks_exact(8)
+        .map(|c| {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(c);
+            i64::from_le_bytes(buf)
+        })
+        .collect())
+}
+
+/// Normalizes int64 `time` **day-counts** to i64 **microseconds** since the unix
+/// epoch (the `* `[`MICROS_PER_DAY`] scale).
+///
+/// The gridded·dynamic Zarr `time` coordinate is integral days; the scalar/reduced
+/// axis HDX compares against is i64 microseconds. Because the day-counts are integral
+/// the conversion is exact (no float). The multiply is saturating to mirror the
+/// producer's own `saturating_mul(MICROS_PER_DAY)` so the two axes are bit-identical;
+/// the conformant fixture's day magnitudes are tiny, so saturation never triggers.
+//
+// Pre-landed ahead of its consumer (PRE-LAND GATE i): exercised by the round-trip test
+// now; the non-test caller arrives with the `check_t2` axis-identity unskip in
+// `validate.rs` (S5). The `allow` is removed when that caller lands.
+#[allow(dead_code)]
+pub(crate) fn normalize_days_to_micros(days: &[i64]) -> Vec<i64> {
+    days.iter().map(|&d| d.saturating_mul(MICROS_PER_DAY)).collect()
 }
 
 /// Parses the root `zarr.json` and recovers the §8 inline consolidated-metadata map.
@@ -543,7 +648,10 @@ mod tests {
     use crate::error::CoreError;
     use crate::field::{Dtype, Quadrant};
     use crate::newtypes::{Crs, GridLabel};
-    use crate::zarr_reader::{ConsolidatedMetadataSource, read_zarr_grid};
+    use crate::zarr_reader::{
+        ConsolidatedMetadataSource, MICROS_PER_DAY, normalize_days_to_micros, read_coord_i64,
+        read_zarr_grid,
+    };
 
     /// Resolves a path under the committed `conformance/` fixture tree.
     fn conformance(rel: &str) -> PathBuf {
@@ -858,6 +966,61 @@ mod tests {
                 );
             }
             other => panic!("expected ZarrRead with a skip reason, got {other:?}"),
+        }
+    }
+
+    // --- PRE-LAND GATE i: int64 /time chunk round-trip ---------------------------
+
+    #[test]
+    fn read_coord_i64_round_trips_int64_days_over_fixture_time_chunk() {
+        // The /time array is int64, shape [5], units "days since 1970-01-01" (confirmed
+        // in zarr.json). read_coord_f64 (the only pre-existing decoder) reads 8-byte LE
+        // *doubles* — WRONG for int64 /time. read_coord_i64 reads the SAME c/0 chunk
+        // (34 bytes, zstd-framed) through the SAME ruzstd StreamingDecoder infra, decoded
+        // as i64 LE. Assert the exact int64 day-counts the fixture stored.
+        let store = fixture_store();
+        let artifact = store.display().to_string();
+        let days = read_coord_i64(&store, &artifact, "time")
+            .expect("read_coord_i64 must decode the int64 /time chunk");
+
+        // Bit-exact vs orthographos's read_zarr_time_axis day-counts (gridded.rs:664
+        // decodes the same array as ArrayD<i64>): 2000-01-01..2000-01-05.
+        assert_eq!(
+            days,
+            vec![10957_i64, 10958, 10959, 10960, 10961],
+            "the int64 day-counts the fixture /time chunk stored, bit-exactly"
+        );
+
+        // normalize_days_to_micros applies the *86_400_000_000 scale (orthographos
+        // axis.rs:24 / exec.rs); integral days -> exact i64 micros (no float).
+        let micros = normalize_days_to_micros(&days);
+        assert_eq!(MICROS_PER_DAY, 86_400_000_000_i64, "one day in microseconds");
+        assert_eq!(
+            micros,
+            vec![
+                10957_i64 * MICROS_PER_DAY,
+                10958 * MICROS_PER_DAY,
+                10959 * MICROS_PER_DAY,
+                10960 * MICROS_PER_DAY,
+                10961 * MICROS_PER_DAY,
+            ],
+            "days -> i64 micros is the exact *86_400_000_000 scale"
+        );
+    }
+
+    #[test]
+    fn read_coord_i64_missing_chunk_returns_missing_gridded_coordinate() {
+        // A coord whose c/0 chunk is absent surfaces the structural-coordinate error
+        // (same MissingGriddedCoordinate leg read_coord_f64 uses).
+        match read_coord_i64(&fixture_store(), "art", "no_such_coord") {
+            Err(CoreError::MissingGriddedCoordinate {
+                artifact,
+                coordinate,
+            }) => {
+                assert_eq!(artifact, "art");
+                assert_eq!(coordinate, "no_such_coord");
+            }
+            other => panic!("expected MissingGriddedCoordinate, got {other:?}"),
         }
     }
 }
