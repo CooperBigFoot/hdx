@@ -75,6 +75,7 @@ use tracing::{debug, info, instrument};
 use crate::discovery::BasinScalar;
 use crate::error::ValidateError;
 use crate::field::{Field, Quadrant};
+use crate::format_version::GeometryExpectation;
 use crate::geoparquet_reader::OutlinesInfo;
 use crate::grid::GridInfo;
 use crate::gridded_discovery::{BasinGridded, Discovery, discover};
@@ -719,29 +720,45 @@ pub fn check_g1(fields: &[&Field]) -> CheckOutcome {
 const SCALAR_STATIC_ARTIFACT: &str = "scalar_static.parquet";
 const OUTLINES_ARTIFACT: &str = "outlines.geoparquet";
 
-/// Checks L1 — both root rollups exist at the dataset root (spec §4/§14 L1).
+/// Checks L1 — the required root rollups exist at the dataset root (spec §4/§14 L1).
 ///
-/// `scalar_static.parquet` and `outlines.geoparquet` MUST both be present at the root;
-/// an absent rollup ⇒ `ran:fail` with a [`CoreError::MissingRootRollup`]-style detail
-/// naming the missing artifact. R3: `MetadataDeep` (decided from the layout walk's
+/// `scalar_static.parquet` is **unconditionally** required (the L1 floor — the basin-set
+/// source-of-truth under 0.2, spec §3.1). The `outlines.geoparquet` leg is
+/// **geometry-conditional** on the dataset's [`GeometryExpectation`]:
+///
+/// - [`GeometryExpectation::Required`] (HDX 0.1) — `outlines.geoparquet` MUST also be
+///   present; an absent outlines ⇒ `ran:fail`;
+/// - [`GeometryExpectation::Optional`] (HDX 0.2, geometry-optional) — an absent outlines
+///   is **not** an L1 fail (mirroring [`Geo1`](CheckId::Geo1)'s None-skip and
+///   [`I1`](CheckId::I1)'s outlines `if-let Some` leg); the scalar_static floor alone
+///   satisfies L1.
+///
+/// An absent **required** rollup ⇒ `ran:fail` with a [`CoreError::MissingRootRollup`]-style
+/// detail naming the missing artifact. R3: `MetadataDeep` (decided from the layout walk's
 /// recorded presence facts — no bytes read).
 ///
 /// [`CoreError::MissingRootRollup`]: crate::error::CoreError::MissingRootRollup
 #[instrument(skip(discovery))]
-pub fn check_l1(discovery: &Discovery) -> CheckOutcome {
+pub fn check_l1(discovery: &Discovery, geometry: GeometryExpectation) -> CheckOutcome {
     let rollups = discovery.scalar().root_rollups();
-    let missing: Vec<&str> = [
-        (rollups.scalar_static_present(), SCALAR_STATIC_ARTIFACT),
-        (rollups.outlines_present(), OUTLINES_ARTIFACT),
-    ]
-    .into_iter()
-    .filter_map(|(present, name)| if present { None } else { Some(name) })
-    .collect();
+    let mut missing: Vec<&str> = Vec::new();
+
+    // scalar_static is the L1 floor — required under EVERY version (spec §4/§3.1).
+    if !rollups.scalar_static_present() {
+        missing.push(SCALAR_STATIC_ARTIFACT);
+    }
+
+    // The outlines leg is geometry-conditional: an absent outlines fails L1 only when
+    // geometry is expected (0.1). Under 0.2 (geometry-optional) the absent outlines is a
+    // skipped leg — Geo1 and the I1 outlines leg already defend the present case.
+    if geometry == GeometryExpectation::Required && !rollups.outlines_present() {
+        missing.push(OUTLINES_ARTIFACT);
+    }
 
     if missing.is_empty() {
         CheckOutcome::ran_pass(CheckId::L1, DepthClass::MetadataDeep)
     } else {
-        debug!(?missing, "L1: a root rollup is absent");
+        debug!(?missing, "L1: a required root rollup is absent");
         CheckOutcome::ran_fail(
             CheckId::L1,
             DepthClass::MetadataDeep,
@@ -1443,8 +1460,13 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     let all_fields = discovery.fields();
     let g1 = check_g1(&all_fields);
 
-    // The cross-file / cross-basin checks.
-    let l1 = check_l1(discovery);
+    // The cross-file / cross-basin checks. L1's outlines leg is geometry-conditional:
+    // the manifest's `format_version` decides whether an absent `outlines.geoparquet` is
+    // an L1 fail (0.1, required) or a skipped leg (0.2, optional).
+    let l1 = check_l1(
+        discovery,
+        manifest.format_version().geometry_expectation(),
+    );
     let l2 = check_l2(discovery);
     let l3 = check_l3(discovery);
     let i1 = check_i1(discovery);
@@ -1598,6 +1620,7 @@ mod tests {
 
     use crate::error::{CoreError, ValidateError};
     use crate::field::{Dtype, Field, Quadrant, Units};
+    use crate::format_version::{FormatVersion, GeometryExpectation};
     use crate::grid::{GridExtent, GridInfo, GridResolution};
     use crate::manifest::Manifest;
     use crate::newtypes::{BasinId, Cadence, Crs, GridLabel};
@@ -1607,7 +1630,7 @@ mod tests {
 
     use crate::validate::{
         CheckId, CheckResult, CheckStatus, DepthClass, ValidationReport, check_g1, check_h1,
-        check_h2, check_i3, check_m5, check_m6, check_t1, validate, validate_json,
+        check_h2, check_i3, check_l1, check_m5, check_m6, check_t1, validate, validate_json,
     };
 
     /// Resolves a path under the committed `conformance/` fixture tree.
@@ -2352,6 +2375,102 @@ mod tests {
         );
     }
 
+    // --- S7: geometry-optional (0.2) L1 split -----------------------------------------
+
+    /// The geometry-less fixture (scalar_static present, **outlines absent**) is
+    /// **conformant under 0.2** but **non-conformant under 0.1** — the only non-trivial
+    /// geometry-optional validate change (the L1 split).
+    ///
+    /// Real path: the on-disk `valid/geometry-less/` fixture carries a `format_version
+    /// "0.2"` manifest, so `validate` reads it through the real §0 entry gate and runs the
+    /// full §14 checklist. Under 0.2 the L1 outlines leg is geometry-conditional (skipped
+    /// when outlines is absent, mirroring Geo1's None-skip and I1's outlines `if-let Some`),
+    /// so the dataset is conformant. The SAME discovery driven through `check_l1` with the
+    /// 0.1 geometry-expectation (`FormatVersion::V0_1`) re-fires the outlines leg ⇒ `ran:fail`,
+    /// proving the version is what flips the leg, not the bytes.
+    ///
+    /// RED on the pre-S7 code: `check_l1` collapses scalar_static + outlines into ONE
+    /// missing-vec (:732-738), so an absent outlines is ALWAYS an L1 fail regardless of
+    /// version — the geometry-less fixture reports `conformant:false` even under 0.2. The
+    /// `report.conformant()` assertion is the RED proof.
+    #[test]
+    fn geometry_less_fixture_conformant_under_0_2_nonconformant_under_0_1() {
+        // Under 0.2 (the fixture's manifest version): conformant via the real verb.
+        let report =
+            validate(conformance("valid/geometry-less")).expect("geometry-less validates");
+        assert!(
+            report.conformant(),
+            "a geometry-less dataset (scalar_static present, outlines absent) is conformant \
+             under 0.2 — the L1 outlines leg is skipped, not failed"
+        );
+
+        // L1 RAN and PASSED (the scalar_static floor alone satisfies it under 0.2).
+        let l1 = report.find(CheckId::L1).expect("L1 present");
+        assert_eq!(l1.status(), CheckStatus::Ran, "L1 ran under 0.2");
+        assert_eq!(
+            l1.result(),
+            Some(CheckResult::Pass),
+            "L1 passes on the scalar_static leg alone (outlines optional under 0.2)"
+        );
+
+        // Geo1 None->Skipped and I1 ran:pass (its outlines `if-let Some` leg is skipped).
+        let geo1 = report.find(CheckId::Geo1).expect("Geo1 present");
+        assert_eq!(
+            geo1.status(),
+            CheckStatus::Skipped,
+            "Geo1 skips when there is no outlines to check (its absence is an L1 concern)"
+        );
+        let i1 = report.find(CheckId::I1).expect("I1 present");
+        assert_eq!(i1.status(), CheckStatus::Ran, "I1 ran");
+        assert_eq!(
+            i1.result(),
+            Some(CheckResult::Pass),
+            "I1 passes — scalar_static + scalar_dynamic basin_id legs hold; the outlines leg skips"
+        );
+
+        // Every check is 20/20 (gridded quadrants present), so the dataset is conformant.
+        for check in report.checks() {
+            assert_ne!(
+                check.result(),
+                Some(CheckResult::Fail),
+                "{:?} must not fail on the geometry-less fixture under 0.2",
+                check.id()
+            );
+        }
+
+        // The SAME on-disk discovery, driven through `check_l1` with the 0.1
+        // geometry-expectation, re-fires the outlines leg ⇒ ran:fail: under 0.1 the
+        // geometry-less dataset is non-conformant (the version flips the leg, not the bytes).
+        let discovery = crate::gridded_discovery::discover(conformance("valid/geometry-less"))
+            .expect("geometry-less discovers");
+        let l1_under_v0_1 = check_l1(&discovery, GeometryExpectation::for_version(FormatVersion::V0_1));
+        assert_eq!(
+            l1_under_v0_1.status(),
+            CheckStatus::Ran,
+            "L1 runs under 0.1"
+        );
+        assert_eq!(
+            l1_under_v0_1.result(),
+            Some(CheckResult::Fail),
+            "under 0.1 the absent outlines re-fires the L1 outlines leg (non-conformant)"
+        );
+        let detail = l1_under_v0_1
+            .detail()
+            .expect("a failing L1 carries a detail");
+        assert!(
+            detail.contains("outlines.geoparquet"),
+            "the L1 fail names the missing outlines rollup: {detail}"
+        );
+
+        // And the 0.2 expectation passes the SAME discovery (the leg is skipped).
+        let l1_under_v0_2 = check_l1(&discovery, GeometryExpectation::for_version(FormatVersion::V0_2));
+        assert_eq!(
+            l1_under_v0_2.result(),
+            Some(CheckResult::Pass),
+            "under 0.2 the absent outlines is skipped, so L1 passes on scalar_static alone"
+        );
+    }
+
     // --- The report wire-shape lock (validate.schema.json + golden snapshot) ----------
 
     /// Resolves a path under the repository-root `schemas/` directory.
@@ -2420,6 +2539,58 @@ mod tests {
             golden_value(),
             "validate of the valid fixture must equal the committed golden \
              (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+    }
+
+    /// Golden snapshot for the geometry-less (0.2) fixture's validate report. The
+    /// pure-scalar geometry-less dataset is conformant under 0.2 with **19 ran/pass + Geo1
+    /// skipped** (no outlines): L1 passes on the scalar_static floor alone, Geo1 None→skipped,
+    /// the I1 outlines leg is skipped. The committed golden pins this exact report shape; it
+    /// also validates against the pinned validate.schema.json (R4 schema lock).
+    #[test]
+    fn geometry_less_validate_json_equals_committed_golden() {
+        let produced: Value = serde_json::from_str(
+            &validate_json(conformance("valid/geometry-less")).expect("validate_json succeeds"),
+        )
+        .expect("validate output is valid JSON");
+
+        assert_eq!(
+            produced,
+            fixture_golden_value("valid/geometry-less"),
+            "validate of the geometry-less fixture must equal the committed golden"
+        );
+
+        // The golden carries the geometry-less verdict + matches the pinned wire shape.
+        assert_eq!(
+            produced.get("conformant").and_then(Value::as_bool),
+            Some(true),
+            "the geometry-less fixture is conformant under 0.2"
+        );
+        let validator = validate_validator();
+        assert!(
+            validator.is_valid(&fixture_golden_value("valid/geometry-less")),
+            "the geometry-less golden must validate against validate.schema.json"
+        );
+
+        // L1 ran:pass; Geo1 skipped — the load-bearing geometry-optional outcomes.
+        let checks = produced
+            .get("checks")
+            .and_then(Value::as_array)
+            .expect("checks array");
+        let by_id = |id: &str| {
+            checks
+                .iter()
+                .find(|c| c.get("id").and_then(Value::as_str) == Some(id))
+                .unwrap_or_else(|| panic!("{id} present"))
+        };
+        let l1 = by_id("L1");
+        assert_eq!(l1.get("status").and_then(Value::as_str), Some("ran"), "L1 ran");
+        assert_eq!(l1.get("result").and_then(Value::as_str), Some("pass"), "L1 passes");
+        let geo1 = by_id("Geo1");
+        assert_eq!(
+            geo1.get("status").and_then(Value::as_str),
+            Some("skipped"),
+            "Geo1 skips when outlines is absent (its absence is an L1 concern, not Geo1)"
         );
     }
 

@@ -87,6 +87,21 @@ use crate::manifest::Manifest;
 use crate::newtypes::BasinId;
 use crate::scalar_reader::{TimeExtent, TimeExtentSource};
 
+/// The CF `units` the gridded·dynamic Zarr `time` coordinate is encoded under (spec
+/// §6.3): the producer always writes the axis as int64 **days** since the unix epoch.
+///
+/// The discovery layer decodes those day-counts and normalizes them to i64 microseconds
+/// (the comparable representation), but the surfaced [`GriddedTimeAxis::units`] records the
+/// source CF provenance so the describe output names the on-disk encoding. A fixed constant
+/// (not read per-store): the producer's CF encoding is invariant across the gridded·dynamic
+/// stores HDX reads.
+const GRIDDED_TIME_UNITS: &str = "days since 1970-01-01";
+
+/// The CF `calendar` the gridded·dynamic Zarr `time` coordinate is encoded under (spec
+/// §6.3): the producer always writes `proleptic_gregorian`. A fixed constant, like
+/// [`GRIDDED_TIME_UNITS`] — the producer's CF calendar is invariant.
+const GRIDDED_TIME_CALENDAR: &str = "proleptic_gregorian";
+
 /// A basin's gridded `time` coordinate as the comparable i64-micros axis (spec
 /// §6.2/§6.3) — the **additive** gridded extension of [`BasinTimeExtent`].
 ///
@@ -104,6 +119,22 @@ pub struct GriddedTimeAxis {
 }
 
 impl GriddedTimeAxis {
+    /// Builds a gridded `time` axis from the discovery layer's per-basin i64-micros array
+    /// (spec §6.2/§6.3), tagging it with the producer's fixed CF provenance.
+    ///
+    /// The `micros` are the `gridded_dynamic` Zarr `time` coordinate decoded as int64
+    /// day-counts then normalized to i64 microseconds since the unix epoch (the comparable
+    /// representation `validate`'s T2 / M6(b) checks consume). The CF `units` / `calendar`
+    /// are the producer's invariant encoding ([`GRIDDED_TIME_UNITS`] /
+    /// [`GRIDDED_TIME_CALENDAR`]).
+    fn from_micros(micros: Vec<i64>) -> Self {
+        Self {
+            micros,
+            units: GRIDDED_TIME_UNITS,
+            calendar: GRIDDED_TIME_CALENDAR,
+        }
+    }
+
     /// Borrows the gridded `time` axis as i64 microseconds since the unix epoch.
     pub fn micros(&self) -> &[i64] {
         &self.micros
@@ -204,18 +235,34 @@ impl Description {
 
         // The per-basin ragged extents (spec §6.1): one entry per scalar-half basin,
         // in basin order, pairing the folder id with its `Option<TimeExtent>`. The
-        // additive `gridded_time_axis` is plumbed onto the model now (S4) but carried
-        // `None` — its population from the gridded half's per-basin axis (which shifts
-        // the describe golden) lands with the golden regeneration in S7. The scalar
-        // `{start, end}` extent is unchanged either way (the additive discipline).
+        // additive `gridded_time_axis` (i64 micros + CF provenance) is populated from the
+        // gridded half's per-basin axis (S7): present for a basin bearing `gridded_dynamic`
+        // geometry, `None` for a pure-scalar basin (the additive discipline — the scalar
+        // `{start, end}` extent is unchanged either way). Indexed by folder id so the two
+        // halves are tied on identity, not positional order.
+        let gridded_axis_by_basin: std::collections::BTreeMap<&str, &[i64]> = discovery
+            .gridded()
+            .per_basin()
+            .iter()
+            .filter_map(|basin| {
+                basin
+                    .gridded_time_axis()
+                    .map(|axis| (basin.basin_id_folder().as_str(), axis))
+            })
+            .collect();
         let time_extents: Vec<BasinTimeExtent> = discovery
             .scalar()
             .per_basin()
             .iter()
-            .map(|basin| BasinTimeExtent {
-                basin_id: basin.basin_id_folder().clone(),
-                time_extent: basin.time_extent(),
-                gridded_time_axis: None,
+            .map(|basin| {
+                let gridded_time_axis = gridded_axis_by_basin
+                    .get(basin.basin_id_folder().as_str())
+                    .map(|axis| GriddedTimeAxis::from_micros(axis.to_vec()));
+                BasinTimeExtent {
+                    basin_id: basin.basin_id_folder().clone(),
+                    time_extent: basin.time_extent(),
+                    gridded_time_axis,
+                }
             })
             .collect();
 
@@ -696,6 +743,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use serde_json::Value;
+    use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
 
     use crate::describe::{Description, describe, describe_json};
@@ -956,11 +1004,17 @@ mod tests {
             .expect("time_extents array");
         assert_eq!(extents.len(), 3, "one entry per basin (ragged §6.1)");
 
-        let entry_keys: BTreeSet<String> = ["basin_id", "time_extent"]
+        // The valid fixture is gridded, so each entry additively carries the
+        // `gridded_time_axis` (S7) alongside `basin_id` + `time_extent`.
+        let entry_keys: BTreeSet<String> = ["basin_id", "time_extent", "gridded_time_axis"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let inner_keys: BTreeSet<String> = ["start", "end", "source"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let axis_keys: BTreeSet<String> = ["micros", "units", "calendar"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -973,6 +1027,11 @@ mod tests {
                 inner.get("source").and_then(Value::as_str),
                 Some("statistics")
             );
+            // The additive gridded axis carries exactly {micros, units, calendar}.
+            let axis = entry
+                .get("gridded_time_axis")
+                .expect("gridded basin carries gridded_time_axis");
+            assert_eq!(object_keys(axis), axis_keys);
         }
     }
 
@@ -1241,6 +1300,129 @@ mod tests {
             "describe of the valid fixture must equal the committed golden \
              (regenerate the golden only on a format_version bump — see conformance/README.md)"
         );
+    }
+
+    /// Reads the committed geometry-less golden describe output as a parsed `Value`.
+    ///
+    /// Regeneration: run `describe_json(conformance("valid/geometry-less"))`, pretty-print
+    /// it, and overwrite `conformance/goldens/valid-geometry-less.describe.json`.
+    fn geometry_less_golden_value() -> Value {
+        let path = conformance("goldens/valid-geometry-less.describe.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the geometry-less golden must be valid JSON")
+    }
+
+    /// S7 additive: every gridded basin's describe entry now carries the per-basin
+    /// `gridded_time_axis` (i64 micros + CF provenance), populated from the gridded half's
+    /// per-basin axis. The golden carries it on all three (gridded) basins; the axis is the
+    /// same i64-micros representation `validate`'s T2 compares on (so its first micros equals
+    /// the scalar extent's start in micros). Before S7 this field was always `None`/omitted
+    /// (S4 plumbed the type but populated `None`); this pins the population.
+    #[test]
+    fn describe_golden_carries_per_basin_gridded_time_axis() {
+        let golden = golden_value();
+        let entries = golden
+            .get("time_extents")
+            .and_then(Value::as_array)
+            .expect("golden time_extents array");
+        assert!(!entries.is_empty(), "the gridded fixture has basins");
+        for entry in entries {
+            let id = entry.get("basin_id").and_then(Value::as_str).expect("basin_id");
+            let axis = entry
+                .get("gridded_time_axis")
+                .unwrap_or_else(|| panic!("basin {id}: gridded_time_axis present (gridded basin)"));
+            // CF provenance is the producer's invariant encoding.
+            assert_eq!(
+                axis.get("units").and_then(Value::as_str),
+                Some("days since 1970-01-01"),
+                "basin {id}: gridded axis CF units"
+            );
+            assert_eq!(
+                axis.get("calendar").and_then(Value::as_str),
+                Some("proleptic_gregorian"),
+                "basin {id}: gridded axis CF calendar"
+            );
+            let micros = axis.get("micros").and_then(Value::as_array).expect("micros array");
+            assert!(!micros.is_empty(), "basin {id}: gridded axis is non-empty");
+            // The first micros equals the scalar extent start in micros (T2 alignment).
+            let first = micros[0].as_i64().expect("micros are integers");
+            let start = entry
+                .get("time_extent")
+                .and_then(|t| t.get("start"))
+                .and_then(Value::as_str)
+                .expect("scalar extent start");
+            let start_dt = OffsetDateTime::parse(start, &Rfc3339).expect("start parses");
+            let start_micros = start_dt.unix_timestamp_nanos() as i64 / 1_000;
+            assert_eq!(
+                first, start_micros,
+                "basin {id}: gridded axis first micros equals the scalar extent start (T2 alignment)"
+            );
+        }
+    }
+
+    /// Golden snapshot for the geometry-less (0.2) fixture. A **pure-scalar** dataset
+    /// (no gridded subtrees, no outlines): `describe` carries `format_version "0.2"`,
+    /// EMPTY `delineations` (no outlines), EMPTY `grids`, present scalar time extents, and
+    /// NO `gridded_time_axis` on any basin (the additive gridded field is omitted for a
+    /// pure-scalar basin). This is the FUSION_ARC geometry-less describe shape.
+    #[test]
+    fn geometry_less_describe_equals_committed_golden() {
+        let produced: Value = serde_json::from_str(
+            &describe_json(conformance("valid/geometry-less")).expect("describe_json succeeds"),
+        )
+        .expect("describe output is valid JSON");
+
+        assert_eq!(
+            produced,
+            geometry_less_golden_value(),
+            "describe of the geometry-less fixture must equal the committed golden"
+        );
+
+        // The load-bearing shape facts: 0.2, empty delineations, empty grids, no gridded axis.
+        assert_eq!(
+            produced
+                .get("manifest")
+                .and_then(|m| m.get("format_version"))
+                .and_then(Value::as_str),
+            Some("0.2"),
+            "the geometry-less manifest is format_version 0.2"
+        );
+        assert_eq!(
+            produced.get("delineations").and_then(Value::as_array).map(Vec::len),
+            Some(0),
+            "a geometry-less dataset has empty delineations (no outlines)"
+        );
+        assert_eq!(
+            produced.get("grids").and_then(Value::as_array).map(Vec::len),
+            Some(0),
+            "a pure-scalar geometry-less dataset has no grids"
+        );
+        for entry in produced
+            .get("time_extents")
+            .and_then(Value::as_array)
+            .expect("time_extents")
+        {
+            assert!(
+                entry.get("gridded_time_axis").is_none(),
+                "a pure-scalar basin omits gridded_time_axis"
+            );
+            assert!(
+                entry.get("time_extent").map(|t| !t.is_null()).unwrap_or(false),
+                "the scalar time extent is present"
+            );
+        }
+    }
+
+    /// The geometry-less golden validates against the committed describe schema (R4): the
+    /// widened `format_version` enum (0.1|0.2) + the additive `gridded_time_axis` def.
+    #[test]
+    fn geometry_less_golden_validates_against_describe_schema() {
+        let validator = describe_validator();
+        let golden = geometry_less_golden_value();
+        if let Err(error) = validator.validate(&golden) {
+            panic!("the geometry-less golden must validate against describe.schema.json: {error}");
+        }
     }
 
     /// Companion-mask / `{source}_{variable}` ordinariness in the GOLDEN (spec §2). The

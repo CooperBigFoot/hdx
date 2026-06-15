@@ -1,0 +1,145 @@
+{
+  "checks": [
+    {
+      "id": "M1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M4",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M5",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "M6",
+      "status": "ran",
+      "result": "pass",
+      "depth": "byte_deep",
+      "detail": null
+    },
+    {
+      "id": "L1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "L2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "L3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "byte_deep",
+      "detail": null
+    },
+    {
+      "id": "I1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "I2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "I3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "H1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "H2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "T1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "T2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "byte_deep",
+      "detail": null
+    },
+    {
+      "id": "G1",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "G2",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "G3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
+      "id": "Geo1",
+      "status": "skipped",
+      "result": null,
+      "depth": "metadata_deep",
+      "detail": "no outlines.geoparquet to check (its absence is an L1 failure, not a Geo1 one)"
+    }
+  ],
+  "conformant": true
+}

@@ -33,6 +33,13 @@ MANIFEST_FIELDS: tuple[str, ...] = (
 # wrong-format-version invalid (MS2-S4) mutates only this value.
 FORMAT_VERSION: str = "0.1"
 
+# The geometry-optional 0.2 contract (Fusion Arc): a dataset that carries
+# `scalar_static.parquet` but **no** `outlines.geoparquet` is conformant under
+# 0.2 (the L1 outlines leg becomes geometry-conditional). The geometry-less
+# baseline declares this version so `validate` treats the absent outlines as a
+# skip, not an L1 failure.
+FORMAT_VERSION_V0_2: str = "0.2"
+
 # Dataset-wide CRS (spec §7.4 / §11). EPSG:4326 is the recommended CRS and the
 # one the gridded half (MS2-S3) carries in its files; M5 cross-checks them.
 CRS: str = "EPSG:4326"
@@ -52,19 +59,22 @@ NAME: str = "hdx-conformance-valid-minimal"
 PRODUCER_VERSION: str = "hdx-fixtures 0.1.0"
 
 
-def build_manifest() -> dict[str, str]:
+def build_manifest(format_version: str = FORMAT_VERSION) -> dict[str, str]:
     """Return the six-field manifest object (spec §11) in floor order.
 
     The returned dict has **exactly** the six keys of :data:`MANIFEST_FIELDS`.
     ``created_at`` is validated to be RFC-3339-parseable here, at the boundary,
-    so an ill-formed constant cannot reach disk.
+    so an ill-formed constant cannot reach disk. ``format_version`` defaults to
+    the 0.1 baseline; the geometry-less baseline passes
+    :data:`FORMAT_VERSION_V0_2` so its absent outlines is a 0.2 skip, not an L1
+    failure.
     """
     # Parse-don't-validate at the boundary: prove created_at is RFC 3339 before
     # it is ever written. The `Z` form is accepted by fromisoformat on 3.12.
     dt.datetime.fromisoformat(CREATED_AT.replace("Z", "+00:00"))
 
     return {
-        "format_version": FORMAT_VERSION,
+        "format_version": format_version,
         "name": NAME,
         "created_at": CREATED_AT,
         "producer_version": PRODUCER_VERSION,
@@ -73,17 +83,19 @@ def build_manifest() -> dict[str, str]:
     }
 
 
-def write_manifest(dataset_root: Path) -> Path:
+def write_manifest(dataset_root: Path, format_version: str = FORMAT_VERSION) -> Path:
     """Write ``manifest.json`` into ``dataset_root`` and return its path.
 
     The file is written with a trailing newline and 2-space indentation so the
-    committed fixture is stable and human-diffable.
+    committed fixture is stable and human-diffable. ``format_version`` defaults
+    to the 0.1 baseline; pass :data:`FORMAT_VERSION_V0_2` for the geometry-less
+    baseline.
     """
     log = get_logger("manifest")
     dataset_root.mkdir(parents=True, exist_ok=True)
     manifest_path = dataset_root / "manifest.json"
 
-    manifest = build_manifest()
+    manifest = build_manifest(format_version)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     log.info(

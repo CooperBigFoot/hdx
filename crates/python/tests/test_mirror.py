@@ -36,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFORMANCE = REPO_ROOT / "conformance"
 
 VALID_MINIMAL = CONFORMANCE / "valid" / "minimal"
+VALID_GEOMETRY_LESS = CONFORMANCE / "valid" / "geometry-less"
 INVALID_MISSING_ROOT_ROLLUP = CONFORMANCE / "invalid" / "missing-root-rollup"
 INVALID_WRONG_FORMAT_VERSION = CONFORMANCE / "invalid" / "wrong-format-version"
 
@@ -80,6 +81,34 @@ def test_validate_valid_is_conformant() -> None:
     assert set(result.keys()) == VALIDATE_TOP_KEYS
     # `is True`: the verdict is a real bool, surfaced unchanged from hdx-core.
     assert result["conformant"] is True
+
+
+def test_validate_geometry_less_is_conformant_under_0_2() -> None:
+    """validate(valid/geometry-less) is conformant under 0.2 through the real PyO3 module.
+
+    The geometry-optional 0.2 fixture (scalar_static present, outlines absent) surfaces
+    conformant True — the binding transports the `validate_json` verdict verbatim. Geo1
+    is skipped (no outlines); every other check ran:pass, so no fail flips the verdict.
+    """
+    _require_fixture(VALID_GEOMETRY_LESS)
+    result = hdx.validate(str(VALID_GEOMETRY_LESS))
+    assert isinstance(result, dict)
+    assert set(result.keys()) == VALIDATE_TOP_KEYS
+    assert result["conformant"] is True
+    checks = {c["id"]: c for c in result["checks"]}
+    assert len(checks) == 20, "all 20 §14 ids are reported"
+    assert checks["L1"]["status"] == "ran" and checks["L1"]["result"] == "pass"
+    assert checks["Geo1"]["status"] == "skipped", "Geo1 skips when outlines is absent (0.2)"
+
+
+def test_describe_geometry_less_has_empty_delineations_under_0_2() -> None:
+    """describe(valid/geometry-less) carries format_version 0.2 + empty delineations."""
+    _require_fixture(VALID_GEOMETRY_LESS)
+    result = hdx.describe(str(VALID_GEOMETRY_LESS))
+    assert isinstance(result, dict)
+    assert set(result.keys()) == DESCRIBE_TOP_KEYS
+    assert result["manifest"]["format_version"] == "0.2"
+    assert result["delineations"] == [], "a geometry-less dataset has empty delineations"
 
 
 def test_validate_invalid_missing_root_rollup_is_not_conformant() -> None:

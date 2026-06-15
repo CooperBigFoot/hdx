@@ -35,14 +35,22 @@ import argparse
 import sys
 from pathlib import Path
 
+import json
+
 from hdx_fixtures import configure_logging, get_logger
 from hdx_fixtures.assertions import (
+    _require,
     run_gridded_assertions,
     run_invalid_assertions,
     run_scalar_assertions,
 )
 from hdx_fixtures.grids import write_grids
-from hdx_fixtures.manifest import write_manifest
+from hdx_fixtures.manifest import (
+    FORMAT_VERSION_V0_2,
+    MANIFEST_FIELDS,
+    build_manifest,
+    write_manifest,
+)
 from hdx_fixtures.mutate import Invalid, derive_invalid, invalid_root
 from hdx_fixtures.outlines import write_outlines
 from hdx_fixtures.scalar import write_scalar
@@ -51,6 +59,17 @@ from hdx_fixtures.scalar import write_scalar
 def valid_minimal_root(repo_root: Path) -> Path:
     """Return the ``conformance/valid/minimal/`` dataset root under ``repo_root``."""
     return repo_root / "conformance" / "valid" / "minimal"
+
+
+def valid_geometry_less_root(repo_root: Path) -> Path:
+    """Return the ``conformance/valid/geometry-less/`` dataset root under ``repo_root``.
+
+    The geometry-optional 0.2 fixture: the four-quadrant baseline **minus**
+    ``outlines.geoparquet``, with a ``format_version "0.2"`` manifest. ``validate``
+    must report it conformant under 0.2 (the L1 outlines leg is skipped) and
+    non-conformant under 0.1 (the leg fires).
+    """
+    return repo_root / "conformance" / "valid" / "geometry-less"
 
 
 def build_scalar_baseline(dataset_root: Path) -> None:
@@ -69,6 +88,88 @@ def build_gridded_baseline(dataset_root: Path) -> None:
     log.info("building gridded baseline at %s", dataset_root)
     write_grids(dataset_root)
     log.info("gridded baseline emitted")
+
+
+def build_geometry_less_baseline(dataset_root: Path) -> None:
+    """Emit the geometry-optional 0.2 baseline: the scalar baseline WITHOUT outlines.
+
+    This is :func:`build_scalar_baseline` minus the
+    :func:`~hdx_fixtures.outlines.write_outlines` step, with a ``format_version
+    "0.2"`` manifest — a **pure-scalar** dataset (the agent-materializer's shape,
+    FUSION_ARC FIRST_SLICE): ``manifest.json`` + ``scalar_static.parquet`` (the L1
+    floor, the basin-set source-of-truth under 0.2) + per-basin
+    ``scalar_dynamic.parquet``, but NO ``outlines.geoparquet`` and NO gridded
+    subtrees. Under 0.2 the absent outlines is a skipped L1 / Geo1 leg
+    (conformant); under 0.1 the L1 outlines leg fires (non-conformant). With no
+    gridded·dynamic geometry, ``describe`` carries empty ``delineations``, present
+    scalar time extents, and NO ``gridded_time_axis`` (the additive gridded field
+    is omitted for a pure-scalar basin).
+    """
+    log = get_logger("build")
+    log.info("building geometry-less (0.2) scalar baseline at %s", dataset_root)
+    write_manifest(dataset_root, format_version=FORMAT_VERSION_V0_2)
+    write_scalar(dataset_root)
+    log.info("geometry-less (0.2) baseline emitted (no outlines, no gridded)")
+
+
+def run_geometry_less_assertions(dataset_root: Path) -> None:
+    """Self-assert the geometry-less 0.2 fixture; raise on the first failure.
+
+    Confirms the load-bearing geometry-optional shape: ``scalar_static.parquet``
+    present, ``outlines.geoparquet`` ABSENT, and a six-field ``format_version
+    "0.2"`` manifest. The shared scalar/gridded self-assertions reused here are
+    geometry-independent; the outlines-specific ``assert_outlines`` is
+    deliberately NOT run (this fixture has none).
+    """
+    log = get_logger("assert")
+
+    # The geometry-optional invariant: scalar_static present, outlines absent,
+    # and (pure-scalar) no gridded subtrees in any basin.
+    _require(
+        (dataset_root / "scalar_static.parquet").exists(),
+        "geometry-less: scalar_static.parquet must be present (the L1 floor)",
+    )
+    _require(
+        not (dataset_root / "outlines.geoparquet").exists(),
+        "geometry-less: outlines.geoparquet must be ABSENT (the 0.2 relaxation)",
+    )
+    gridded_dirs = sorted(
+        p.as_posix()
+        for p in dataset_root.glob("basin=*/gridded_*")
+    )
+    _require(
+        not gridded_dirs,
+        f"geometry-less: pure-scalar fixture must carry NO gridded subtrees, "
+        f"found {gridded_dirs}",
+    )
+    basins = sorted(p.name for p in dataset_root.glob("basin=*"))
+    _require(
+        bool(basins),
+        "geometry-less: must carry per-basin scalar_dynamic basins",
+    )
+    for basin in basins:
+        _require(
+            (dataset_root / basin / "scalar_dynamic.parquet").exists(),
+            f"geometry-less: {basin} must carry scalar_dynamic.parquet",
+        )
+
+    # The manifest is the six floor fields with format_version "0.2".
+    manifest_path = dataset_root / "manifest.json"
+    obj = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _require(
+        set(obj.keys()) == set(MANIFEST_FIELDS),
+        f"geometry-less: manifest keys {sorted(obj.keys())} != six floor fields",
+    )
+    _require(
+        obj == build_manifest(format_version=FORMAT_VERSION_V0_2),
+        "geometry-less: on-disk manifest differs from the built 0.2 manifest object",
+    )
+    _require(
+        obj["format_version"] == FORMAT_VERSION_V0_2,
+        f"geometry-less: format_version {obj['format_version']!r} != '0.2'",
+    )
+
+    log.info("geometry-less (0.2) self-assertions passed")
 
 
 def derive_invalids(dataset_root: Path) -> None:
@@ -120,11 +221,18 @@ def main(argv: list[str] | None = None) -> int:
     run_gridded_assertions(dataset_root)
     derive_invalids(dataset_root)
 
-    log.info("baseline + derived fixtures complete + self-assertions passed")
+    # The geometry-optional 0.2 fixture lives under valid/geometry-less/, a sibling
+    # of valid/minimal/ (dataset_root == <repo>/conformance/valid/minimal).
+    geometry_less = valid_geometry_less_root(dataset_root.parents[2])
+    build_geometry_less_baseline(geometry_less)
+    run_geometry_less_assertions(geometry_less)
+
+    log.info("baseline + derived fixtures + geometry-less complete + self-assertions passed")
     # User-facing status line (output, not a diagnostic) — see architecture §2.
     print(
         f"conformance fixtures regenerated: valid baseline (four quadrants) at "
-        f"{dataset_root}; fail-closed invalids derived under conformance/invalid/ "
+        f"{dataset_root}; geometry-less (0.2, no outlines) at {geometry_less}; "
+        "fail-closed invalids derived under conformance/invalid/ "
         "(including the irregular-time-axis M6 rule-(b) negative); "
         "all self-assertions passed"
     )

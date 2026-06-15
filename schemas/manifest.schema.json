@@ -15,9 +15,12 @@
   ],
   "properties": {
     "format_version": {
-      "description": "Hard version cut, read first (spec §14 M1/M2). Only \"0.1\" is accepted.",
+      "description": "Hard version cut, read first (spec §14 M1/M2): \"0.1\" (geometry-mandatory) or \"0.2\" (geometry-optional). Any other value is rejected outright.",
       "type": "string",
-      "const": "0.1"
+      "enum": [
+        "0.1",
+        "0.2"
+      ]
     },
     "name": {
       "description": "Dataset identity — generic, not a role label (spec §11).",

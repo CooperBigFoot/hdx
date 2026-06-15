@@ -119,6 +119,57 @@ fn validate_valid_minimal_exits_zero_conformant_true() {
     );
 }
 
+/// `validate` of `valid/geometry-less` → exit 0, stdout `"conformant": true` (0.2).
+///
+/// The geometry-optional 0.2 fixture (scalar_static present, outlines absent) validates
+/// conformant through the real binary — the CLI transports the `validate_json` verdict
+/// verbatim, so a 0.2-conformant geometry-less dataset exits 0 just like `valid/minimal`.
+#[test]
+fn validate_geometry_less_exits_zero_conformant_true_under_0_2() {
+    let (code, stdout) = run_hdx_full(&["validate", &fixture_arg("conformance/valid/geometry-less")]);
+
+    assert_eq!(code, 0, "a 0.2-conformant geometry-less dataset must exit 0");
+    let value: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(
+        value.get("conformant").and_then(Value::as_bool),
+        Some(true),
+        "the geometry-less fixture reports conformant: true under 0.2"
+    );
+    // Geo1 skipped (no outlines), every other check ran:pass — no fail flips the verdict.
+    let checks = value
+        .get("checks")
+        .and_then(Value::as_array)
+        .expect("checks array");
+    let geo1 = checks
+        .iter()
+        .find(|c| c.get("id").and_then(Value::as_str) == Some("Geo1"))
+        .expect("Geo1 present");
+    assert_eq!(
+        geo1.get("status").and_then(Value::as_str),
+        Some("skipped"),
+        "Geo1 skips when outlines is absent (the 0.2 relaxation)"
+    );
+}
+
+/// `describe` of `valid/geometry-less` → exit 0, a JSON object with empty delineations.
+#[test]
+fn describe_geometry_less_exits_zero_empty_delineations() {
+    let (code, stdout) = run_hdx_full(&["describe", &fixture_arg("conformance/valid/geometry-less")]);
+
+    assert_eq!(code, 0, "describe of a 0.2 geometry-less dataset must exit 0");
+    let value: Value = serde_json::from_slice(&stdout).expect("describe stdout is valid JSON");
+    assert_eq!(
+        value.get("manifest").and_then(|m| m.get("format_version")).and_then(Value::as_str),
+        Some("0.2"),
+        "the geometry-less manifest is format_version 0.2"
+    );
+    assert_eq!(
+        value.get("delineations").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "a geometry-less dataset has empty delineations (no outlines)"
+    );
+}
+
 /// `validate` of `invalid/missing-root-rollup` → exit 1, stdout `"conformant": false`.
 ///
 /// The L1 failure is carried **in the report** (a violated `MUST` that ran), not as
@@ -289,6 +340,26 @@ fn validate_stdout_validates_against_validate_schema() {
 
     if let Err(error) = validator.validate(&value) {
         panic!("validate stdout must validate against validate.schema.json: {error}");
+    }
+}
+
+/// `validate`/`describe` stdout for the geometry-less (0.2) fixture validate against the
+/// committed schemas (R4): the widened `format_version` enum + the additive
+/// `gridded_time_axis` def must accept the geometry-less wire shape through the binary.
+#[test]
+fn geometry_less_stdout_validates_against_schemas() {
+    let validate_validator = load_schema("validate.schema.json");
+    let stdout = run_hdx(&["validate", &fixture_arg("conformance/valid/geometry-less")]);
+    let value = stdout_as_json(&stdout, "validate (geometry-less)");
+    if let Err(error) = validate_validator.validate(&value) {
+        panic!("geometry-less validate stdout must validate against validate.schema.json: {error}");
+    }
+
+    let describe_validator = load_schema("describe.schema.json");
+    let stdout = run_hdx(&["describe", &fixture_arg("conformance/valid/geometry-less")]);
+    let value = stdout_as_json(&stdout, "describe (geometry-less)");
+    if let Err(error) = describe_validator.validate(&value) {
+        panic!("geometry-less describe stdout must validate against describe.schema.json: {error}");
     }
 }
 

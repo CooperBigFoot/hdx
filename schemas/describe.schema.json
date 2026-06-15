@@ -69,9 +69,12 @@
       ],
       "properties": {
         "format_version": {
-          "description": "The hard version cut (spec §0/§14 M2); always \"0.1\" for a described dataset. The describe shape is versioned by this value only.",
+          "description": "The hard version cut (spec §0/§14 M2): \"0.1\" (geometry-mandatory) or \"0.2\" (geometry-optional). The describe shape is versioned by this value only.",
           "type": "string",
-          "const": "0.1"
+          "enum": [
+            "0.1",
+            "0.2"
+          ]
         },
         "name": {
           "description": "Dataset identity — a generic producer string, not a role label (spec §11).",
@@ -264,7 +267,7 @@
     },
     "time_extent_entry": {
       "title": "HDX per-basin time-extent entry",
-      "description": "A basin id paired with its time extent (spec §6.1). `time_extent` is null when the basin has no recorded extent — a reported GAP, never a verdict.",
+      "description": "A basin id paired with its time extent (spec §6.1). `time_extent` is null when the basin has no recorded extent — a reported GAP, never a verdict. `gridded_time_axis` is an ADDITIVE field (spec §6.2/§6.3): present only for a basin bearing gridded·dynamic geometry, OMITTED entirely for a pure-scalar basin (a scalar-only describe is byte-identical to its pre-0.2 shape).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -286,6 +289,37 @@
               "$ref": "#/$defs/time_extent"
             }
           ]
+        },
+        "gridded_time_axis": {
+          "$ref": "#/$defs/gridded_time_axis"
+        }
+      }
+    },
+    "gridded_time_axis": {
+      "title": "HDX per-basin gridded time axis",
+      "description": "The basin's gridded·dynamic `time` coordinate as the comparable i64-microseconds-since-epoch array plus its source CF provenance (spec §6.2/§6.3). ADDITIVE: present only for a gridded·dynamic-bearing basin; a pure-scalar basin omits this key. An inert fact, never a verdict.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "micros",
+        "units",
+        "calendar"
+      ],
+      "properties": {
+        "micros": {
+          "description": "The full gridded `time` axis as i64 microseconds since the unix epoch (the int64 day-counts decoded then normalized; the representation `validate`'s T2/M6(b) compare on).",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "units": {
+          "description": "The source CF `units` string the axis is encoded under on disk (spec §6.3).",
+          "type": "string"
+        },
+        "calendar": {
+          "description": "The source CF `calendar` string the axis is encoded under on disk (spec §6.3).",
+          "type": "string"
         }
       }
     },

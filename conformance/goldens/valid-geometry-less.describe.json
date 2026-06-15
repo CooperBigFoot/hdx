@@ -1,0 +1,65 @@
+{
+  "manifest": {
+    "format_version": "0.2",
+    "name": "hdx-conformance-valid-minimal",
+    "created_at": "2026-06-01T00:00:00Z",
+    "producer_version": "hdx-fixtures 0.1.0",
+    "crs": "EPSG:4326",
+    "cadence": "daily"
+  },
+  "basins": [
+    "0001",
+    "0002",
+    "0003"
+  ],
+  "fields": [
+    {
+      "name": "drainage_area",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "scalar"
+      },
+      "dtype": "f64",
+      "units": null,
+      "grid_label": null
+    },
+    {
+      "name": "streamflow",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "scalar"
+      },
+      "dtype": "f64",
+      "units": null,
+      "grid_label": null
+    }
+  ],
+  "grids": [],
+  "time_extents": [
+    {
+      "basin_id": "0001",
+      "time_extent": {
+        "start": "2000-01-01T00:00:00Z",
+        "end": "2000-01-05T00:00:00Z",
+        "source": "statistics"
+      }
+    },
+    {
+      "basin_id": "0002",
+      "time_extent": {
+        "start": "2010-06-15T00:00:00Z",
+        "end": "2010-06-21T00:00:00Z",
+        "source": "statistics"
+      }
+    },
+    {
+      "basin_id": "0003",
+      "time_extent": {
+        "start": "2005-03-01T00:00:00Z",
+        "end": "2005-03-04T00:00:00Z",
+        "source": "statistics"
+      }
+    }
+  ],
+  "delineations": []
+}
