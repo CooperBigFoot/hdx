@@ -120,6 +120,7 @@ pub struct DynamicArtifact {
     grid_label: GridLabel,
     grid_info: GridInfo,
     consolidated_source: ConsolidatedMetadataSource,
+    gridded_time_micros: Vec<i64>,
 }
 
 impl DynamicArtifact {
@@ -136,6 +137,14 @@ impl DynamicArtifact {
     /// Borrows the consolidated-metadata path the Zarr reader took.
     pub fn consolidated_source(&self) -> &ConsolidatedMetadataSource {
         &self.consolidated_source
+    }
+
+    /// Borrows the store's `time` coordinate as i64 **microseconds** since the unix
+    /// epoch (spec §6.2/§6.3) — the Zarr int64 day-counts decoded + normalized by the
+    /// reader ([`ZarrGrid::gridded_time_micros`]). The comparable 1-D axis `validate`
+    /// hands to the T2 / M6(b) checks; discovery records it as a fact, no verdict.
+    pub fn gridded_time_axis(&self) -> &[i64] {
+        &self.gridded_time_micros
     }
 }
 
@@ -192,6 +201,21 @@ impl BasinGridded {
             .iter()
             .map(DynamicArtifact::grid_label)
             .collect()
+    }
+
+    /// Borrows this basin's gridded `time` axis as i64 **microseconds** since the unix
+    /// epoch (the first `gridded_dynamic` artifact's [`DynamicArtifact::gridded_time_axis`]),
+    /// or `None` for a basin with no `gridded_dynamic` subtree (gaps-as-facts).
+    ///
+    /// Spec §8: a basin's `gridded_dynamic` artifacts share one `time` axis (the
+    /// gridded·dynamic stores are cell-for-cell aligned), so the representative
+    /// per-basin axis is the first artifact's. This is the comparable axis `validate`'s
+    /// T2 (scalar-vs-gridded identity) and M6(b) (per-basin regularity) checks consume;
+    /// discovery surfaces it as a fact, never a verdict.
+    pub fn gridded_time_axis(&self) -> Option<&[i64]> {
+        self.dynamic_artifacts
+            .first()
+            .map(DynamicArtifact::gridded_time_axis)
     }
 }
 
@@ -358,6 +382,7 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
                 grid_label,
                 grid_info: zarr.grid_info().clone(),
                 consolidated_source: zarr.consolidated_source().clone(),
+                gridded_time_micros: zarr.gridded_time_micros().to_vec(),
             });
         }
     }
@@ -951,5 +976,113 @@ mod tests {
             direct.field(),
             "catalog band == direct read band"
         );
+    }
+
+    // --- PRE-LAND GATE ii: per-basin gridded i64-micros time axis + M6(b) pre-check
+
+    /// Returns `true` iff `axis` is strictly increasing AND has a uniform interior
+    /// step (every consecutive gap identical) — the M6(b) regularity predicate the
+    /// S6 `check_m6` rule (b) will enforce. A <2-point axis is vacuously regular.
+    fn is_strictly_increasing_and_regular(axis: &[i64]) -> bool {
+        if axis.len() < 2 {
+            return true;
+        }
+        let step = axis[1] - axis[0];
+        if step <= 0 {
+            return false;
+        }
+        axis.windows(2).all(|w| w[1] - w[0] == step)
+    }
+
+    #[test]
+    #[ignore = "throwaway PRE-LAND GATE ii pre-check; superseded by the S5/S6 check_t2/check_m6 unskip"]
+    fn existing_gridded_fixtures_surface_regular_i64_micros_axis() {
+        // PRE-LAND GATE ii (the M6(b) regularity pre-check). discover() must surface,
+        // per basin, the gridded `time` coordinate decoded as int64 day-counts and
+        // normalized to i64 MICROS (via the NEW read_coord_i64 leg, NOT read_coord_f64)
+        // — the comparable 1-D axis S5/S6 hand to check_t2/check_m6. On CURRENT code
+        // this FAILS TO COMPILE: BasinGridded/DynamicArtifact carry no gridded time-axis
+        // accessor (the /time VALUES are never read by discovery).
+        const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+        // (1) valid/minimal: every basin surfaces a strictly-increasing + interior-
+        //     regular gridded axis (the baseline daily axis [0,1,2,3,...] -> uniform
+        //     step of one whole day in micros). basin 0001 pinned bit-exactly.
+        let minimal: Discovery =
+            discover(conformance("valid/minimal")).expect("valid/minimal must discover");
+        for basin in minimal.gridded().per_basin() {
+            let axis = basin
+                .gridded_time_axis()
+                .unwrap_or_else(|| panic!("basin {} surfaces a gridded time axis", basin.basin_id_folder().as_str()));
+            assert!(
+                is_strictly_increasing_and_regular(axis),
+                "valid/minimal basin {} gridded axis is M6(b)-regular: {axis:?}",
+                basin.basin_id_folder().as_str()
+            );
+            // The per-basin accessor agrees with the first dynamic artifact's axis.
+            assert_eq!(
+                Some(axis),
+                basin.dynamic_artifacts().first().map(|a| a.gridded_time_axis()),
+                "the per-basin axis is the first dynamic artifact's axis"
+            );
+        }
+        let basin0001 = minimal
+            .gridded()
+            .per_basin()
+            .iter()
+            .find(|b| b.basin_id_folder().as_str() == "0001")
+            .expect("basin 0001 present");
+        assert_eq!(
+            basin0001.gridded_time_axis(),
+            Some(
+                [10957_i64, 10958, 10959, 10960, 10961]
+                    .map(|d| d * MICROS_PER_DAY)
+                    .as_slice()
+            ),
+            "basin 0001 gridded axis: int64 days 10957..10961 -> i64 micros, regular step 1 day"
+        );
+
+        // (2) valid/irregular-time-axis: basin 0003 is the mutated basin — offsets
+        //     (0,1,3,7) off 2005-03-01 (day 12843) -> days [12843,12844,12846,12850],
+        //     steps 1,2,4 days: strictly increasing but NON-regular. This proves the
+        //     green-to-red M6(b) regression is a REAL check before the S6 rule-b unskip.
+        let irregular: Discovery = discover(conformance("valid/irregular-time-axis"))
+            .expect("valid/irregular-time-axis must discover");
+        let irregular0003 = irregular
+            .gridded()
+            .per_basin()
+            .iter()
+            .find(|b| b.basin_id_folder().as_str() == "0003")
+            .expect("basin 0003 present");
+        let axis0003 = irregular0003
+            .gridded_time_axis()
+            .expect("basin 0003 surfaces a gridded time axis");
+        assert_eq!(
+            axis0003,
+            [12843_i64, 12844, 12846, 12850]
+                .map(|d| d * MICROS_PER_DAY)
+                .as_slice(),
+            "basin 0003 irregular axis: days 12843/12844/12846/12850 -> i64 micros (gaps 1,2,4)"
+        );
+        assert!(
+            !is_strictly_increasing_and_regular(axis0003),
+            "basin 0003 gridded axis is NON-regular (the M6(b) green-to-red marker): {axis0003:?}"
+        );
+        // The other two basins of the irregular fixture stay regular (only 0003 mutated).
+        for id in ["0001", "0002"] {
+            let basin = irregular
+                .gridded()
+                .per_basin()
+                .iter()
+                .find(|b| b.basin_id_folder().as_str() == id)
+                .unwrap_or_else(|| panic!("basin {id} present"));
+            let axis = basin
+                .gridded_time_axis()
+                .unwrap_or_else(|| panic!("basin {id} surfaces a gridded time axis"));
+            assert!(
+                is_strictly_increasing_and_regular(axis),
+                "irregular fixture basin {id} stays M6(b)-regular: {axis:?}"
+            );
+        }
     }
 }

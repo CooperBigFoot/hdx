@@ -87,16 +87,54 @@ use crate::manifest::Manifest;
 use crate::newtypes::BasinId;
 use crate::scalar_reader::{TimeExtent, TimeExtentSource};
 
+/// A basin's gridded `time` coordinate as the comparable i64-micros axis (spec
+/// §6.2/§6.3) — the **additive** gridded extension of [`BasinTimeExtent`].
+///
+/// Carries the full per-basin gridded axis (the `gridded_dynamic` Zarr `time`
+/// coordinate decoded as int64 day-counts then normalized to i64 **microseconds**
+/// since the unix epoch, via the discovery layer) plus its CF provenance (`units` /
+/// `calendar`). Present **only** for a basin bearing `gridded_dynamic` geometry; a
+/// pure-scalar basin carries `None` (the additive discipline — the existing
+/// `{start, end}` scalar extent is untouched). An inert fact, never a verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GriddedTimeAxis {
+    micros: Vec<i64>,
+    units: &'static str,
+    calendar: &'static str,
+}
+
+impl GriddedTimeAxis {
+    /// Borrows the gridded `time` axis as i64 microseconds since the unix epoch.
+    pub fn micros(&self) -> &[i64] {
+        &self.micros
+    }
+
+    /// Returns the CF `units` string the gridded axis is encoded under (spec §6.3).
+    pub fn units(&self) -> &'static str {
+        self.units
+    }
+
+    /// Returns the CF `calendar` string the gridded axis is encoded under (spec §6.3).
+    pub fn calendar(&self) -> &'static str {
+        self.calendar
+    }
+}
+
 /// A per-basin ragged time-extent entry (spec §6.1) — the §6.1 ragged fact.
 ///
 /// Pairs a [`BasinId`] with its `Option<TimeExtent>`: `Some(..)` when the basin's
 /// `scalar_dynamic.parquet` yielded a `[start, end]` span, and `None` when it did not
 /// (a recorded **gap**, never a verdict). Basins may legitimately span different periods
 /// of record (spec §6.1), so the entries are surfaced verbatim, in basin order.
+///
+/// Additively carries the basin's [`GriddedTimeAxis`] (the full gridded `time` axis as
+/// i64 micros) when the basin bears `gridded_dynamic` geometry — `None` for a
+/// pure-scalar basin. The scalar `{start, end}` extent is unchanged either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasinTimeExtent {
     basin_id: BasinId,
     time_extent: Option<TimeExtent>,
+    gridded_time_axis: Option<GriddedTimeAxis>,
 }
 
 impl BasinTimeExtent {
@@ -108,6 +146,12 @@ impl BasinTimeExtent {
     /// Returns the basin's time extent, or `None` for a recorded gap (spec §6.1).
     pub fn time_extent(&self) -> Option<TimeExtent> {
         self.time_extent
+    }
+
+    /// Borrows the basin's gridded `time` axis (i64 micros + CF provenance), or `None`
+    /// for a pure-scalar basin (the additive gridded extension, spec §6.2/§6.3).
+    pub fn gridded_time_axis(&self) -> Option<&GriddedTimeAxis> {
+        self.gridded_time_axis.as_ref()
     }
 }
 
@@ -159,7 +203,11 @@ impl Description {
             discovery.delineations().to_vec();
 
         // The per-basin ragged extents (spec §6.1): one entry per scalar-half basin,
-        // in basin order, pairing the folder id with its `Option<TimeExtent>`.
+        // in basin order, pairing the folder id with its `Option<TimeExtent>`. The
+        // additive `gridded_time_axis` is plumbed onto the model now (S4) but carried
+        // `None` — its population from the gridded half's per-basin axis (which shifts
+        // the describe golden) lands with the golden regeneration in S7. The scalar
+        // `{start, end}` extent is unchanged either way (the additive discipline).
         let time_extents: Vec<BasinTimeExtent> = discovery
             .scalar()
             .per_basin()
@@ -167,6 +215,7 @@ impl Description {
             .map(|basin| BasinTimeExtent {
                 basin_id: basin.basin_id_folder().clone(),
                 time_extent: basin.time_extent(),
+                gridded_time_axis: None,
             })
             .collect();
 
@@ -556,14 +605,45 @@ struct BasinTimeExtentDto<'a> {
     basin_id: &'a str,
     /// Source: `BasinTimeExtent::time_extent` (`null` = a recorded gap).
     time_extent: Option<TimeExtentDto>,
+    /// Source: `BasinTimeExtent::gridded_time_axis`. Additive: **omitted** from the
+    /// wire (not `null`) for a pure-scalar basin, so a scalar-only describe is
+    /// byte-identical to its v0.1 shape. Present only for a basin bearing
+    /// `gridded_dynamic` geometry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gridded_time_axis: Option<GriddedTimeAxisDto<'a>>,
 }
 
 impl<'a> BasinTimeExtentDto<'a> {
-    /// Projects a [`BasinTimeExtent`] onto the wire shape.
+    /// Projects a [`BasinTimeExtent`] onto the wire shape (the gridded axis is omitted
+    /// when the basin has none).
     fn from_entry(entry: &'a BasinTimeExtent) -> Self {
         Self {
             basin_id: entry.basin_id().as_str(),
             time_extent: entry.time_extent().map(TimeExtentDto::from_extent),
+            gridded_time_axis: entry.gridded_time_axis().map(GriddedTimeAxisDto::from_axis),
+        }
+    }
+}
+
+/// The serializable gridded `time`-axis shape — the i64-micros array + CF provenance
+/// (spec §6.2/§6.3). Additive: present only for a `gridded_dynamic`-bearing basin.
+#[derive(Debug, Serialize)]
+struct GriddedTimeAxisDto<'a> {
+    /// Source: `GriddedTimeAxis::micros` (i64 microseconds since the unix epoch).
+    micros: &'a [i64],
+    /// Source: `GriddedTimeAxis::units` (the CF `units` string).
+    units: &'a str,
+    /// Source: `GriddedTimeAxis::calendar` (the CF `calendar` string).
+    calendar: &'a str,
+}
+
+impl<'a> GriddedTimeAxisDto<'a> {
+    /// Projects a [`GriddedTimeAxis`] onto the wire shape.
+    fn from_axis(axis: &'a GriddedTimeAxis) -> Self {
+        Self {
+            micros: axis.micros(),
+            units: axis.units(),
+            calendar: axis.calendar(),
         }
     }
 }

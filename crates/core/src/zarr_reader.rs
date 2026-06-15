@@ -95,11 +95,6 @@ const UNITS_ATTR: &str = "units";
 /// **microseconds** since the unix epoch. This is the exact, integral day→micros
 /// scale ([`normalize_days_to_micros`]) — it mirrors the producer's own conversion
 /// (orthographos `axis.rs` / `exec.rs`) so the two axes are bit-comparable.
-//
-// Pre-landed ahead of its consumer: exercised by the round-trip test now (PRE-LAND
-// GATE i), and consumed on the non-test path when `check_t2`/`check_m6(b)` are
-// unskipped in `validate.rs` (S5/S6). The `allow` is removed when that caller lands.
-#[allow(dead_code)]
 pub(crate) const MICROS_PER_DAY: i64 = 86_400_000_000;
 
 /// Which path the reader used to learn the store (spec §8).
@@ -141,6 +136,7 @@ pub struct ZarrGrid {
     grid_info: GridInfo,
     fields: Vec<Field>,
     consolidated_source: ConsolidatedMetadataSource,
+    gridded_time_micros: Vec<i64>,
 }
 
 impl ZarrGrid {
@@ -157,6 +153,19 @@ impl ZarrGrid {
     /// Borrows the consolidated-metadata path the reader took.
     pub fn consolidated_source(&self) -> &ConsolidatedMetadataSource {
         &self.consolidated_source
+    }
+
+    /// Borrows the store's `time` coordinate as i64 **microseconds** since the unix
+    /// epoch (spec §6.2/§6.3).
+    ///
+    /// The Zarr `time` coordinate is stored as int64 **days** (`days since
+    /// 1970-01-01`); this is that array decoded via [`read_coord_i64`] and normalized
+    /// through [`normalize_days_to_micros`] — the SAME i64-micros representation the
+    /// scalar/reduced axis HDX compares against (so `check_t2`/`check_m6(b)` compare
+    /// the two axes bit-for-bit on one representation). An inert fact: discovery
+    /// surfaces the axis; it renders no verdict.
+    pub fn gridded_time_micros(&self) -> &[i64] {
+        &self.gridded_time_micros
     }
 }
 
@@ -321,11 +330,6 @@ fn read_coord_f64(
 /// |---|---|
 /// | the `<coord>/c/0` chunk is absent (the coordinate array is unread/unreadable) | [`CoreError::MissingGriddedCoordinate`] (the structurally required coordinate is missing) |
 /// | the chunk cannot be zstd-decoded, or its length is not a multiple of 8 | [`CoreError::ZarrRead`] |
-//
-// Pre-landed ahead of its consumer (PRE-LAND GATE i): the round-trip test exercises it
-// now; the non-test caller arrives when `check_t2`/`check_m6(b)` are unskipped in
-// `validate.rs` (S5/S6). The `allow` is removed when that caller lands.
-#[allow(dead_code)]
 pub(crate) fn read_coord_i64(
     store: &Path,
     artifact: &str,
@@ -382,11 +386,6 @@ pub(crate) fn read_coord_i64(
 /// the conversion is exact (no float). The multiply is saturating to mirror the
 /// producer's own `saturating_mul(MICROS_PER_DAY)` so the two axes are bit-identical;
 /// the conformant fixture's day magnitudes are tiny, so saturation never triggers.
-//
-// Pre-landed ahead of its consumer (PRE-LAND GATE i): exercised by the round-trip test
-// now; the non-test caller arrives with the `check_t2` axis-identity unskip in
-// `validate.rs` (S5). The `allow` is removed when that caller lands.
-#[allow(dead_code)]
 pub(crate) fn normalize_days_to_micros(days: &[i64]) -> Vec<i64> {
     days.iter().map(|&d| d.saturating_mul(MICROS_PER_DAY)).collect()
 }
@@ -489,8 +488,10 @@ fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
 /// `grid_mapping` target), reads the 1-D `lat`/`lon` coordinate chunks to derive the
 /// center→edge [`GridExtent`], resolves the CRS from the data variables'
 /// `grid_mapping` target, and maps each data variable to an ordinary `GriddedDynamic`
-/// [`Field`]. The `time` coordinate is required structurally but its values are not
-/// needed for the grid geometry. **No `c/0/0/0` data chunk is ever read.**
+/// [`Field`]. The `time` coordinate's int64 day-counts are decoded (via
+/// [`read_coord_i64`]) and normalized to i64 micros ([`gridded_time_micros`](ZarrGrid::gridded_time_micros))
+/// — the comparable axis `validate` enforces; they are not used for the grid geometry.
+/// **No `c/0/0/0` data chunk is ever read.**
 ///
 /// `grid_label` is the label of the store (e.g. `era5`), supplied by the caller from
 /// the artifact name; HDX names nothing from the file contents.
@@ -603,6 +604,10 @@ pub fn read_zarr_grid(
     // 1-D coordinate reads (c/0 only): cell centers for the center→edge extent.
     let lon = read_coord_f64(store, &artifact, COORD_LON)?;
     let lat = read_coord_f64(store, &artifact, COORD_LAT)?;
+    // The `time` coordinate is the int64 day-count array (NOT f64): decode it via the
+    // int64 leg and normalize to i64 micros — the comparable axis `check_t2`/`check_m6`
+    // (S5/S6) enforce. A 1-D c/0 read; never a c/0/0/0 data chunk.
+    let gridded_time_micros = normalize_days_to_micros(&read_coord_i64(store, &artifact, COORD_TIME)?);
     if lon.len() < 2 || lat.len() < 2 {
         return Err(CoreError::ZarrRead {
             artifact: artifact.clone(),
@@ -638,6 +643,7 @@ pub fn read_zarr_grid(
         grid_info,
         fields,
         consolidated_source,
+        gridded_time_micros,
     })
 }
 
