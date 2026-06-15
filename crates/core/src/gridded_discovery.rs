@@ -401,43 +401,67 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
     })
 }
 
-/// Assembles the homogeneous gridded field catalog from the first basin to expose
-/// each gridded·static / gridded·dynamic artifact (spec §5 — one-basin discovery).
+/// Assembles the homogeneous gridded field catalog by **walking every** gridded·static
+/// / gridded·dynamic artifact across **all basins** and taking their deterministic
+/// stable **union** (spec §5 — discovery; cross-family completeness for merge).
 ///
-/// The first static artifact's band field(s) followed by the first dynamic artifact's
-/// data-variable field(s). Because the COG reader exposes the band field on the
-/// [`CogGrid`] and the Zarr reader exposes the data-var fields on the [`ZarrGrid`],
-/// this re-reads the representative artifacts once to recover their fields (the
-/// per-basin model carries only the geometry). Cross-basin H1 enforcement is a
-/// `validate` rule.
+/// Walks ALL static artifacts (re-reading each [`CogGrid`] band field) then ALL dynamic
+/// artifacts (re-reading each [`ZarrGrid`]'s data-var fields), in basin → static →
+/// dynamic order (each list already name-sorted, basins already in stable sorted order),
+/// and pushes each field into a `Vec<Field>` deduplicated by
+/// `(name, quadrant, dtype, grid_label)`, preserving **first-seen-walk order**. So a
+/// multi-family tree (e.g. `era5`+`merit` dynamic, `dem`+`landcover` static) surfaces
+/// every family's field, and two `describe` calls over the same tree yield a
+/// byte-identical catalog ordering (the determinism the rehydration / describe-repro
+/// path relies on). A single-label tree's union is byte-identical to the old
+/// first-artifact result. Because the per-basin model carries only the geometry, the
+/// representative artifacts are re-read here to recover their fields. Cross-basin H1
+/// enforcement is a `validate` rule.
 ///
 /// # Errors
 ///
-/// Propagates any reader error from re-reading the representative artifacts.
+/// Propagates any reader error from re-reading a representative artifact.
 fn assemble_gridded_field_catalog(
     layout: &LayoutModel,
     per_basin: &[BasinGridded],
 ) -> Result<Vec<Field>, CoreError> {
     let mut catalog: Vec<Field> = Vec::new();
 
-    // The first basin exposing a static artifact contributes the band field(s).
-    if let Some((basin, artifact)) = per_basin
-        .iter()
-        .find_map(|b| b.static_artifacts().first().map(|a| (b, a)))
-    {
-        let path = static_artifact_path(layout, basin.basin_id_folder(), artifact.grid_label());
-        let cog = read_cog_grid(&path, artifact.grid_label().clone())?;
-        catalog.push(cog.field().clone());
+    // The dedup key: a field is the SAME family-field iff its (name, quadrant, dtype,
+    // grid_label) coincide. First-seen-walk order is preserved for reproducibility.
+    let already_seen = |catalog: &[Field], field: &Field| -> bool {
+        catalog.iter().any(|seen| {
+            seen.name() == field.name()
+                && seen.quadrant() == field.quadrant()
+                && seen.dtype() == field.dtype()
+                && seen.grid_label() == field.grid_label()
+        })
+    };
+
+    // ALL static artifacts (across all basins) contribute their band field(s).
+    for basin in per_basin {
+        for artifact in basin.static_artifacts() {
+            let path = static_artifact_path(layout, basin.basin_id_folder(), artifact.grid_label());
+            let cog = read_cog_grid(&path, artifact.grid_label().clone())?;
+            let field = cog.field();
+            if !already_seen(&catalog, field) {
+                catalog.push(field.clone());
+            }
+        }
     }
 
-    // The first basin exposing a dynamic artifact contributes the data-var field(s).
-    if let Some((basin, artifact)) = per_basin
-        .iter()
-        .find_map(|b| b.dynamic_artifacts().first().map(|a| (b, a)))
-    {
-        let path = dynamic_artifact_path(layout, basin.basin_id_folder(), artifact.grid_label());
-        let zarr = read_zarr_grid(&path, artifact.grid_label().clone())?;
-        catalog.extend(zarr.fields().iter().cloned());
+    // ALL dynamic artifacts (across all basins) contribute their data-var field(s).
+    for basin in per_basin {
+        for artifact in basin.dynamic_artifacts() {
+            let path =
+                dynamic_artifact_path(layout, basin.basin_id_folder(), artifact.grid_label());
+            let zarr = read_zarr_grid(&path, artifact.grid_label().clone())?;
+            for field in zarr.fields() {
+                if !already_seen(&catalog, field) {
+                    catalog.push(field.clone());
+                }
+            }
+        }
     }
 
     Ok(catalog)
@@ -975,6 +999,105 @@ mod tests {
             elevation,
             direct.field(),
             "catalog band == direct read band"
+        );
+    }
+
+    // --- Field-catalog completeness: walk-all + deterministic-union (merge-gen M1) -
+
+    #[test]
+    fn assemble_catalog_unions_fields_across_all_families() {
+        // RED-first (merge-gen M1): `assemble_gridded_field_catalog` must union the
+        // fields of EVERY grid family across ALL artifacts/basins, not just the FIRST
+        // static + FIRST dynamic artifact. Hand-build a 2-family dataset on disk by
+        // copying valid/minimal then planting, in basin 0001, a SECOND static label
+        // (dem.tif, landcover.tif — byte-copies of era5.tif, so each surfaces the same
+        // band field NAME under a DISTINCT grid_label) and a SECOND dynamic label
+        // (merit.zarr — a byte-copy of era5.zarr, surfacing the same data-var names
+        // under a distinct grid_label). The catalog must then contain EVERY family's
+        // field by (name, grid_label) membership. On the old first-artifact-only code
+        // the dem/landcover/merit-labelled fields are ABSENT → this fails red.
+        let temp = copy_fixture_to_temp("multifamily");
+        let gridded_static = temp.join("basin=0001/gridded_static");
+        let gridded_dynamic = temp.join("basin=0001/gridded_dynamic");
+
+        // Plant a SECOND + THIRD static label (byte-copy the COG).
+        std::fs::copy(gridded_static.join("era5.tif"), gridded_static.join("dem.tif"))
+            .expect("plant dem.tif");
+        std::fs::copy(
+            gridded_static.join("era5.tif"),
+            gridded_static.join("landcover.tif"),
+        )
+        .expect("plant landcover.tif");
+        // Plant a SECOND dynamic label (byte-copy the Zarr store).
+        copy_dir_all(
+            &gridded_dynamic.join("era5.zarr"),
+            &gridded_dynamic.join("merit.zarr"),
+        );
+
+        let result = discover_gridded(&temp);
+        // Re-run once more over the SAME tree for the determinism close.
+        let result2 = discover_gridded(&temp);
+        std::fs::remove_dir_all(&temp).ok();
+
+        let gridded = result.expect("multi-family tree must discover");
+        let gridded2 = result2.expect("multi-family tree must discover (2nd call)");
+
+        // Membership helper: the catalog contains a field with this (name, grid_label).
+        let has = |name: &str, label: &str| -> bool {
+            gridded.gridded_fields().iter().any(|f| {
+                f.name().as_str() == name
+                    && f.grid_label() == Some(&GridLabel::new(label))
+            })
+        };
+
+        // EVERY static family's band field is present (one per label).
+        assert!(has("elevation", "era5"), "era5 band field present");
+        assert!(
+            has("elevation", "dem"),
+            "dem band field present (2nd static label — ABSENT on first-artifact-only code)"
+        );
+        assert!(
+            has("elevation", "landcover"),
+            "landcover band field present (3rd static label — ABSENT on first-artifact-only code)"
+        );
+
+        // EVERY dynamic family's data-var fields are present (one set per label).
+        assert!(has("era5_precipitation", "era5"), "era5 precip var present");
+        assert!(
+            has("era5_precipitation", "merit"),
+            "merit precip var present (2nd dynamic label — ABSENT on first-artifact-only code)"
+        );
+        assert!(
+            has("era5_precipitation_was_filled", "merit"),
+            "merit mask var present (2nd dynamic label — ABSENT on first-artifact-only code)"
+        );
+
+        // No (name, quadrant, dtype, grid_label) duplicate survives the union.
+        let keys: Vec<(String, Quadrant, crate::field::Dtype, Option<String>)> = gridded
+            .gridded_fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.name().as_str().to_string(),
+                    f.quadrant(),
+                    f.dtype(),
+                    f.grid_label().map(|l| l.as_str().to_string()),
+                )
+            })
+            .collect();
+        for (i, key) in keys.iter().enumerate() {
+            assert!(
+                !keys[i + 1..].contains(key),
+                "catalog is deduplicated by (name, quadrant, dtype, grid_label): {key:?}"
+            );
+        }
+
+        // DETERMINISM close: two consecutive discover_gridded() calls over the same
+        // tree yield byte-identical field ordering (Field is PartialEq).
+        assert_eq!(
+            gridded.gridded_fields(),
+            gridded2.gridded_fields(),
+            "two discover_gridded calls yield identical catalog ordering"
         );
     }
 
