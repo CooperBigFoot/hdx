@@ -1,4 +1,4 @@
-# HDX — Hydrology Dataset Exchange (v0.1, format_version `0.1`)
+# HDX — Hydrology Dataset Exchange (format_version `0.2` current; `0.1` also recognized)
 
 > **Status: canonical in-repo specification.** This document is the faithful,
 > normative distillation of the settled design record at
@@ -298,7 +298,7 @@ encoding rules:
 The split test: **does the verb *define/execute the contract*, or does it
 *operate on data* the contract merely describes?**
 
-**HDX owns ONLY the contract-executing verbs — and these two ARE HDX v0.1:**
+**HDX owns ONLY the contract-executing verbs — and these two ARE the contract-executing verbs of HDX:**
 
 - **`validate`** — conformance. The spec and its validator are the *same
   artifact*. Rust, in `hdx-core`; "parse, don't validate" (invariants in
@@ -317,7 +317,7 @@ thin, JSON-emitting, LLM-drivable CLI wraps them (`hdx validate ./out`,
 (area-weighting, partial-cell handling, resampling kernels), not the contract.
 They *operate on* data HDX merely describes, so they belong to a separate
 data-operations engine, **outside HDX**. Building these is **out of scope for
-v0.1** and they MUST NOT appear in `hdx-core`.
+HDX** and they MUST NOT appear in `hdx-core`.
 
 ---
 
@@ -329,7 +329,7 @@ is **cross-checked against the data** ("declare + cross-check, no drift").
 
 ```json
 {
-  "format_version": "0.1",
+  "format_version": "0.2",
   "name": "<dataset name>",
   "created_at": "2026-06-01T00:00:00Z",
   "producer_version": "<tool/version that wrote it>",
