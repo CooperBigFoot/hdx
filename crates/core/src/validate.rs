@@ -65,6 +65,7 @@
 //! | ran / skipped (§14 note) | the report MUST clearly state which checks ran; a skip is honest, with a reason |
 
 use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -1067,18 +1068,68 @@ pub fn check_m6(cadence: &Cadence) -> CheckOutcome {
 /// `time` axis; gaps are NaN-filled (spec §6.2/§14 T2).
 ///
 /// A basin's `scalar_dynamic` `time` axis and every `gridded_dynamic` artifact MUST be
-/// the **identical** time axis (§6.2). v0.1 discovery surfaces the scalar `[start, end]`
-/// extent and the Zarr per-grid geometry, but **not** the Zarr `time` coordinate axis as
-/// a comparable 1-D array on the model — so the cross-artifact full-axis identity is the
-/// genuinely on-disk-shape-dependent leg, which v0.1 reports as an honest R3
-/// `Skipped`-with-reason. R3: `ByteDeep`.
-#[instrument(skip(_discovery))]
-pub fn check_t2(_discovery: &Discovery) -> CheckOutcome {
-    CheckOutcome::skipped(
-        CheckId::T2,
-        DepthClass::ByteDeep,
-        "intra-basin scalar-vs-gridded full time-axis identity needs both 1-D axes; v0.1 discovery surfaces the scalar [start,end] extent but not a comparable gridded time axis on the model, so this byte-deep cross-artifact axis-identity leg is an honest skip (spec §6.2)",
-    )
+/// the **identical** time axis (§6.2). Both 1-D axes are now surfaced on the discovery
+/// model as the SAME i64-**microsecond** representation: the scalar axis via the bounded
+/// `time`-only column projection
+/// ([`scalar_time_axis`](crate::discovery::BasinScalar::scalar_time_axis), normalized to
+/// micros), and the gridded axis via the int64 `/time` chunk decode normalized through
+/// `normalize_days_to_micros`
+/// ([`gridded_time_axis`](crate::gridded_discovery::BasinGridded::gridded_time_axis)). So
+/// the cross-artifact full-axis identity is decided element-for-element here.
+///
+/// Only basins that carry a `gridded_dynamic` axis are compared — a pure-scalar basin (no
+/// gridded subtree) has no cross-artifact axis to tie, so it trivially holds (gaps in the
+/// gridded axis are NaN-filled by the builder, so a conformant basin's two axes coincide
+/// exactly). A scalar basin missing its `scalar_dynamic` axis while carrying a gridded one
+/// is an L2/§6.1 concern surfaced elsewhere, not a T2 mismatch. **R3: `ByteDeep`** — the
+/// gridded leg reads the `/time` coordinate chunk.
+#[instrument(skip(discovery))]
+pub fn check_t2(discovery: &Discovery) -> CheckOutcome {
+    // Index the scalar full axis by basin folder id (the same key the gridded half uses).
+    let scalar_axis_by_basin: BTreeMap<&str, &[i64]> = discovery
+        .scalar()
+        .per_basin()
+        .iter()
+        .filter_map(|b| {
+            b.scalar_time_axis()
+                .map(|axis| (b.basin_id_folder().as_str(), axis))
+        })
+        .collect();
+
+    for basin in discovery.gridded().per_basin() {
+        let Some(gridded_axis) = basin.gridded_time_axis() else {
+            // No gridded·dynamic subtree: nothing to tie for this basin.
+            continue;
+        };
+        let folder = basin.basin_id_folder().as_str();
+        let Some(scalar_axis) = scalar_axis_by_basin.get(folder) else {
+            // A gridded basin with no scalar axis is an L2 / §6.1 gap, surfaced by those
+            // legs — T2 has no scalar axis to compare against, so it does not fail here.
+            continue;
+        };
+
+        if *scalar_axis != gridded_axis {
+            debug!(
+                basin = folder,
+                scalar_len = scalar_axis.len(),
+                gridded_len = gridded_axis.len(),
+                "T2: scalar and gridded time axes diverge"
+            );
+            return CheckOutcome::ran_fail(
+                CheckId::T2,
+                DepthClass::ByteDeep,
+                format!(
+                    "basin {folder:?}: the scalar_dynamic time axis and the gridded_dynamic \
+                     time axis are not identical (spec §6.2 T2) — both normalized to i64 \
+                     microseconds, scalar has {} step(s), gridded has {} step(s)",
+                    scalar_axis.len(),
+                    gridded_axis.len(),
+                ),
+            );
+        }
+    }
+
+    CheckOutcome::ran_pass(CheckId::T2, DepthClass::ByteDeep)
 }
 
 /// Checks G2 — a grid label shared across the COG and Zarr subtrees implies cell-for-cell
@@ -2266,11 +2317,12 @@ mod tests {
     }
 
     /// Report-states-which-ran (spec §14 note). The golden's `checks` array contains
-    /// **all 20** §14 ids; the v0.1 honest skips (M6 regularity leg, L3
-    /// absence-vs-NaN leg, T2 cross-artifact axis leg) appear with `status:"skipped"` +
-    /// a non-empty `detail`; every other check is `status:"ran"` with `result:"pass"`;
-    /// top-level `conformant:true`. This pins, in the committed artifact, that the report
-    /// clearly reports which checks ran vs were skipped.
+    /// **all 20** §14 ids; the remaining v0.1 honest skips (M6 regularity leg, L3
+    /// absence-vs-NaN leg) appear with `status:"skipped"` + a non-empty `detail`; every
+    /// other check — now including T2, which runs and passes once both 1-D axes are
+    /// surfaced as i64 micros (S5) — is `status:"ran"` with `result:"pass"`; top-level
+    /// `conformant:true`. This pins, in the committed artifact, that the report clearly
+    /// reports which checks ran vs were skipped.
     #[test]
     fn golden_clearly_reports_which_checks_ran_vs_skipped() {
         let golden = golden_value();
@@ -2290,9 +2342,10 @@ mod tests {
         ];
         assert_eq!(ids, expected_ids, "the golden lists every §14 id in spec order");
 
-        // The v0.1 honest skips: each is status:skipped with a non-empty detail reason
-        // and result:null (a skip never carries a verdict, the §14-note honesty rule).
-        let skipped: BTreeSet<&str> = ["M6", "L3", "T2"].into_iter().collect();
+        // The remaining v0.1 honest skips: each is status:skipped with a non-empty detail
+        // reason and result:null (a skip never carries a verdict, the §14-note honesty
+        // rule). T2 is NO LONGER skipped — it runs and passes on the valid fixture (S5).
+        let skipped: BTreeSet<&str> = ["M6", "L3"].into_iter().collect();
         for check in checks {
             let id = check.get("id").and_then(Value::as_str).expect("id");
             let status = check.get("status").and_then(Value::as_str).expect("status");
@@ -2543,12 +2596,64 @@ mod tests {
     }
 
     #[test]
-    fn t1_non_monotonic_pins_exactly_t1() {
+    fn t1_non_monotonic_fails_t1_and_t2() {
         // One basin's scalar_dynamic time is written descending across row groups (spec
-        // §6.3 / T1) ⇒ time_sorted_ascending false ⇒ check_t1 ran:fail. The single pinned
-        // T1 mutation (the nullable/mistyped/misnamed legs are covered in-memory by
-        // t1_negative_per_leg).
-        assert_pins_exactly("invalid/non-monotonic-time", CheckId::T1);
+        // §6.3 / T1) ⇒ time_sorted_ascending false ⇒ check_t1 ran:fail. The mutation
+        // REVERSES the rows (same timestamps, descending order — _mutate_non_monotonic_time
+        // takes the rows in reverse), so the scalar axis is no longer element-for-element
+        // IDENTICAL to the (still-ascending) gridded axis ⇒ check_t2 ALSO ran:fails (spec
+        // §6.2). Both are real, distinct violations of the one mutation; T2 is not a
+        // spurious co-trip but the correct identity verdict on a reversed axis. Every OTHER
+        // check stays pass-or-skip, and the report snapshot-equals the regenerated golden.
+        let name = "invalid/non-monotonic-time";
+        let report = validate(conformance(name))
+            .unwrap_or_else(|e| panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}"));
+
+        assert!(!report.conformant(), "{name} ⇒ non-conformant");
+
+        let t1 = report.find(CheckId::T1).expect("T1 present");
+        assert_eq!(t1.status(), CheckStatus::Ran, "T1 ran");
+        assert_eq!(t1.result(), Some(CheckResult::Fail), "T1 fails (axis not ascending)");
+
+        let t2 = report.find(CheckId::T2).expect("T2 present");
+        assert_eq!(t2.status(), CheckStatus::Ran, "T2 ran");
+        assert_eq!(
+            t2.result(),
+            Some(CheckResult::Fail),
+            "T2 fails (reversed scalar axis is not identical to the ascending gridded axis)"
+        );
+
+        // PURITY: exactly T1 and T2 fail; every other check is pass-or-skip.
+        for other in report.checks() {
+            if other.id() == CheckId::T1 || other.id() == CheckId::T2 {
+                continue;
+            }
+            assert_ne!(
+                other.result(),
+                Some(CheckResult::Fail),
+                "{name}: only T1 and T2 may fail; {:?} also failed",
+                other.id()
+            );
+        }
+
+        // SNAPSHOT: the produced report equals the regenerated per-fixture golden.
+        let produced: Value = serde_json::from_str(
+            &validate_json(conformance(name)).expect("validate_json succeeds"),
+        )
+        .expect("validate output is valid JSON");
+        assert_eq!(
+            produced,
+            fixture_golden_value(name),
+            "{name}: validate must equal the committed golden \
+             (regenerate the golden only on a format_version bump — see conformance/README.md)"
+        );
+
+        // The golden also matches the pinned wire shape (R4 schema lock).
+        let validator = validate_validator();
+        assert!(
+            validator.is_valid(&fixture_golden_value(name)),
+            "{name}: the golden must validate against validate.schema.json"
+        );
     }
 
     #[test]
@@ -2637,5 +2742,199 @@ mod tests {
                 "a check is exactly {{id, status, result, depth, detail}} (inert)"
             );
         }
+    }
+
+    // --- T2: scalar-vs-gridded full i64-micros axis identity (S5) ---------------------
+
+    /// Recursively copies a directory tree from `src` to `dst` (the on-disk corruptor's
+    /// base step). Hardlinks would couple the copy to the source; a plain byte copy keeps
+    /// the temp fixture independent so the rewrite below mutates only the copy.
+    fn copy_tree(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("create dst dir");
+        for entry in std::fs::read_dir(src).expect("read_dir src") {
+            let entry = entry.expect("dir entry");
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            if entry.file_type().expect("file_type").is_dir() {
+                copy_tree(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).expect("copy file");
+            }
+        }
+    }
+
+    /// A `#[cfg(test)]`-only on-disk corruptor: rewrites one basin's
+    /// `scalar_dynamic.parquet` `time` column to a **divergent** axis, leaving every other
+    /// column (`basin_id`, `streamflow`) untouched and the row count unchanged.
+    ///
+    /// This is the hdx-side analogue of orthographos's `StagingMutation::DropScalarStatic`
+    /// (a deliberate on-disk mutation), living here because `hdx-core` cannot depend on
+    /// orthographos. It exists because the *builder* structurally cannot emit a
+    /// scalar-vs-gridded axis mismatch — the only way to exercise the negative-T2 path is a
+    /// real on-disk corruption of an otherwise-conformant fixture. The divergence is a
+    /// +1000-day shift on every timestamp, so the scalar axis and the basin's gridded axis
+    /// (unchanged) no longer coincide.
+    struct RewriteScalarTimeColumn;
+
+    impl RewriteScalarTimeColumn {
+        /// Rewrites `basin=<basin_folder>/scalar_dynamic.parquet` under `root` so its
+        /// `time` column is shifted by `shift_days`, preserving the other columns and the
+        /// row order. The arrow physical type is `timestamp[us]` (the fixture's `time`
+        /// type), so the shift is applied in microseconds.
+        fn apply(root: &Path, basin_folder: &str, shift_days: i64) {
+            use std::sync::Arc;
+
+            use arrow::array::{Array, Float64Array, StringArray, TimestampMicrosecondArray};
+            use arrow::datatypes::{DataType, Field as ArrowField, Schema, TimeUnit};
+            use arrow::record_batch::RecordBatch;
+            use bytes::Bytes;
+            use parquet::arrow::ArrowWriter;
+            use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+            use parquet::file::properties::{EnabledStatistics, WriterProperties};
+
+            let path = root
+                .join(format!("basin={basin_folder}"))
+                .join("scalar_dynamic.parquet");
+            let raw = std::fs::read(&path).expect("read basin scalar_dynamic");
+
+            // Read every column back into memory (a full read, this is test-only).
+            let builder =
+                ParquetRecordBatchReaderBuilder::try_new(Bytes::from(raw)).expect("open parquet");
+            let reader = builder.build().expect("build reader");
+            let mut basin_ids: Vec<String> = Vec::new();
+            let mut times_micros: Vec<i64> = Vec::new();
+            let mut flow: Vec<f64> = Vec::new();
+            for batch in reader {
+                let batch = batch.expect("batch");
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("basin_id is Utf8");
+                let times = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("time is timestamp[us]");
+                let data = batch
+                    .column(2)
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .expect("streamflow is f64");
+                for i in 0..batch.num_rows() {
+                    basin_ids.push(ids.value(i).to_string());
+                    times_micros.push(times.value(i));
+                    flow.push(data.value(i));
+                }
+            }
+
+            // The divergence: shift every timestamp by `shift_days` (in micros), keeping
+            // the row order ascending so T1 (sortedness) still passes — only T2 must break.
+            let shift_micros = shift_days * 86_400_000_000_i64;
+            let shifted: Vec<i64> = times_micros.iter().map(|t| t + shift_micros).collect();
+
+            let schema = Arc::new(Schema::new(vec![
+                ArrowField::new("basin_id", DataType::Utf8, false),
+                ArrowField::new("time", DataType::Timestamp(TimeUnit::Microsecond, None), false),
+                ArrowField::new("streamflow", DataType::Float64, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(StringArray::from(basin_ids)),
+                    Arc::new(TimestampMicrosecondArray::from(shifted)),
+                    Arc::new(Float64Array::from(flow)),
+                ],
+            )
+            .expect("rewritten batch builds");
+
+            let props = WriterProperties::builder()
+                .set_statistics_enabled(EnabledStatistics::Page)
+                .build();
+            let mut buffer: Vec<u8> = Vec::new();
+            {
+                let mut writer = ArrowWriter::try_new(&mut buffer, schema, Some(props))
+                    .expect("writer constructs");
+                writer.write(&batch).expect("write rewritten batch");
+                writer.close().expect("close writer");
+            }
+            std::fs::write(&path, &buffer).expect("write corrupted scalar_dynamic");
+        }
+    }
+
+    /// Builds a uniquely-named temp directory path (PID + nanos), like the scalar_reader
+    /// temp-parquet helper, and copies `valid/minimal` into it.
+    fn copy_valid_minimal_to_temp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hdx-t2-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        copy_tree(&conformance("valid/minimal"), &dir);
+        dir
+    }
+
+    #[test]
+    fn check_t2_runs_and_passes_on_builder_axes() {
+        // positive-T2: on the conformant builder-produced fixture the scalar and gridded
+        // axes coincide per basin (the generator emits the Zarr axis aligned to the scalar
+        // `time` — build.py §"the Zarr time axis identical to the scalar time"). T2 must
+        // therefore RUN and PASS. On the pre-S5 code check_t2 returns Skipped, so the
+        // status==Ran assertion is the RED proof that the old code enters the skip.
+        let report = validate(conformance("valid/minimal")).expect("validate must succeed");
+        let t2 = report.find(CheckId::T2).expect("T2 outcome present");
+        assert_eq!(
+            t2.status(),
+            CheckStatus::Ran,
+            "T2 must RUN (not skip) now that both 1-D axes are surfaced as i64 micros"
+        );
+        assert_eq!(
+            t2.result(),
+            Some(CheckResult::Pass),
+            "scalar and gridded axes coincide per basin on the conformant fixture"
+        );
+        assert!(
+            report.conformant(),
+            "valid/minimal stays conformant with T2 running and passing"
+        );
+    }
+
+    #[test]
+    fn check_t2_runs_and_fails_on_corrupted_scalar_time_column() {
+        // negative-T2: copy the conformant mixed fixture, then corrupt basin 0001's scalar
+        // `time` column to a +1000-day-divergent axis while leaving its gridded axis
+        // untouched. T2 must RUN and FAIL on the normalized i64-micros axis. On the pre-S5
+        // code check_t2 is Skipped (silently conformant — the bug); the status==Ran +
+        // result==Fail assertions are the RED proof.
+        let dir = copy_valid_minimal_to_temp("corrupt");
+        RewriteScalarTimeColumn::apply(&dir, "0001", 1000);
+
+        let report = validate(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let report = report.expect("validate must succeed on the corrupted (still-readable) fixture");
+
+        let t2 = report.find(CheckId::T2).expect("T2 outcome present");
+        assert_eq!(
+            t2.status(),
+            CheckStatus::Ran,
+            "T2 must RUN over the corrupted fixture (the axes are both surfaced)"
+        );
+        assert_eq!(
+            t2.result(),
+            Some(CheckResult::Fail),
+            "the +1000-day-divergent scalar axis must FAIL the scalar-vs-gridded identity"
+        );
+        let detail = t2.detail().expect("a failing T2 carries a detail");
+        assert!(
+            detail.contains("0001"),
+            "the T2 fail detail names the offending basin: {detail}"
+        );
+        assert!(
+            !report.conformant(),
+            "a divergent scalar/gridded axis makes the dataset non-conformant"
+        );
     }
 }

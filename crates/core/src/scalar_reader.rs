@@ -131,6 +131,19 @@ impl Timestamp {
     pub fn as_offset_date_time(&self) -> OffsetDateTime {
         self.0
     }
+
+    /// Returns the timestamp as i64 **microseconds** since the unix epoch.
+    ///
+    /// This is the comparable representation `validate`'s T2 leg (scalar-vs-gridded
+    /// full-axis identity, spec §6.2) reads the scalar axis on: the SAME i64-micros
+    /// representation the gridded axis is normalized to (the Zarr `/time` int64
+    /// day-counts via `normalize_days_to_micros`), so the two axes compare exactly.
+    /// The wrapper instant is sub-microsecond-free for any conformant `time` value
+    /// (parquet `timestamp[us]`), and HDX's daily axes are integral days, so the
+    /// nanos→micros division is exact here.
+    pub fn as_unix_micros(&self) -> i64 {
+        (self.0.unix_timestamp_nanos() / 1_000) as i64
+    }
 }
 
 /// Which path produced a [`TimeExtent`] (spec §8).
@@ -913,6 +926,43 @@ pub fn time_extent(path: impl AsRef<Path>) -> Result<TimeExtent, CoreError> {
         end,
         source: TimeExtentSource::BoundedColumnScan,
     })
+}
+
+/// Reads a basin's full `scalar_dynamic` `time` axis as i64 **microseconds** since the
+/// unix epoch, in file order (spec §6).
+///
+/// This is the bounded 1-D `time`-only column projection ([`read_time_column`]) — the
+/// SAME architecture-§1-compliant coordinate read the extent fallback uses, **never** a
+/// gridded chunk or a data column — with each [`Timestamp`] normalized to i64 micros
+/// ([`Timestamp::as_unix_micros`]). It exists so `validate`'s T2 leg can compare the
+/// scalar axis against the gridded axis (which discovery normalizes to i64 micros via the
+/// int64 `/time` chunk) on **one** representation. The full axis (not just `[start,end]`)
+/// is required because T2 is per-element identity, not extent equality.
+///
+/// # Errors
+///
+/// | Condition | Error |
+/// |---|---|
+/// | the file cannot be read, or its parquet metadata fails to decode | [`CoreError::ParquetRead`] |
+/// | the `time` column is absent from the schema | [`CoreError::MissingScalarColumn`] |
+/// | a `time` value is outside the representable timestamp range, or carries a null | [`CoreError::ParquetRead`] |
+#[instrument(fields(path = %path.as_ref().display()))]
+pub(crate) fn read_scalar_time_axis_micros(path: impl AsRef<Path>) -> Result<Vec<i64>, CoreError> {
+    let path = path.as_ref();
+    let artifact = path.display().to_string();
+    let bytes = read_file_bytes(path)?;
+    let meta = read_parquet_meta(&artifact, &bytes)?;
+    let schema = meta.schema();
+    let metadata = meta.file_metadata();
+
+    let unit = time_unit(schema).ok_or_else(|| CoreError::MissingScalarColumn {
+        artifact: artifact.clone(),
+        column: TIME_COLUMN.to_string(),
+    })?;
+
+    // The bounded 1-D `time`-only projection (architecture §1), normalized to i64 micros.
+    let timestamps = read_time_column(&artifact, bytes, metadata, unit)?;
+    Ok(timestamps.iter().map(Timestamp::as_unix_micros).collect())
 }
 
 #[cfg(test)]

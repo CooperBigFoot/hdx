@@ -107,10 +107,10 @@
     },
     {
       "id": "T2",
-      "status": "skipped",
-      "result": null,
+      "status": "ran",
+      "result": "pass",
       "depth": "byte_deep",
-      "detail": "intra-basin scalar-vs-gridded full time-axis identity needs both 1-D axes; v0.1 discovery surfaces the scalar [start,end] extent but not a comparable gridded time axis on the model, so this byte-deep cross-artifact axis-identity leg is an honest skip (spec §6.2)"
+      "detail": null
     },
     {
       "id": "G1",

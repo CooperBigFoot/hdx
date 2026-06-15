@@ -74,7 +74,8 @@ use crate::field::Field;
 use crate::layout::{BasinDir, LayoutModel, walk_layout};
 use crate::newtypes::BasinId;
 use crate::scalar_reader::{
-    TimeColumn, TimeExtent, read_scalar_dynamic, read_scalar_static, time_extent,
+    TimeColumn, TimeExtent, read_scalar_dynamic, read_scalar_static, read_scalar_time_axis_micros,
+    time_extent,
 };
 
 /// The two dataset-level root-rollup **presence facts** (spec §4/§14 L1).
@@ -120,6 +121,7 @@ pub struct BasinScalar {
     basin_id_in_file: Option<BasinId>,
     time: Option<TimeColumn>,
     time_extent: Option<TimeExtent>,
+    scalar_time_micros: Option<Vec<i64>>,
     fields: Vec<Field>,
 }
 
@@ -149,6 +151,20 @@ impl BasinScalar {
     /// `scalar_dynamic.parquet` is absent for this basin (spec §6.1).
     pub fn time_extent(&self) -> Option<TimeExtent> {
         self.time_extent
+    }
+
+    /// Borrows the basin's full `scalar_dynamic` `time` axis as i64 **microseconds**
+    /// since the unix epoch (the bounded 1-D `time`-only projection,
+    /// [`read_scalar_time_axis_micros`](crate::scalar_reader::read_scalar_time_axis_micros)),
+    /// or `None` if the `scalar_dynamic.parquet` is absent for this basin (spec §6.1).
+    ///
+    /// This is the comparable axis `validate`'s T2 leg (scalar-vs-gridded full-axis
+    /// identity, spec §6.2) reads on the scalar side — the SAME i64-micros representation
+    /// the gridded axis is normalized to
+    /// ([`BasinGridded::gridded_time_axis`](crate::gridded_discovery::BasinGridded::gridded_time_axis)).
+    /// Discovery surfaces it as a fact, never a verdict.
+    pub fn scalar_time_axis(&self) -> Option<&[i64]> {
+        self.scalar_time_micros.as_deref()
     }
 
     /// Borrows the basin's dynamic-scalar field catalog (ordinary [`Field`]s).
@@ -244,6 +260,7 @@ fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
             basin_id_in_file: None,
             time: None,
             time_extent: None,
+            scalar_time_micros: None,
             fields: Vec::new(),
         });
     }
@@ -251,6 +268,9 @@ fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
     let path = basin.scalar_dynamic().path();
     let table = read_scalar_dynamic(path)?;
     let extent = time_extent(path)?;
+    // The full 1-D scalar `time` axis as i64 micros (the bounded `time`-only projection),
+    // the comparable representation T2 reads against the gridded axis (spec §6.2).
+    let scalar_time_micros = read_scalar_time_axis_micros(path)?;
 
     // The authoritative in-file id: the first distinct value, or `None`. The I2
     // cross-check pairs this with the folder id — discovery records, never compares.
@@ -268,6 +288,7 @@ fn discover_basin(basin: &BasinDir) -> Result<BasinScalar, CoreError> {
         basin_id_in_file,
         time: Some(table.time().clone()),
         time_extent: Some(extent),
+        scalar_time_micros: Some(scalar_time_micros),
         fields: table.fields().to_vec(),
     })
 }
