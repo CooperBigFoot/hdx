@@ -1505,4 +1505,119 @@ mod tests {
             "a `conformant` verdict key must be rejected (describe is facts-only, spec §10)"
         );
     }
+
+    // --- merge-gen M1: multi_grid_multi_static field-catalog completeness -------------
+
+    /// Reads the committed two-family describe golden as a parsed `Value`.
+    ///
+    /// Regeneration (only when the shape legitimately changes): run
+    /// `describe(conformance("valid/multi_grid_multi_static")).to_json_pretty()`
+    /// and overwrite `conformance/goldens/valid-multi_grid_multi_static.describe.json`.
+    /// The golden lives OUTSIDE the gitignored fixture trees so `regenerate.sh`
+    /// never clobbers it.
+    fn multi_describe_golden() -> Value {
+        let path = conformance("goldens/valid-multi_grid_multi_static.describe.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the multi describe golden must be valid JSON")
+    }
+
+    /// merge-gen M1 RED→GREEN — the END-TO-END field-catalog completeness proof.
+    ///
+    /// `describe` of the two-family `multi_grid_multi_static` fixture (two distinct
+    /// grid labels per gridded quadrant: `dem`+`landcover` gridded·static,
+    /// `era5`+`merit` gridded·dynamic) must equal the committed describe golden,
+    /// whose `fields[]` enumerates BOTH families' fields. On the PRE-Step-1
+    /// first-artifact-only catalog this is unsatisfiable: the catalog surfaced only
+    /// ONE static label's band field and ONE dynamic label's data-var field(s), so
+    /// the 2nd family's fields (`landcover_class`, `merit_flow_accumulation`) were
+    /// absent from `describe.fields()` (`describe.rs` `Description::from_discovery`
+    /// reads `discovery.fields()` directly) — both the golden-equality assertion and
+    /// the explicit BOTH-families membership assertions FAIL red. With Step 1's
+    /// walk-all + deterministic-union catalog they pass GREEN.
+    ///
+    /// The RED is strictly the describe field list, NOT `validate`: the catalog
+    /// feeds only order-insensitive G1 (`check_g1` only tests that a PRESENT gridded
+    /// field self-names with `Some(GridLabel)` — a MISSING field cannot trip it), so
+    /// validate is field-catalog-insensitive and is asserted here only as a
+    /// CORROBORATING positive (conformant + no ran:fail + every skip carries a
+    /// reason — the `valid_fixture_is_conformant_with_no_ran_fail` shape, NOT
+    /// all-RAN). The committed validate golden is corroborating-only, NOT the M1
+    /// proof (it is byte-identical pre/post Step 1).
+    #[test]
+    fn multi_grid_multi_static_describe_golden_carries_both_families() {
+        let fixture = conformance("valid/multi_grid_multi_static");
+
+        // The describe-completeness proof: describe equals the committed golden, whose
+        // fields[] enumerate BOTH families. On the fix-less catalog the produced
+        // describe omits the 2nd family's fields, so this equality FAILS red.
+        let produced: Value = serde_json::from_str(
+            &describe_json(&fixture).expect("describe_json succeeds on the two-family fixture"),
+        )
+        .expect("describe output is valid JSON");
+        let golden = multi_describe_golden();
+        assert_eq!(
+            produced, golden,
+            "describe of the two-family fixture must equal the committed describe golden \
+             (the golden enumerates BOTH families' fields; a first-artifact-only catalog \
+             omits the 2nd family — regenerate the golden only on a legitimate shape change)"
+        );
+
+        // The EXPLICIT both-families membership assertion (independent of golden
+        // ordering): every family field — both static labels' band fields AND both
+        // dynamic labels' data-var fields — is present in describe.fields().
+        let field_names: Vec<&str> = produced
+            .get("fields")
+            .and_then(Value::as_array)
+            .expect("fields array")
+            .iter()
+            .filter_map(|f| f.get("name").and_then(Value::as_str))
+            .collect();
+        for expected in [
+            "dem_elevation",            // gridded·static label `dem`
+            "landcover_class",          // gridded·static label `landcover` (2nd static family)
+            "era5_precipitation",       // gridded·dynamic label `era5`
+            "merit_flow_accumulation",  // gridded·dynamic label `merit` (2nd dynamic family)
+        ] {
+            assert!(
+                field_names.contains(&expected),
+                "describe.fields() must contain {expected:?} (the field-catalog union must \
+                 walk ALL artifacts across BOTH families); got {field_names:?}"
+            );
+        }
+
+        // Determinism (inherited from Step 1): two describe calls are byte-identical.
+        let first = describe_json(&fixture).expect("describe_json #1");
+        let second = describe_json(&fixture).expect("describe_json #2");
+        assert_eq!(
+            first, second,
+            "two describe calls over the same tree must be byte-identical (deterministic union)"
+        );
+
+        // CORROBORATING positive (NOT the M1 proof): validate over the fixture is
+        // conformant, no check ran:fail, and every Skipped check carries a reason —
+        // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050),
+        // explicitly NOT all-RAN (L3/M6(b)/T2/Geo1 are honestly Skipped-with-reason on
+        // a conformant 0.2 fixture; here this fixture happens to run them all). The
+        // catalog is consumed only by order-insensitive G1, so a missing field cannot
+        // trip validate — confirming validate is field-catalog-insensitive.
+        let report = crate::validate::validate(&fixture)
+            .expect("validate succeeds on the two-family fixture");
+        assert!(report.conformant(), "the two-family fixture must be conformant");
+        for outcome in report.checks() {
+            assert_ne!(
+                outcome.result(),
+                Some(crate::validate::CheckResult::Fail),
+                "{:?} must not be ran:fail on the two-family fixture",
+                outcome.id()
+            );
+            if outcome.status() == crate::validate::CheckStatus::Skipped {
+                assert!(
+                    outcome.detail().is_some_and(|d| !d.is_empty()),
+                    "{:?} skip must carry a reason",
+                    outcome.id()
+                );
+            }
+        }
+    }
 }

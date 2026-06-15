@@ -31,6 +31,8 @@ from hdx_fixtures.grids import (
     GRID_LABEL,
     GRIDDED_DYNAMIC_FIELD,
     GRIDDED_STATIC_FIELD,
+    SECOND_DYNAMIC_LABELS,
+    SECOND_STATIC_LABELS,
     _time_since_epoch,
     cog_path,
     zarr_path,
@@ -684,6 +686,114 @@ def assert_four_quadrants_present(dataset_root: Path) -> None:
     for quadrant, path in checks.items():
         _require(path.exists(), f"quadrant {quadrant} missing artifact at {path}")
     log.info("four quadrants present: %s", sorted(checks.keys()))
+
+
+# --- multi_grid_multi_static self-assertions (merge-gen M1) -------------------
+
+
+def assert_multi_family_labels_present(dataset_root: Path) -> None:
+    """Confirm every basin carries BOTH static + BOTH dynamic family artifacts.
+
+    For each basin: a ``gridded_static/<label>.tif`` COG for every label in
+    :data:`SECOND_STATIC_LABELS` (dem, landcover) whose single band is the
+    label's distinct field name (self-naming, G1), and a
+    ``gridded_dynamic/<label>.zarr`` Zarr for every label in
+    :data:`SECOND_DYNAMIC_LABELS` (era5, merit) carrying its distinct data-var
+    field + companion mask. Both static label fields differ and both dynamic label
+    fields differ — so a first-artifact-only catalog would miss the second family
+    (the property the M1 describe golden proves complete).
+    """
+    log = get_logger("assert.multi")
+    for basin in BASINS:
+        bdir = basin_dir(dataset_root, basin.basin_id)
+        for label, field_name in SECOND_STATIC_LABELS:
+            path = cog_path(bdir, label)
+            _require(path.exists(), f"{path}: missing static label {label!r} COG")
+            with rasterio.open(path) as src:
+                descs = list(src.descriptions)
+            _require(
+                field_name in descs,
+                f"{path}: band descriptions {descs} omit field {field_name!r} (G1)",
+            )
+        for label, field_name in SECOND_DYNAMIC_LABELS:
+            store = zarr_path(bdir, label)
+            _require(store.exists(), f"{store}: missing dynamic label {label!r} Zarr")
+            group = zarr.open_group(str(store), mode="r")
+            names = set(group.array_keys())
+            _require(
+                field_name in names,
+                f"{store}: data vars {sorted(names)} omit field {field_name!r} (G1)",
+            )
+            companion = f"{field_name}_was_filled"
+            _require(
+                companion in names,
+                f"{store}: missing companion mask {companion!r}",
+            )
+        log.info(
+            "multi-family labels OK basin=%s static=%s dynamic=%s",
+            basin.basin_id,
+            [lbl for lbl, _ in SECOND_STATIC_LABELS],
+            [lbl for lbl, _ in SECOND_DYNAMIC_LABELS],
+        )
+
+
+def assert_multi_family_labels_homogeneous(dataset_root: Path) -> None:
+    """Confirm every basin carries the SAME four-label set (H2 stays pass).
+
+    H2 requires the grid-label set to be identical across basins. The two-family
+    fixture emits the same ``{dem, landcover}`` static + ``{era5, merit}`` dynamic
+    labels for every basin, so the per-basin label set is invariant and H2 passes.
+    The static and dynamic label sets are disjoint, so no label is shared across
+    subtrees — G2 finds no pair to compare and passes trivially.
+    """
+    log = get_logger("assert.multi")
+    static_labels = sorted(lbl for lbl, _ in SECOND_STATIC_LABELS)
+    dynamic_labels = sorted(lbl for lbl, _ in SECOND_DYNAMIC_LABELS)
+    _require(
+        not (set(static_labels) & set(dynamic_labels)),
+        f"static labels {static_labels} and dynamic labels {dynamic_labels} "
+        "must be disjoint (so no label is shared across subtrees, G2 trivial)",
+    )
+    for basin in BASINS:
+        bdir = basin_dir(dataset_root, basin.basin_id)
+        observed_static = sorted(p.stem for p in (bdir / "gridded_static").glob("*.tif"))
+        observed_dynamic = sorted(
+            p.stem for p in (bdir / "gridded_dynamic").glob("*.zarr")
+        )
+        _require(
+            observed_static == static_labels,
+            f"basin {basin.basin_id}: static labels {observed_static} "
+            f"!= {static_labels} (H2)",
+        )
+        _require(
+            observed_dynamic == dynamic_labels,
+            f"basin {basin.basin_id}: dynamic labels {observed_dynamic} "
+            f"!= {dynamic_labels} (H2)",
+        )
+    log.info(
+        "multi-family label sets homogeneous across basins: static=%s dynamic=%s",
+        static_labels,
+        dynamic_labels,
+    )
+
+
+def run_multi_grid_multi_static_assertions(dataset_root: Path) -> None:
+    """Run the merge-gen M1 two-family self-assertions; raise on the first failure.
+
+    Invoked by ``regenerate.sh`` (via ``build.main``) after emitting the
+    multi_grid_multi_static baseline. Reuses the scalar + standard gridded
+    self-assertions (the scalar half, outlines, time alignment, georef, sharding
+    are the baseline shape), then adds the two-family checks: BOTH static + BOTH
+    dynamic labels present with distinct fields (the catalog-completeness surface),
+    and the per-basin label set homogeneous across basins (H2). Any
+    :class:`AssertionFailed` propagates so a broken fixture is never committed.
+    """
+    log = get_logger("assert")
+    run_scalar_assertions(dataset_root)
+    assert_zarr_time_ragged_across_basins(dataset_root)
+    assert_multi_family_labels_present(dataset_root)
+    assert_multi_family_labels_homogeneous(dataset_root)
+    log.info("all multi_grid_multi_static self-assertions passed")
 
 
 def run_gridded_assertions(dataset_root: Path) -> None:

@@ -81,6 +81,42 @@ GRIDDED_DYNAMIC_FIELD = "era5_precipitation"
 # magic and parses no belongs-to link (spec §2) — it is just another variable.
 COMPANION_MASK_FIELD = "era5_precipitation_was_filled"
 
+# --- multi_grid_multi_static seam (merge-gen M1) ------------------------------
+#
+# The merge-gen field-catalog-completeness proof needs a dataset carrying TWO
+# DISTINCT grid labels per quadrant so the gridded field catalog must union
+# fields across families (not just the first artifact). Every basin emits:
+#
+#   gridded_static/<label>.tif   under labels  dem, landcover  (two COGs)
+#   gridded_dynamic/<label>.zarr under labels  era5, merit     (two Zarrs)
+#
+# The static label set {dem, landcover} and the dynamic label set {era5, merit}
+# are disjoint, so no label is shared across subtrees: G2 (which only compares a
+# shared label's COG+Zarr extents) finds no pair to compare and passes trivially.
+# Each label carries its OWN, distinctly-named field so a first-artifact-only
+# catalog would surface only ONE static + ONE dynamic field's family — the RED.
+# Every basin carries the SAME four labels, so H2 (cross-basin label-set
+# equality) stays pass. The grid geometry is the shared baseline geometry, so all
+# four labels are georeferenced (G3) over the same extent.
+#
+# Field names are opaque producer strings (spec §2): the {source}_{variable}
+# dynamic pattern and the companion-mask suffix carry NO special handling — they
+# appear here only as ordinary, distinct catalog members.
+
+# Two distinct gridded·static labels (each a single-band COG), distinct fields:
+SECOND_STATIC_LABELS: tuple[tuple[str, str], ...] = (
+    ("dem", "dem_elevation"),  # (grid_label, band field name), f32
+    ("landcover", "landcover_class"),  # (grid_label, band field name), f32
+)
+
+# Two distinct gridded·dynamic labels (each a Zarr v3 store). Each carries its own
+# {source}_{variable} data field plus its ordinary {field}_was_filled companion
+# mask — so the catalog must union four dynamic fields across the two families.
+SECOND_DYNAMIC_LABELS: tuple[tuple[str, str], ...] = (
+    ("era5", "era5_precipitation"),  # (grid_label, data-var field name), f32
+    ("merit", "merit_flow_accumulation"),  # (grid_label, data-var field name), f32
+)
+
 # Dataset-wide CRS (spec §7.4 / §11). EPSG:4326, the same value the manifest
 # declares; M5 cross-checks the manifest CRS against the CRS carried in files.
 # Derive the integer EPSG code FROM the manifest CRS string so the two cannot
@@ -494,6 +530,223 @@ def write_grids(dataset_root: Path) -> list[Path]:
     for basin in BASINS:
         cog, store = write_gridded_for_basin(dataset_root, basin)
         written.extend((cog, store))
+    return written
+
+
+# --- multi_grid_multi_static writers (merge-gen M1) ---------------------------
+#
+# These emit a basin's TWO static COGs (dem, landcover) and TWO dynamic Zarrs
+# (era5, merit), each with its OWN distinctly-named field. They mirror the
+# baseline writers above but take the band/data-var field name as an argument
+# (the baseline writers hardcode the single-family field names, so they are left
+# untouched). All four artifacts use the shared baseline geometry/time axis.
+
+
+def write_gridded_static_field(
+    basin_dir_path: Path, geom: GridGeometry, label: str, field_name: str
+) -> Path:
+    """Write a single-band ``gridded_static`` COG whose band is ``field_name``.
+
+    Identical to :func:`write_gridded_static` except the band description (the
+    self-naming G1 field name) is ``field_name`` rather than the baseline
+    :data:`GRIDDED_STATIC_FIELD`, so a multi-family tree carries a distinct band
+    field per static ``label``. The raster is f32, tiled, overview-bearing and
+    georeferenced over ``geom`` (G3), dense ``[Y,X]`` and delineation-neutral (§9).
+    """
+    log = get_logger("grids.cog")
+    static_dir = gridded_static_dir(basin_dir_path)
+    static_dir.mkdir(parents=True, exist_ok=True)
+    path = cog_path(basin_dir_path, label)
+
+    surface = np.arange(geom.height * geom.width, dtype="float32").reshape(
+        geom.height, geom.width
+    )
+
+    profile = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "count": 1,
+        "height": geom.height,
+        "width": geom.width,
+        "crs": RasterioCRS.from_epsg(EPSG_CODE),
+        "transform": geom.transform,
+        "tiled": True,
+        "blockxsize": COG_BLOCK,
+        "blockysize": COG_BLOCK,
+        "compress": "deflate",
+        "nodata": float("nan"),
+    }
+
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(surface, 1)
+        # Band description == field name (self-naming, no positional axis, G1).
+        dst.set_band_description(1, field_name)
+        dst.update_tags(1, units="m")
+        dst.build_overviews([2, 4], Resampling.nearest)
+        dst.update_tags(ns="rio_overview", resampling="nearest")
+
+    log.info(
+        "wrote multi-family gridded_static COG label=%s band=%s shape=%dx%d",
+        label,
+        field_name,
+        geom.height,
+        geom.width,
+    )
+    return path
+
+
+def write_gridded_dynamic_field(
+    basin_dir_path: Path,
+    geom: GridGeometry,
+    times: list[dt.datetime],
+    label: str,
+    field_name: str,
+) -> Path:
+    """Write a ``gridded_dynamic`` Zarr v3 store with data-var ``field_name``.
+
+    Identical to :func:`write_gridded_dynamic` except the single data variable is
+    named ``field_name`` (with its ordinary ``{field_name}_was_filled`` companion
+    mask) rather than the baseline :data:`GRIDDED_DYNAMIC_FIELD`, so a multi-family
+    tree carries distinct data-var fields per dynamic ``label``. The ``time`` axis
+    is the basin's scalar ``time`` axis (T2), the first timestep is NaN-filled
+    (§6.2) and the companion mask marks it. Sharded + consolidated metadata (§8).
+    """
+    log = get_logger("grids.zarr")
+    dynamic_dir = gridded_dynamic_dir(basin_dir_path)
+    dynamic_dir.mkdir(parents=True, exist_ok=True)
+    path = zarr_path(basin_dir_path, label)
+    companion = f"{field_name}_was_filled"
+
+    n_t = len(times)
+    lat = geom.lat_centers()
+    lon = geom.lon_centers()
+    time_vals = _time_since_epoch(times)
+
+    data = np.fromfunction(
+        lambda t, y, x: (t + y * 0.1 + x * 0.01).astype("float32"),
+        (n_t, geom.height, geom.width),
+        dtype="float32",
+    ).astype("float32")
+    was_filled = np.zeros((n_t, geom.height, geom.width), dtype="int8")
+    if n_t > 0:
+        data[0, :, :] = np.float32("nan")
+        was_filled[0, :, :] = 1
+
+    group = zarr.open_group(str(path), mode="w", zarr_format=3)
+    group.attrs["Conventions"] = "CF-1.8"
+
+    _write_cf_coord(
+        group,
+        "time",
+        time_vals,
+        {
+            "units": TIME_UNITS,
+            "calendar": TIME_CALENDAR,
+            "standard_name": "time",
+            "axis": "T",
+        },
+    )
+    _write_cf_coord(
+        group,
+        "lat",
+        lat.astype("float64"),
+        {"units": "degrees_north", "standard_name": "latitude", "axis": "Y"},
+    )
+    _write_cf_coord(
+        group,
+        "lon",
+        lon.astype("float64"),
+        {"units": "degrees_east", "standard_name": "longitude", "axis": "X"},
+    )
+
+    crs_var = group.create_array("crs", shape=(), dtype="int32")
+    crs_var[...] = 0
+    crs_var.attrs["grid_mapping_name"] = "latitude_longitude"
+    crs_var.attrs["crs_wkt"] = RasterioCRS.from_epsg(EPSG_CODE).to_wkt()
+    crs_var.attrs["spatial_ref"] = f"EPSG:{EPSG_CODE}"
+
+    chunks = (min(ZARR_TIME_CHUNK, n_t) or 1, ZARR_Y_CHUNK, ZARR_X_CHUNK)
+    shards = (n_t or 1, geom.height, geom.width)
+    compressors = [
+        BloscCodec(cname="zstd", clevel=5, shuffle=BloscShuffle.shuffle)
+    ]
+
+    def _write_var(name: str, arr_data: np.ndarray, attrs: dict[str, object]) -> None:
+        var = group.create_array(
+            name,
+            shape=arr_data.shape,
+            dtype=arr_data.dtype,
+            chunks=chunks,
+            shards=shards,
+            compressors=compressors,
+            dimension_names=("time", "lat", "lon"),
+            fill_value=(float("nan") if arr_data.dtype.kind == "f" else 0),
+        )
+        var[:] = arr_data
+        for key, val in attrs.items():
+            var.attrs[key] = val
+        var.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
+
+    _write_var(
+        field_name,
+        data,
+        {"units": "mm", "grid_mapping": "crs", "standard_name": "precipitation_amount"},
+    )
+    _write_var(
+        companion,
+        was_filled,
+        {"units": "1", "grid_mapping": "crs", "long_name": "was-filled mask"},
+    )
+
+    zarr.consolidate_metadata(str(path))
+    _stabilize_consolidated_metadata(path)
+
+    log.info(
+        "wrote multi-family gridded_dynamic Zarr label=%s vars=%s T=%d shape=%dx%d sharded",
+        label,
+        [field_name, companion],
+        n_t,
+        geom.height,
+        geom.width,
+    )
+    return path
+
+
+def write_multi_family_grids_for_basin(
+    dataset_root: Path, basin: BasinSpec
+) -> list[Path]:
+    """Write one basin's TWO static COGs + TWO dynamic Zarrs (multi-family).
+
+    Emits the static labels of :data:`SECOND_STATIC_LABELS` (dem, landcover) and
+    the dynamic labels of :data:`SECOND_DYNAMIC_LABELS` (era5, merit), each with
+    its own field, all over the shared baseline :class:`GridGeometry` and the
+    basin's scalar ``time`` axis (T2). Returns every emitted artifact path.
+    """
+    from hdx_fixtures.scalar import basin_dir
+
+    basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+    geom = _basin_geometry()
+    times = _time_axis(basin)
+
+    written: list[Path] = []
+    for label, field_name in SECOND_STATIC_LABELS:
+        written.append(
+            write_gridded_static_field(basin_dir_path, geom, label, field_name)
+        )
+    for label, field_name in SECOND_DYNAMIC_LABELS:
+        written.append(
+            write_gridded_dynamic_field(
+                basin_dir_path, geom, times, label, field_name
+            )
+        )
+    return written
+
+
+def write_multi_family_grids(dataset_root: Path) -> list[Path]:
+    """Write the two-family COG/Zarr set for every basin; return all paths."""
+    written: list[Path] = []
+    for basin in BASINS:
+        written.extend(write_multi_family_grids_for_basin(dataset_root, basin))
     return written
 
 

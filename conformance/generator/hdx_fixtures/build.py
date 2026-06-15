@@ -42,9 +42,10 @@ from hdx_fixtures.assertions import (
     _require,
     run_gridded_assertions,
     run_invalid_assertions,
+    run_multi_grid_multi_static_assertions,
     run_scalar_assertions,
 )
-from hdx_fixtures.grids import write_grids
+from hdx_fixtures.grids import write_grids, write_multi_family_grids
 from hdx_fixtures.manifest import (
     FORMAT_VERSION_V0_2,
     MANIFEST_FIELDS,
@@ -72,6 +73,20 @@ def valid_geometry_less_root(repo_root: Path) -> Path:
     return repo_root / "conformance" / "valid" / "geometry-less"
 
 
+def valid_multi_grid_multi_static_root(repo_root: Path) -> Path:
+    """Return the ``conformance/valid/multi_grid_multi_static/`` dataset root.
+
+    The merge-gen M1 field-catalog-completeness fixture: the four-quadrant
+    baseline with TWO DISTINCT grid labels per gridded quadrant
+    (``dem``+``landcover`` gridded·static, ``era5``+``merit`` gridded·dynamic),
+    each label carrying its own distinctly-named field. The gridded field catalog
+    must union fields across BOTH families, so ``describe`` surfaces every family's
+    field — the end-to-end M1 proof. ``validate`` reports it conformant (the two
+    static + two dynamic labels are homogeneous across basins and georeferenced).
+    """
+    return repo_root / "conformance" / "valid" / "multi_grid_multi_static"
+
+
 def build_scalar_baseline(dataset_root: Path) -> None:
     """Emit the scalar/geometry artifacts into ``dataset_root`` (spec §4)."""
     log = get_logger("build")
@@ -88,6 +103,26 @@ def build_gridded_baseline(dataset_root: Path) -> None:
     log.info("building gridded baseline at %s", dataset_root)
     write_grids(dataset_root)
     log.info("gridded baseline emitted")
+
+
+def build_multi_grid_multi_static_baseline(dataset_root: Path) -> None:
+    """Emit the merge-gen M1 two-family baseline (spec §4/§7/§8).
+
+    A full four-quadrant dataset like :func:`build_scalar_baseline` +
+    :func:`build_gridded_baseline`, except the gridded half carries TWO DISTINCT
+    grid labels per quadrant (``dem``+``landcover`` static, ``era5``+``merit``
+    dynamic) via :func:`~hdx_fixtures.grids.write_multi_family_grids`. The scalar
+    half, outlines, and 0.1 manifest are the baseline shape, so the only axis that
+    differs is the multi-family gridded catalog — the field-catalog-completeness
+    proof surface.
+    """
+    log = get_logger("build")
+    log.info("building multi_grid_multi_static baseline at %s", dataset_root)
+    write_manifest(dataset_root)
+    write_scalar(dataset_root)
+    write_outlines(dataset_root)
+    write_multi_family_grids(dataset_root)
+    log.info("multi_grid_multi_static baseline emitted")
 
 
 def build_geometry_less_baseline(dataset_root: Path) -> None:
@@ -223,15 +258,27 @@ def main(argv: list[str] | None = None) -> int:
 
     # The geometry-optional 0.2 fixture lives under valid/geometry-less/, a sibling
     # of valid/minimal/ (dataset_root == <repo>/conformance/valid/minimal).
-    geometry_less = valid_geometry_less_root(dataset_root.parents[2])
+    repo_root = dataset_root.parents[2]
+    geometry_less = valid_geometry_less_root(repo_root)
     build_geometry_less_baseline(geometry_less)
     run_geometry_less_assertions(geometry_less)
 
-    log.info("baseline + derived fixtures + geometry-less complete + self-assertions passed")
+    # The merge-gen M1 two-family fixture lives under valid/multi_grid_multi_static/,
+    # a sibling of valid/minimal/: two distinct grid labels per gridded quadrant so
+    # the field catalog must union fields across families (the M1 completeness proof).
+    multi = valid_multi_grid_multi_static_root(repo_root)
+    build_multi_grid_multi_static_baseline(multi)
+    run_multi_grid_multi_static_assertions(multi)
+
+    log.info(
+        "baseline + derived fixtures + geometry-less + multi_grid_multi_static "
+        "complete + self-assertions passed"
+    )
     # User-facing status line (output, not a diagnostic) — see architecture §2.
     print(
         f"conformance fixtures regenerated: valid baseline (four quadrants) at "
         f"{dataset_root}; geometry-less (0.2, no outlines) at {geometry_less}; "
+        f"multi_grid_multi_static (two grid families) at {multi}; "
         "fail-closed invalids derived under conformance/invalid/ "
         "(including the irregular-time-axis M6 rule-(b) negative); "
         "all self-assertions passed"

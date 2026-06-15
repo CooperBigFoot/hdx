@@ -1,0 +1,355 @@
+{
+  "manifest": {
+    "format_version": "0.1",
+    "name": "hdx-conformance-valid-minimal",
+    "created_at": "2026-06-01T00:00:00Z",
+    "producer_version": "hdx-fixtures 0.1.0",
+    "crs": "EPSG:4326",
+    "cadence": "daily"
+  },
+  "basins": [
+    "0001",
+    "0002",
+    "0003"
+  ],
+  "fields": [
+    {
+      "name": "drainage_area",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "scalar"
+      },
+      "dtype": "f64",
+      "units": null,
+      "grid_label": null
+    },
+    {
+      "name": "streamflow",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "scalar"
+      },
+      "dtype": "f64",
+      "units": null,
+      "grid_label": null
+    },
+    {
+      "name": "dem_elevation",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "m",
+      "grid_label": "dem"
+    },
+    {
+      "name": "landcover_class",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "m",
+      "grid_label": "landcover"
+    },
+    {
+      "name": "era5_precipitation",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "mm",
+      "grid_label": "era5"
+    },
+    {
+      "name": "era5_precipitation_was_filled",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "gridded"
+      },
+      "dtype": "bool",
+      "units": "1",
+      "grid_label": "era5"
+    },
+    {
+      "name": "merit_flow_accumulation",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "mm",
+      "grid_label": "merit"
+    },
+    {
+      "name": "merit_flow_accumulation_was_filled",
+      "quadrant": {
+        "temporal": "dynamic",
+        "shape": "gridded"
+      },
+      "dtype": "bool",
+      "units": "1",
+      "grid_label": "merit"
+    }
+  ],
+  "grids": [
+    {
+      "grid_label": "dem",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "dem",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "dem",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    }
+  ],
+  "time_extents": [
+    {
+      "basin_id": "0001",
+      "time_extent": {
+        "start": "2000-01-01T00:00:00Z",
+        "end": "2000-01-05T00:00:00Z",
+        "source": "statistics"
+      },
+      "gridded_time_axis": {
+        "micros": [
+          946684800000000,
+          946771200000000,
+          946857600000000,
+          946944000000000,
+          947030400000000
+        ],
+        "units": "days since 1970-01-01",
+        "calendar": "proleptic_gregorian"
+      }
+    },
+    {
+      "basin_id": "0002",
+      "time_extent": {
+        "start": "2010-06-15T00:00:00Z",
+        "end": "2010-06-21T00:00:00Z",
+        "source": "statistics"
+      },
+      "gridded_time_axis": {
+        "micros": [
+          1276560000000000,
+          1276646400000000,
+          1276732800000000,
+          1276819200000000,
+          1276905600000000,
+          1276992000000000,
+          1277078400000000
+        ],
+        "units": "days since 1970-01-01",
+        "calendar": "proleptic_gregorian"
+      }
+    },
+    {
+      "basin_id": "0003",
+      "time_extent": {
+        "start": "2005-03-01T00:00:00Z",
+        "end": "2005-03-04T00:00:00Z",
+        "source": "statistics"
+      },
+      "gridded_time_axis": {
+        "micros": [
+          1109635200000000,
+          1109721600000000,
+          1109808000000000,
+          1109894400000000
+        ],
+        "units": "days since 1970-01-01",
+        "calendar": "proleptic_gregorian"
+      }
+    }
+  ],
+  "delineations": [
+    "merit",
+    "grit"
+  ]
+}

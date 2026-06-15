@@ -86,8 +86,11 @@ conformance/
   goldens/                                # TRACKED golden snapshots (outside the gitignored trees; regenerate-inert)
     valid-minimal.describe.json            # pinned `describe` output (R4); produced by hdx-core, not the generator
     valid-minimal.validate.json            # pinned `validate` report (R4); produced by hdx-core, not the generator
+    valid-multi_grid_multi_static.describe.json  # LOAD-BEARING merge-gen M1 proof: describe carries BOTH grid families' fields
+    valid-multi_grid_multi_static.validate.json  # CORROBORATING-ONLY (field-catalog-insensitive; NOT the M1 proof)
     invalid-<fixture>.validate.json         # pinned per-fixture `validate` report for each invalid (R4)
   valid/minimal/                          # the one valid four-quadrant dataset (git-ignored data)
+  valid/multi_grid_multi_static/          # merge-gen M1: two grid families per quadrant (dem+landcover static, era5+merit dynamic) (git-ignored data)
   invalid/irregular-time-axis/            # pins M6 (rule (b) per-basin axis regularity) — one surgical mutation off the baseline (git-ignored data)
   invalid/wrong-format-version/           # pins M2 (entry-gate Err) — one surgical mutation off the baseline (git-ignored data)
   invalid/extra-manifest-field/           # pins M3 (entry-gate Err) — one surgical mutation off the baseline (git-ignored data)
@@ -258,6 +261,54 @@ one-violation-per-check golden report matrix.
 > `goldens/valid-minimal.validate.json` is the **byte-unchanged** green floor every
 > invalid fixture is derived from. Each fail-closed invalid gets its own
 > `goldens/invalid-<fixture>.validate.json` pinning its single `ran:fail` report.
+
+### `valid/multi_grid_multi_static/` — the merge-gen M1 field-catalog-completeness proof
+
+A second valid-shaped four-quadrant dataset (three basins, all four quadrants, a
+0.1 manifest, plural outlines — the `valid/minimal/` shape) whose ONLY difference
+is the gridded half: it carries **TWO DISTINCT grid labels per gridded quadrant**.
+
+* `gridded_static/` — two single-band COGs under labels **`dem`** (band field
+  `dem_elevation`) and **`landcover`** (band field `landcover_class`).
+* `gridded_dynamic/` — two Zarr v3 stores under labels **`era5`** (data var
+  `era5_precipitation` + its companion mask) and **`merit`** (data var
+  `merit_flow_accumulation` + its companion mask).
+
+The static label set `{dem, landcover}` and the dynamic label set `{era5, merit}`
+are disjoint, so **no label is shared across subtrees**: `check_g2` (which only
+compares a shared label's COG+Zarr extents) finds no pair to compare and passes
+trivially. Every basin carries the **same four labels**, so `check_h2` (cross-basin
+label-set equality) stays pass. All four labels are emitted over the shared
+baseline geometry/time axis, so they are georeferenced (G3) and time-aligned (T2).
+
+This fixture exists to prove the merge-gen **M1 field-catalog completeness** fix
+end-to-end through `describe`: the gridded field catalog must walk **ALL** static +
+**ALL** dynamic artifacts and union their fields across both families (a
+first-artifact-only catalog would surface only ONE static + ONE dynamic family's
+field). The generator self-asserts (`run_multi_grid_multi_static_assertions`) that
+every basin carries both static and both dynamic labels with their distinct fields,
+and that the per-basin label set is homogeneous across basins.
+
+* **`goldens/valid-multi_grid_multi_static.describe.json` — LOAD-BEARING (the M1
+  proof).** Produced by `hdx-core`'s `describe` verb (regenerated like the
+  `valid-minimal` describe golden — `Description::to_json_pretty`, never
+  hand-edited). Its `fields[]` enumerates **BOTH families' fields** (both static
+  labels' band fields `dem_elevation`+`landcover_class` AND both dynamic labels'
+  data-var fields `era5_precipitation`+`merit_flow_accumulation`, plus companions).
+  The Rust test `multi_grid_multi_static_describe_golden_carries_both_families`
+  (`crates/core/src/describe.rs`) asserts `describe` equals this golden — the
+  describe-completeness signal. It is **RED** on the pre-M1 first-artifact-only
+  catalog (the 2nd family's fields are absent) and **GREEN** on the walk-all union.
+* **`goldens/valid-multi_grid_multi_static.validate.json` — CORROBORATING-ONLY (NOT
+  the M1 proof).** Produced by `hdx-core`'s `validate` verb. It is committed for
+  completeness alongside the describe golden, but the validate report is
+  **field-catalog-INSENSITIVE**: the catalog is consumed only by the
+  order-insensitive `check_g1` (which only tests that a PRESENT gridded field
+  self-names with `Some(GridLabel)` — a MISSING field cannot trip it). So the
+  validate report is **byte-identical pre/post the M1 catalog fix** and is **NOT**
+  the completeness signal. The describe golden is the proof; the validate golden
+  only corroborates that the fixture is a conformant 0.2 dataset (conformant, no
+  `ran:fail`, every skip carries a reason).
 
 ### The M6 rule-(b) negative: `invalid/irregular-time-axis` (HDX 0.2)
 
