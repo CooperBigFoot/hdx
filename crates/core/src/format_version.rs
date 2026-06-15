@@ -47,7 +47,7 @@ impl FormatVersion {
     }
 
     /// Whether this version **expects** the `outlines.geoparquet` geometry rollup
-    /// (the geometry-optional relaxation, spec §4/§9, Fusion Arc 0.2).
+    /// (the geometry-optional relaxation, spec §4/§9).
     ///
     /// HDX 0.1 mandates `outlines.geoparquet` for every dataset (§4 L1, §9 Geo1, §3 I1),
     /// so geometry is [`GeometryExpectation::Required`]. HDX 0.2 makes it
