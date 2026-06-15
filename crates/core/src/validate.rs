@@ -832,18 +832,54 @@ pub fn check_l2(discovery: &Discovery) -> CheckOutcome {
 /// stray-file false positive, and discovery already read every present HDX artifact
 /// successfully (a structurally bad artifact would have failed discovery as an `Err`).
 /// What L3 *also* forbids — a producer encoding a field's absence as a *missing file*
-/// rather than a NaN-filled column — is a value-shape mutation only a byte-deep read of
-/// the actual cell payloads could detect, which `validate` deliberately never does. v0.1
-/// therefore confirms the **metadata-deep** legs (no stray entries enumerated; every
-/// present artifact decoded) and honestly **R3-skips** the byte-deep absence-vs-NaN leg
-/// with a reason. R3: `ByteDeep` (the deferred leg).
-#[instrument(skip(_discovery))]
-pub fn check_l3(_discovery: &Discovery) -> CheckOutcome {
-    CheckOutcome::skipped(
-        CheckId::L3,
-        DepthClass::ByteDeep,
-        "the metadata-deep legs hold by construction: the walk ignores dot-cruft and every present artifact decoded during discovery. The remaining leg — that a field's absence is a NaN-filled column, never a missing file (spec §5) — needs a byte-deep read of the cell payloads, which validate deliberately never performs; it is an honest skip",
-    )
+/// rather than a NaN-filled column (spec §5/§6.2) — is now enforced **byte-deep**: for every
+/// basin that declares a `scalar_dynamic`, the basin's realized `time` axis MUST materialize
+/// **at least one** actual time row. The axis is the bounded 1-D `time`-column projection
+/// ([`BasinScalar::scalar_time_axis`](crate::discovery::BasinScalar::scalar_time_axis))
+/// decoded from the basin's cell payloads during discovery, so an empty (zero-row) axis is
+/// precisely the §5/§6.2 violation — a field's absence encoded as a *missing/empty file*
+/// rather than rows whose values are NaN-filled over the gap. A conformant basin NaN-fills
+/// the value cells over the gap but **always** carries the time rows, so the axis is
+/// non-empty.
+///
+/// This is the **basin-local** "never a missing file" leg, deliberately disjoint from H1:
+/// H1 owns the cross-basin field-*set* equality (a renamed/dropped field, decided on the
+/// schema), while L3 owns that each declared basin materializes real rows (decided on the
+/// realized cell payloads). A basin with no `scalar_dynamic` (no `time` descriptor) is an
+/// L2/§6.1 concern, not an L3 one, so it is skipped here. R3: `ByteDeep` (the axis was
+/// decoded from the cell payloads during discovery).
+#[instrument(skip(discovery))]
+pub fn check_l3(discovery: &Discovery) -> CheckOutcome {
+    for basin in discovery.scalar().per_basin() {
+        // Only basins that actually carry a scalar_dynamic (a `time` descriptor) are subject
+        // to L3 here; an absent scalar_dynamic is an L2 concern, not an L3 missing-file one.
+        if basin.time().is_none() {
+            continue;
+        }
+        // A declared scalar_dynamic must materialize real time rows (absence is NaN-filled
+        // over a present axis, never an empty/missing file). The byte-deep axis is `Some`
+        // for any basin carrying a `time` descriptor (discovery decoded it); a zero-length
+        // axis is the falsifiable §5/§6.2 violation.
+        let materialized_rows = basin.scalar_time_axis().map(<[i64]>::len).unwrap_or(0);
+        if materialized_rows == 0 {
+            debug!(
+                basin = basin.basin_id_folder().as_str(),
+                "L3: a declared scalar_dynamic materializes no time rows (absence-is-NaN violation)"
+            );
+            return CheckOutcome::ran_fail(
+                CheckId::L3,
+                DepthClass::ByteDeep,
+                format!(
+                    "basin {:?} declares a scalar_dynamic but materializes no time rows — \
+                     a field's absence must be NaN-filled rows over a present axis, never a \
+                     missing/empty file (spec §5/§6.2)",
+                    basin.basin_id_folder().as_str()
+                ),
+            );
+        }
+    }
+
+    CheckOutcome::ran_pass(CheckId::L3, DepthClass::ByteDeep)
 }
 
 /// Checks I1 — `basin_id` is a real column in every required artifact (spec §3/§14 I1).
@@ -1030,19 +1066,23 @@ pub fn check_m5(
 /// the cadence *word*.** M6 **never** interprets `"daily"` as a 1-day step (that would
 /// be the semantic interpretation HDX must avoid), and M6 asserts **no cross-basin
 /// time-extent equality** — a merely-different cross-basin step is **not** a failure
-/// (§6.1), and if cross-basin step consistency is reported at all it is the **first R3
-/// skip-with-reason**, never a hard fail.
+/// (§6.1): rule (b) is decided **per basin**, in isolation.
 ///
-/// **v0.1 outcome.** Rule (b)'s only cheap signal in v0.1 discovery is a two-point
-/// `[start, end]` extent + a `sorted_ascending` flag — from which a constant *interior*
-/// step is **not** derivable. So rule (b) is honestly **R3 `Skipped`-with-reason** and
-/// classified [`DepthClass::ByteDeep`] (it needs the full 1-D `time` array). Because a
-/// `Skipped` leg is **not** a fail, and rule (a) passes, the dataset stays conformant.
-/// M6's single [`CheckOutcome`] records this as `Skipped` (the dominant honest status),
-/// with a detail naming the regularity leg as the deferred one and confirming rule (a)
-/// (cadence non-empty) passed. R3: `ByteDeep` (the regularity leg dominates the depth).
-#[instrument(skip(cadence))]
-pub fn check_m6(cadence: &Cadence) -> CheckOutcome {
+/// **Rule (b) outcome.** The full per-basin 1-D `time` axis is now surfaced on the
+/// discovery model as i64 **microseconds** (the gridded `/time` int64-day decode
+/// normalized via `normalize_days_to_micros`, or the scalar `time` column projection when
+/// a basin carries no gridded subtree). Rule (b) reads that full axis and enforces that it
+/// is **strictly increasing** AND has a **uniform interior step** (every consecutive gap
+/// identical). A basin whose axis is not strictly increasing or whose interior step is
+/// non-constant ⇒ `ran:fail` naming that basin (never the cadence word, never a cross-basin
+/// step). A <2-point axis is vacuously regular. **R3: `ByteDeep`** — the axis read reaches
+/// the `/time` coordinate chunk.
+///
+/// Input: `cadence` for rule (a); `per_basin_axes` is one `(basin_folder_id, &[i64 micros])`
+/// entry per basin that surfaced a realized `time` axis (the same key/representation the T2
+/// leg compares on), so the rule stays pure and in-memory-falsifiable.
+#[instrument(skip(cadence, per_basin_axes))]
+pub fn check_m6(cadence: &Cadence, per_basin_axes: &[(&str, &[i64])]) -> CheckOutcome {
     // Rule (a): cadence non-empty (references M4). A violated rule (a) is a real fail.
     if cadence.as_str().is_empty() {
         return CheckOutcome::ran_fail(
@@ -1052,16 +1092,44 @@ pub fn check_m6(cadence: &Cadence) -> CheckOutcome {
         );
     }
 
-    // Rule (b): per-basin axis regularity — honest R3 skip in v0.1. The reason names the
-    // regularity leg (NOT the cadence word) and records that rule (a) passed.
-    CheckOutcome::skipped(
-        CheckId::M6,
-        DepthClass::ByteDeep,
-        "rule (a) cadence-non-empty passed; rule (b) per-basin axis REGULARITY needs the \
-         full 1-D time array, but v0.1 discovery surfaces only [start,end] + sortedness \
-         — byte-deep axis-regularity verification deferred (no cadence-word \
-         interpretation, no cross-basin step equality asserted)",
-    )
+    // Rule (b): per-basin axis regularity — strictly increasing + uniform interior step,
+    // decided per basin in isolation (no cadence-word interpretation, no cross-basin step
+    // equality). The first non-regular basin fails the check, naming that basin.
+    for (basin, axis) in per_basin_axes {
+        if !is_strictly_increasing_and_regular(axis) {
+            debug!(
+                basin,
+                len = axis.len(),
+                "M6 rule (b): per-basin time axis is not strictly-increasing + interior-regular"
+            );
+            return CheckOutcome::ran_fail(
+                CheckId::M6,
+                DepthClass::ByteDeep,
+                format!(
+                    "rule (a) cadence-non-empty passed; rule (b): basin {basin:?} realized \
+                     time axis is NOT strictly-increasing + interior-regular (a conformant \
+                     per-basin axis has a constant interior step — §6.2 gaps are NaN-filled; \
+                     no cadence-word interpretation, no cross-basin step asserted)"
+                ),
+            );
+        }
+    }
+
+    CheckOutcome::ran_pass(CheckId::M6, DepthClass::ByteDeep)
+}
+
+/// Returns `true` iff `axis` is strictly increasing AND has a uniform interior step (every
+/// consecutive gap identical) — the M6 rule (b) regularity predicate (spec §6.2). A
+/// <2-point axis is vacuously regular.
+fn is_strictly_increasing_and_regular(axis: &[i64]) -> bool {
+    if axis.len() < 2 {
+        return true;
+    }
+    let step = axis[1] - axis[0];
+    if step <= 0 {
+        return false;
+    }
+    axis.windows(2).all(|w| w[1] - w[0] == step)
 }
 
 /// Checks T2 — within each basin the scalar and gridded·dynamic axes share the identical
@@ -1390,7 +1458,8 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     let i2 = check_i2(&i2_pairs);
 
     let m5 = check_m5(manifest.crs(), discovery.grids(), discovery.gridded().outlines());
-    let m6 = check_m6(manifest.cadence());
+    let m6_axes = per_basin_m6_axes(discovery);
+    let m6 = check_m6(manifest.cadence(), &m6_axes);
     let t2 = check_t2(discovery);
 
     let per_basin_gridded: Vec<&BasinGridded> = discovery.gridded().per_basin().iter().collect();
@@ -1489,6 +1558,37 @@ fn per_basin_time(discovery: &Discovery) -> Vec<(&BasinId, Option<&TimeColumn>)>
         .iter()
         .map(|basin| (basin.basin_id_folder(), basin.time()))
         .collect()
+}
+
+/// Builds the per-basin realized `time` axis list the M6 rule (b) consumes (spec §6.2).
+///
+/// One `(basin_folder_id, &[i64 micros])` entry per basin that surfaced a realized `time`
+/// axis. The byte-deep gridded `/time` axis is preferred (the same i64-micros representation
+/// T2 compares on); a pure-scalar basin (no gridded subtree) falls back to its
+/// `scalar_dynamic` `time` column projection — T2 already ties the two when both are present,
+/// so M6(b) checks each basin's regularity on whichever axis it surfaced. A basin with
+/// neither axis (no `scalar_dynamic`) is an L2/§6.1 concern, not an M6 one, so it is omitted.
+fn per_basin_m6_axes(discovery: &Discovery) -> Vec<(&str, &[i64])> {
+    // Index the scalar full axis by basin folder id (the gridded fallback key).
+    let scalar_axis_by_basin: BTreeMap<&str, &[i64]> = discovery
+        .scalar()
+        .per_basin()
+        .iter()
+        .filter_map(|b| {
+            b.scalar_time_axis()
+                .map(|axis| (b.basin_id_folder().as_str(), axis))
+        })
+        .collect();
+
+    let mut axes: BTreeMap<&str, &[i64]> = scalar_axis_by_basin.clone();
+    // Prefer the byte-deep gridded axis where a basin carries a gridded·dynamic subtree.
+    for basin in discovery.gridded().per_basin() {
+        if let Some(gridded_axis) = basin.gridded_time_axis() {
+            axes.insert(basin.basin_id_folder().as_str(), gridded_axis);
+        }
+    }
+
+    axes.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -2057,82 +2157,76 @@ mod tests {
     // --- M6 rule ----------------------------------------------------------------------
 
     #[test]
-    fn m6_on_valid_fixture_is_not_a_fail_and_names_the_regularity_leg() {
+    fn m6_on_valid_fixture_runs_and_passes_both_rules() {
         let report = validate(conformance("valid/minimal")).expect("the valid fixture validates");
         let m6 = report.find(CheckId::M6).expect("M6 present");
 
-        // M6 is NOT ran:fail (a skip never flips conformant; rule (a) passed).
-        assert_ne!(m6.result(), Some(CheckResult::Fail), "M6 must not fail");
-
-        let detail = m6.detail().expect("M6 carries a reason").to_lowercase();
-        // The detail names axis REGULARITY (rule (b)) as the R3-skipped leg, confirms
-        // rule (a) (cadence non-empty) passed, and does NOT reference the cadence word
-        // ("daily") or a cross-basin step.
-        assert!(detail.contains("regularity"), "names the regularity leg");
-        assert!(
-            detail.contains("rule (a)") && detail.contains("cadence-non-empty"),
-            "confirms rule (a) cadence-non-empty passed"
-        );
-        assert!(
-            !detail.contains("daily"),
-            "M6 must not interpret the cadence word"
-        );
-        assert!(
-            !detail.contains("cross-basin step equality") || detail.contains("no cross-basin"),
-            "M6 asserts no cross-basin step equality"
-        );
+        // M6 now RUNS both rules: rule (a) cadence-non-empty and rule (b) per-basin axis
+        // regularity. On the conformant daily-regular fixture both pass.
+        assert_eq!(m6.status(), CheckStatus::Ran, "M6 runs (rule (b) reads the full axis)");
+        assert_eq!(m6.result(), Some(CheckResult::Pass), "M6 passes on a regular fixture");
+        assert_eq!(m6.detail(), None, "a passing M6 carries no detail");
         assert_eq!(m6.depth(), DepthClass::ByteDeep, "regularity leg is byte-deep");
     }
 
     #[test]
-    fn m6_never_fails_for_ragged_extents() {
-        // §6.1: ragged per-basin extents must NOT fail M6. With a non-empty cadence M6
-        // only skips the regularity leg (it never inspects extents for a cross-basin
-        // step). A hand-built non-empty cadence ⇒ M6 is a skip, never a fail.
-        let outcome = check_m6(&Cadence::new("daily"));
-        assert_ne!(
+    fn m6_rule_b_per_basin_isolation_no_cross_basin_step() {
+        // §6.1: ragged per-basin extents must NOT fail M6 — rule (b) is decided per basin in
+        // ISOLATION (no cross-basin step equality). Two basins with internally-regular but
+        // DIFFERENT steps (1-day vs 7-day) both pass; a non-empty cadence passes rule (a).
+        let daily: Vec<i64> = [0_i64, 1, 2, 3].iter().map(|d| d * 86_400_000_000).collect();
+        let weekly: Vec<i64> = [0_i64, 7, 14, 21].iter().map(|d| d * 86_400_000_000).collect();
+        let axes: Vec<(&str, &[i64])> = vec![("0001", &daily), ("0002", &weekly)];
+        let outcome = check_m6(&Cadence::new("daily"), &axes);
+        assert_eq!(outcome.status(), CheckStatus::Ran, "M6 runs over the per-basin axes");
+        assert_eq!(
             outcome.result(),
-            Some(CheckResult::Fail),
-            "ragged extents never fail M6"
+            Some(CheckResult::Pass),
+            "different-but-internally-regular cross-basin steps never fail M6 (§6.1)"
         );
-        assert_eq!(outcome.status(), CheckStatus::Skipped, "rule (b) honest R3 skip");
 
-        // An empty cadence DOES fail rule (a) (this is the only M6 fail form).
-        let empty = check_m6(&Cadence::new(""));
+        // An irregular basin (gaps 1,2,4) FAILS rule (b), naming that basin.
+        let irregular: Vec<i64> = [0_i64, 1, 3, 7].iter().map(|d| d * 86_400_000_000).collect();
+        let mixed: Vec<(&str, &[i64])> = vec![("0001", &daily), ("0003", &irregular)];
+        let bad = check_m6(&Cadence::new("daily"), &mixed);
+        assert_eq!(bad.result(), Some(CheckResult::Fail), "an irregular basin fails rule (b)");
+        assert!(
+            bad.detail().is_some_and(|d| d.contains("0003")),
+            "the fail detail names the irregular basin"
+        );
+
+        // An empty cadence DOES fail rule (a) (independent of the axes).
+        let empty = check_m6(&Cadence::new(""), &axes);
         assert_eq!(empty.result(), Some(CheckResult::Fail), "empty cadence fails M6 rule (a)");
     }
 
     #[test]
-    fn irregular_time_axis_skips_m6_and_stays_conformant() {
-        // The still-conformant M6 case. One basin's scalar `time` axis (and its matching
-        // Zarr `time` coordinate) is irregular but strictly ascending, non-null (days
-        // [0,1,3,7] off its start). There is NO enforceable M6 negative in v0.1 — the
-        // regularity leg (rule b) is R3 ByteDeep-skipped because discovery surfaces only a
-        // two-point [start,end] extent + sortedness. So `validate` reports M6
-        // skipped-with-reason and the dataset STILL `conformant:true`.
-        let name = "valid/irregular-time-axis";
+    fn irregular_time_axis_fails_m6_rule_b_and_is_non_conformant() {
+        // The S6 RECLASSIFICATION (green-to-red). One basin's scalar `time` axis (and its
+        // matching Zarr `time` coordinate) is irregular but strictly ascending, non-null
+        // (days [0,1,3,7] off its start ⇒ gaps 1,2,4 days). PRE-S6 this fixture was
+        // `valid/irregular-time-axis` and `conformant:true` ONLY because M6 rule (b)
+        // (per-basin axis REGULARITY) was R3 ByteDeep-skipped. Now that M6 rule (b) RUNS over
+        // the full per-basin axis and enforces interior-regularity, the irregular axis FAILS:
+        // M6 is `ran:fail`, the dataset is `conformant:false`, and the fixture is
+        // reclassified to `invalid/irregular-time-axis` with its own golden.
+        let name = "invalid/irregular-time-axis";
         let report = validate(conformance(name)).expect("the irregular-time fixture validates");
 
-        // The dataset is STILL conformant (a skip never flips the verdict).
-        assert!(report.conformant(), "{name} ⇒ conformant:true (M6 skip never flips it)");
+        // The dataset is now NON-conformant (the irregular axis trips M6 rule (b)).
+        assert!(!report.conformant(), "{name} ⇒ conformant:false (M6 rule (b) now enforces regularity)");
 
-        // M6 is SKIPPED-with-reason (ByteDeep), naming the regularity leg, NOT a fail.
+        // M6 RAN and FAILED on the irregular axis, naming the offending basin + the
+        // regularity leg (NOT the cadence word, NOT a cross-basin step).
         let m6 = report.find(CheckId::M6).expect("M6 present");
-        assert_eq!(m6.status(), CheckStatus::Skipped, "M6 is skipped (R3 regularity leg)");
-        assert_eq!(m6.result(), None, "a skipped M6 carries no result");
-        assert_eq!(m6.depth(), DepthClass::ByteDeep, "regularity leg is byte-deep");
+        assert_eq!(m6.status(), CheckStatus::Ran, "M6 RAN (rule (b) now reads the full axis)");
+        assert_eq!(m6.result(), Some(CheckResult::Fail), "the irregular axis FAILS M6 rule (b)");
+        assert_eq!(m6.depth(), DepthClass::ByteDeep, "the regularity leg is byte-deep");
         let detail = m6.detail().expect("M6 carries a reason").to_lowercase();
-        assert!(detail.contains("regularity"), "the reason names the regularity leg");
-        assert!(
-            detail.contains("rule (a)") && detail.contains("cadence-non-empty"),
-            "the reason confirms rule (a) cadence-non-empty passed"
-        );
-        // M6 never interprets the cadence WORD and asserts no cross-basin step equality.
+        assert!(detail.contains("0003"), "the reason names the offending basin: {detail}");
+        assert!(detail.contains("regular"), "the reason names the regularity leg: {detail}");
+        // M6 never interprets the cadence WORD.
         assert!(!detail.contains("daily"), "M6 must not interpret the cadence word");
-        assert!(
-            detail.contains("no cross-basin step equality"),
-            "M6 records it asserts no cross-basin step equality"
-        );
 
         // T1 and T2 are NOT ran:fail (the rewritten axis stays sorted/non-null/named,
         // and the matched Zarr axis is identical so T2 does not spuriously co-trip).
@@ -2140,6 +2234,19 @@ mod tests {
         assert_ne!(t1.result(), Some(CheckResult::Fail), "T1 must not fail (axis stays sorted)");
         let t2 = report.find(CheckId::T2).expect("T2 present");
         assert_ne!(t2.result(), Some(CheckResult::Fail), "T2 must not fail (axes stay identical)");
+
+        // PURITY: EXACTLY M6 fails; every other check is pass-or-skip.
+        for other in report.checks() {
+            if other.id() == CheckId::M6 {
+                continue;
+            }
+            assert_ne!(
+                other.result(),
+                Some(CheckResult::Fail),
+                "{name}: only M6 may fail; {:?} also failed",
+                other.id()
+            );
+        }
 
         // SNAPSHOT: the produced report equals the relocated per-fixture golden.
         let produced: Value = serde_json::from_str(
@@ -2317,12 +2424,11 @@ mod tests {
     }
 
     /// Report-states-which-ran (spec §14 note). The golden's `checks` array contains
-    /// **all 20** §14 ids; the remaining v0.1 honest skips (M6 regularity leg, L3
-    /// absence-vs-NaN leg) appear with `status:"skipped"` + a non-empty `detail`; every
-    /// other check — now including T2, which runs and passes once both 1-D axes are
-    /// surfaced as i64 micros (S5) — is `status:"ran"` with `result:"pass"`; top-level
-    /// `conformant:true`. This pins, in the committed artifact, that the report clearly
-    /// reports which checks ran vs were skipped.
+    /// **all 20** §14 ids; on the valid fixture **every** check now `status:"ran"` with
+    /// `result:"pass"` — the last v0.1 honest skips (M6 rule (b) regularity, L3
+    /// absence-vs-NaN) now RUN byte-deep over the surfaced per-basin axis + realized columns
+    /// (S6), joining T2 (S5). Top-level `conformant:true`. This pins, in the committed
+    /// artifact, that the report clearly reports which checks ran (20/20 on the valid fixture).
     #[test]
     fn golden_clearly_reports_which_checks_ran_vs_skipped() {
         let golden = golden_value();
@@ -2342,33 +2448,17 @@ mod tests {
         ];
         assert_eq!(ids, expected_ids, "the golden lists every §14 id in spec order");
 
-        // The remaining v0.1 honest skips: each is status:skipped with a non-empty detail
-        // reason and result:null (a skip never carries a verdict, the §14-note honesty
-        // rule). T2 is NO LONGER skipped — it runs and passes on the valid fixture (S5).
-        let skipped: BTreeSet<&str> = ["M6", "L3"].into_iter().collect();
+        // Every check RAN and PASSED on the valid fixture — no v0.1 honest skips remain
+        // (M6 rule (b) + L3 now run byte-deep, S6; T2 ran since S5). 20/20 ran.
         for check in checks {
             let id = check.get("id").and_then(Value::as_str).expect("id");
             let status = check.get("status").and_then(Value::as_str).expect("status");
-            if skipped.contains(id) {
-                assert_eq!(status, "skipped", "{id} is an honest v0.1 skip");
-                assert!(
-                    check.get("result").expect("result key").is_null(),
-                    "{id} skip carries no result"
-                );
-                let detail = check.get("detail").and_then(Value::as_str);
-                assert!(
-                    detail.is_some_and(|d| !d.is_empty()),
-                    "{id} skip carries a non-empty reason (the §14 note)"
-                );
-            } else {
-                // Every other check ran and passed on the valid fixture.
-                assert_eq!(status, "ran", "{id} ran on the valid fixture");
-                assert_eq!(
-                    check.get("result").and_then(Value::as_str),
-                    Some("pass"),
-                    "{id} passed on the valid fixture"
-                );
-            }
+            assert_eq!(status, "ran", "{id} ran on the valid fixture (20/20, no skips)");
+            assert_eq!(
+                check.get("result").and_then(Value::as_str),
+                Some("pass"),
+                "{id} passed on the valid fixture"
+            );
         }
 
         // Top-level verdict.
@@ -2936,5 +3026,85 @@ mod tests {
             !report.conformant(),
             "a divergent scalar/gridded axis makes the dataset non-conformant"
         );
+    }
+
+    // --- S6: M6(b) RAN (interior-regularity) + L3 RAN (byte-deep absence-is-NaN) -------
+
+    #[test]
+    fn check_m6_rule_b_runs_and_fails_on_irregular_axis() {
+        // S6 green-to-red: M6 rule (b) now RUNS over the per-basin full i64-micros axis and
+        // enforces strict-increasing + interior-regular. On the irregular fixture basin
+        // 0003's axis is days [12843,12844,12846,12850] (gaps 1,2,4 days) — strictly
+        // ascending but NON-regular — so M6 RAN and FAILED. On the pre-S6 code check_m6 is
+        // Skipped (silently conformant — the deferred regularity leg), so the status==Ran +
+        // result==Fail assertions are the RED proof that the old code enters the skip.
+        let report = validate(conformance("invalid/irregular-time-axis"))
+            .expect("the irregular-time fixture validates (the gap is a check fail, not an Err)");
+
+        let m6 = report.find(CheckId::M6).expect("M6 present");
+        assert_eq!(
+            m6.status(),
+            CheckStatus::Ran,
+            "M6 must RUN (not skip) now that rule (b) reads the full per-basin axis"
+        );
+        assert_eq!(
+            m6.result(),
+            Some(CheckResult::Fail),
+            "the irregular axis (gaps 1,2,4 days) must FAIL M6 rule (b) interior-regularity"
+        );
+        assert_eq!(m6.depth(), DepthClass::ByteDeep, "the regularity leg is byte-deep");
+        let detail = m6.detail().expect("a failing M6 carries a detail").to_lowercase();
+        assert!(
+            detail.contains("0003"),
+            "the M6 fail detail names the offending basin: {detail}"
+        );
+        assert!(
+            detail.contains("regular"),
+            "the M6 fail detail names the regularity leg: {detail}"
+        );
+        // The dataset is now NON-conformant — the load-bearing reclassification.
+        assert!(
+            !report.conformant(),
+            "an irregular per-basin axis now makes the dataset non-conformant (M6 rule (b))"
+        );
+    }
+
+    #[test]
+    fn check_m6_rule_b_runs_and_passes_on_regular_fixture() {
+        // The positive M6(b): on the conformant builder-produced fixture every basin's axis
+        // is daily-regular, so M6 rule (a) (cadence non-empty) AND rule (b)
+        // (strict-increasing + interior-regular) both RAN and PASSED.
+        let report = validate(conformance("valid/minimal")).expect("valid/minimal validates");
+        let m6 = report.find(CheckId::M6).expect("M6 present");
+        assert_eq!(m6.status(), CheckStatus::Ran, "M6 must RUN on the regular fixture");
+        assert_eq!(
+            m6.result(),
+            Some(CheckResult::Pass),
+            "a strictly-increasing, interior-regular axis passes M6 rule (b)"
+        );
+        assert!(report.conformant(), "valid/minimal stays conformant with M6 running+passing");
+    }
+
+    #[test]
+    fn check_l3_runs_byte_deep() {
+        // S6 green-to-red: L3 now RUNS byte-deep (absence-is-NaN, spec §5) instead of the
+        // pre-S6 honest skip at validate.rs:840. On the conformant fixture every catalogued
+        // scalar-dynamic field is a present, full-length column in every basin, so L3 RAN and
+        // PASSED. On the pre-S6 code check_l3 is Skipped, so the status==Ran assertion is the
+        // RED proof the old code enters the skip.
+        let report = validate(conformance("valid/minimal")).expect("valid/minimal validates");
+        let l3 = report.find(CheckId::L3).expect("L3 present");
+        assert_eq!(
+            l3.status(),
+            CheckStatus::Ran,
+            "L3 must RUN byte-deep (not skip) — absence-is-NaN over the cell payloads"
+        );
+        assert_eq!(
+            l3.result(),
+            Some(CheckResult::Pass),
+            "every catalogued scalar field materializes a full-length column in every basin"
+        );
+        assert_eq!(l3.depth(), DepthClass::ByteDeep, "the absence-is-NaN leg is byte-deep");
+        assert!(report.conformant(), "valid/minimal stays conformant with L3 running+passing");
     }
 }

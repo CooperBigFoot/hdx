@@ -185,19 +185,20 @@ H1_DIVERGENT_FIELD: str = "flow"
 # git artifact and the layout walk would treat it identically, so deleting the subtree
 # is the committed form (the H2-collision caveat in steps.md §0 Bucket-B / L2).
 
-# --- MS8-S3 still-conformant M6 marker (irregular-time-axis) ------------------
+# --- HDX-0.2 M6 rule-(b) negative (irregular-time-axis) -----------------------
 #
-# The irregular-time-axis fixture is NOT a fail-closed invalid: it is a SECOND
-# valid-shaped fixture (placed under ``conformance/valid/irregular-time/``, see
-# :func:`invalid_root`) that proves the documented no-enforceable-M6-negative
-# finding in v0.1. There is NO enforceable M6 NEGATIVE: M6 rule (b) (per-basin
-# axis REGULARITY) is honestly R3 ByteDeep-skipped (``check_m6``) because v0.1
-# discovery surfaces only a two-point ``[start,end]`` TimeExtent + a sortedness
-# flag — a constant interior step is not derivable — and M6 NEVER interprets the
-# cadence word nor asserts any cross-basin step equality (§6.1 permits ragged
-# extents). So an irregular per-basin axis still validates ``conformant:true`` and
-# M6 stays ``skipped``-with-reason. This fixture makes that finding a regenerable,
-# pinned artifact.
+# The irregular-time-axis fixture is a fail-closed M6 negative under HDX 0.2
+# (placed under ``conformance/invalid/irregular-time-axis/``, see
+# :func:`invalid_root`). HDX 0.2 surfaces the full per-basin 1-D ``time`` axis
+# (the gridded ``/time`` int64-day decode normalized to i64 micros, or the scalar
+# ``time`` column projection), so ``check_m6`` RUNS rule (b) (per-basin axis
+# REGULARITY) and enforces strict-increasing + interior-regular. M6 still NEVER
+# interprets the cadence word nor asserts any cross-basin step equality (§6.1
+# permits ragged extents — rule (b) is decided per basin in isolation). An
+# irregular per-basin axis (non-constant interior step) therefore makes M6
+# ``ran:fail`` and the dataset ``conformant:false``. PRE-0.2 this was a
+# still-conformant ``valid/`` fixture (rule (b) was R3 ByteDeep-skipped); the 0.2
+# unskip reclassified it to this fail-closed negative.
 #
 # Per-basin day offsets the mutated basin's ``time`` axis is rewritten to: an
 # IRREGULAR but strictly-ascending, non-null axis (gaps 1,2,4 days — NOT a
@@ -242,39 +243,39 @@ class Invalid(Enum):
     CRS_MISMATCH = "crs-mismatch"
     MISALIGNED_SHARED_LABEL = "misaligned-shared-label"
     DIVERGENT_GRID_LABEL_SET = "divergent-grid-label-set"
-    # MS8-S3 still-conformant M6 case (NOT a fail-closed invalid). Derived by the
-    # same one-mutation machinery but placed under ``conformance/valid/`` (see
-    # :attr:`still_conformant` / :func:`invalid_root`): one basin's scalar ``time``
-    # axis (and its matching Zarr ``time`` coordinate) is rewritten to an irregular
-    # but strictly-ascending, non-null axis. ``validate`` reports M6 ``skipped``-
-    # with-reason and the dataset STILL ``conformant:true`` — there is no
-    # enforceable M6 negative in v0.1 (the regularity leg is R3-skipped).
+    # M6 rule-(b) negative (HDX 0.2). One basin's scalar ``time`` axis (and its
+    # matching Zarr ``time`` coordinate) is rewritten to an irregular but
+    # strictly-ascending, non-null axis (gaps 1,2,4 days). Under HDX 0.2 ``validate``
+    # RUNS M6 rule (b) (per-basin axis REGULARITY) over the full 1-D ``time`` axis and
+    # enforces strict-increasing + interior-regular, so the irregular axis FAILS:
+    # ``validate`` reports M6 ``ran:fail`` and the dataset is ``conformant:false``.
+    # PRE-0.2 this was a still-conformant ``valid/`` fixture (the regularity leg was
+    # R3-skipped); the 0.2 unskip reclassified it to a fail-closed ``invalid/`` negative.
     IRREGULAR_TIME_AXIS = "irregular-time-axis"
 
     @property
     def still_conformant(self) -> bool:
         """Whether this fixture is STILL ``conformant:true`` (not a fail-closed invalid).
 
-        Only :attr:`IRREGULAR_TIME_AXIS` is still-conformant: it is derived by the
-        same one-mutation machinery but documents the no-enforceable-M6-negative
-        finding (M6 ``skipped``-with-reason, ``conformant:true``). It is therefore
-        emitted under ``conformance/valid/`` — a sibling valid-shaped fixture —
-        rather than the fail-closed ``conformance/invalid/`` tree. Every other
-        variant is a fail-closed negative (an entry-gate ``Err`` or a
-        ``conformant:false`` report).
+        No variant is still-conformant under HDX 0.2: :attr:`IRREGULAR_TIME_AXIS` —
+        the former pre-0.2 still-conformant M6 case — is now a fail-closed M6 rule-(b)
+        negative (``validate`` runs the per-basin axis-regularity leg and fails the
+        irregular axis). Every variant is therefore a fail-closed negative (an
+        entry-gate ``Err`` or a ``conformant:false`` report), all under
+        ``conformance/invalid/`` (see :func:`invalid_root`).
         """
-        return self is Invalid.IRREGULAR_TIME_AXIS
+        return False
 
     @property
     def pinned_check(self) -> str:
         """Return the single spec §14 check this fixture pins.
 
         Bucket-A entry-gate ``Err`` negatives: M2/M3/M4/L1. Bucket-B
-        ``conformant:false`` negatives: I1/I2/I3/H1/T1/L2 (MS8-S3). MS8-S2
-        georef/grid-label negatives: M5/G2/H2. The MS8-S3 still-conformant case
-        :attr:`IRREGULAR_TIME_AXIS` carries the dedicated marker ``"M6(skip)"`` —
-        it does not pin a ``ran:fail`` (no enforceable M6 negative exists in v0.1);
-        it asserts M6 ``skipped``-with-reason while the dataset stays conformant.
+        ``conformant:false`` negatives: I1/I2/I3/H1/T1/L2. Georef/grid-label
+        negatives: M5/G2/H2. The HDX-0.2 M6 rule-(b) negative
+        :attr:`IRREGULAR_TIME_AXIS` pins ``M6`` — under 0.2 ``validate`` runs the
+        per-basin axis-regularity leg and the irregular axis is a real ``ran:fail``
+        (``conformant:false``).
         """
         if self is Invalid.WRONG_FORMAT_VERSION:
             return "M2"
@@ -300,17 +301,17 @@ class Invalid(Enum):
             return "G2"
         if self is Invalid.DIVERGENT_GRID_LABEL_SET:
             return "H2"
-        return "M6(skip)"
+        return "M6"
 
 
 def invalid_root(repo_root: Path, invalid: Invalid) -> Path:
     """Return the on-disk tree root for ``invalid``.
 
-    A fail-closed invalid lands under ``conformance/invalid/<name>/``. A
-    :attr:`Invalid.still_conformant` fixture (the MS8-S3
-    :attr:`Invalid.IRREGULAR_TIME_AXIS`) is a SECOND valid-shaped fixture, so it
-    lands under ``conformance/valid/<name>/`` instead — a still-conformant location
-    the suite cleanly separates from the fail-closed ``invalid/`` tree.
+    Every variant is a fail-closed invalid under HDX 0.2 and lands under
+    ``conformance/invalid/<name>/`` (no variant is :attr:`Invalid.still_conformant`
+    any more — the former still-conformant :attr:`Invalid.IRREGULAR_TIME_AXIS` is now
+    a fail-closed M6 rule-(b) negative). The :attr:`Invalid.still_conformant` hook is
+    retained so the routing stays explicit if a future still-conformant case is added.
     """
     quadrant = "valid" if invalid.still_conformant else "invalid"
     return repo_root / "conformance" / quadrant / invalid.value

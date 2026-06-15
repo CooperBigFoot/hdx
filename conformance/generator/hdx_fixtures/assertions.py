@@ -950,18 +950,18 @@ def _assert_divergent_grid_label_set(
 def _assert_irregular_time_axis(
     baseline_root: Path, invalid_root: Path, added: set[str], removed: set[str]
 ) -> None:
-    """Confirm the irregular-time-axis fixture is one matched scalar+Zarr rewrite (M6 skip).
+    """Confirm the irregular-time-axis fixture is one matched scalar+Zarr rewrite (M6 fail).
 
-    The MS8-S3 still-conformant case: EXACTLY the mutated basin's
+    The HDX-0.2 M6 rule-(b) negative: EXACTLY the mutated basin's
     ``scalar_dynamic.parquet`` AND its ``gridded_dynamic`` Zarr ``time`` coordinate
     diverge from the baseline — the matched pair — and **no** file is added or
     removed (both are in-place rewrites, same artifact names, same time-point
     count). Re-reading proves the rewritten axis is strictly ascending, non-null,
-    with NON-uniform gaps (irregular, the M6 rule (b) concern) and that the Zarr
-    ``time`` equals the scalar ``time`` cell-for-cell (T2 preserved, no spurious
-    co-fail). Every changed file lies under the one mutated basin, and only its
-    ``scalar_dynamic.parquet`` plus its Zarr files differ (the COG, the other
-    basins, and the manifest are byte-identical to the baseline).
+    with NON-uniform gaps (irregular, the M6 rule (b) concern that now ``ran:fail``s
+    under 0.2) and that the Zarr ``time`` equals the scalar ``time`` cell-for-cell
+    (T2 preserved, no spurious co-fail). Every changed file lies under the one mutated
+    basin, and only its ``scalar_dynamic.parquet`` plus its Zarr files differ (the COG,
+    the other basins, and the manifest are byte-identical to the baseline).
     """
     basin_prefix = f"basin={_MUTATED_BASIN}/"
     scalar_rel = f"{basin_prefix}scalar_dynamic.parquet"
@@ -1107,15 +1107,15 @@ def assert_differs_in_exactly_one_way(
       artifact, every added path its ``era5b.*`` artifact), and **no** shared file
       differs; that basin's label set becomes ``{era5b}`` (pins **H2**).
 
-    The **MS8-S3** still-conformant M6 case (NOT a fail-closed invalid):
+    The **HDX-0.2 M6 rule-(b)** negative (a fail-closed invalid):
 
     * :attr:`Invalid.IRREGULAR_TIME_AXIS` — exactly the mutated basin's
       ``scalar_dynamic.parquet`` AND its ``gridded_dynamic`` Zarr ``time``
       coordinate differ (the matched pair), adding/removing nothing; the rewritten
       ``time`` axis is strictly ascending, non-null, with NON-uniform gaps (and the
-      Zarr axis is identical to the scalar axis, T2 preserved). ``validate`` reports
-      M6 ``skipped``-with-reason and ``conformant:true`` (no enforceable M6 negative
-      in v0.1 — the regularity leg is R3-skipped).
+      Zarr axis is identical to the scalar axis, T2 preserved). Under HDX 0.2
+      ``validate`` RUNS M6 rule (b) over the full per-basin axis and the irregular
+      axis is a real ``ran:fail`` (``conformant:false``).
     """
     log = get_logger("assert.invalid")
     base_files = _relative_files(baseline_root)

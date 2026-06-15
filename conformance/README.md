@@ -26,8 +26,8 @@ tool, **not** part of the shipped contract.
 > while preserving reproducibility.
 
 The fixture set covers the full **§14 matrix**: one valid four-quadrant
-baseline, the still-conformant `valid/irregular-time-axis` case (the M6 R3 skip),
-and the **12** fail-closed invalids — one surgical mutation each, each pinning
+baseline and the **13** fail-closed invalids (including the HDX-0.2 M6 rule-(b)
+negative `invalid/irregular-time-axis`) — one surgical mutation each, each pinning
 exactly one §14 check. The full classification of all 20 §14 ids lives in the
 [§14 check-id classification matrix](#14-check-id-classification-matrix).
 
@@ -51,8 +51,9 @@ target**. One run:
 2. smoke-imports every pinned dependency (proving the pins resolve);
 3. emits the valid baseline `valid/minimal/` — the **scalar** half then the
    **gridded** half — and **derives every fixture the `mutate.Invalid` enum
-   declares** from it (the 12 fail-closed invalids under `invalid/<name>/` plus the
-   still-conformant `valid/irregular-time-axis/` — one surgical mutation each);
+   declares** from it (the 13 fail-closed invalids under `invalid/<name>/`,
+   including the M6 rule-(b) negative `invalid/irregular-time-axis/` — one surgical
+   mutation each);
 4. runs **every** load-bearing self-assertion — including, per derived fixture,
    the `assert_differs_in_exactly_one_way` one-mutation check — and **exits
    non-zero if any fails**, so a broken property aborts the whole regenerate and a
@@ -87,7 +88,7 @@ conformance/
     valid-minimal.validate.json            # pinned `validate` report (R4); produced by hdx-core, not the generator
     invalid-<fixture>.validate.json         # pinned per-fixture `validate` report for each invalid (R4)
   valid/minimal/                          # the one valid four-quadrant dataset (git-ignored data)
-  valid/irregular-time-axis/              # M6 still-conformant case (irregular time axis) — derived, STILL conformant:true (git-ignored data)
+  invalid/irregular-time-axis/            # pins M6 (rule (b) per-basin axis regularity) — one surgical mutation off the baseline (git-ignored data)
   invalid/wrong-format-version/           # pins M2 (entry-gate Err) — one surgical mutation off the baseline (git-ignored data)
   invalid/extra-manifest-field/           # pins M3 (entry-gate Err) — one surgical mutation off the baseline (git-ignored data)
   invalid/empty-cadence/                  # pins M4 (entry-gate Err) — one surgical mutation off the baseline (git-ignored data)
@@ -103,21 +104,20 @@ conformance/
 ```
 
 > **The fixture set covers the full §14 matrix.** The 13 derived fixtures
-> above (12 fail-closed invalids + the still-conformant `valid/irregular-time-axis`)
-> are exactly one per `mutate.Invalid` variant, and exactly the rows in the
+> above (all fail-closed invalids, including the HDX-0.2 M6 rule-(b) negative
+> `invalid/irregular-time-axis`) are exactly one per `mutate.Invalid` variant, and
+> exactly the rows in the
 > [fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid)
 > and the [§14 classification matrix](#14-check-id-classification-matrix). A clean
 > `regenerate.sh` emits all of them; no fixture name elsewhere in this README is a
 > dangling reference.
 
-> **Two valid-shaped fixtures.** `valid/minimal/` is the four-quadrant baseline.
-> `valid/irregular-time-axis/` is a SECOND valid-shaped fixture, derived from the
-> baseline by the same one-mutation machinery but **STILL `conformant:true`** — it
-> documents the
-> no-enforceable-M6-negative finding (see [the M6 subsection
-> below](#the-still-conformant-m6-case-no-enforceable-m6-negative-in-v01)). The
-> suite cleanly separates these "derived from baseline but still conformant"
-> fixtures (under `valid/`) from the fail-closed negatives (under `invalid/`).
+> **One valid-shaped fixture.** `valid/minimal/` is the four-quadrant baseline.
+> Every other derived fixture is a fail-closed negative under `invalid/`. Under
+> HDX 0.2 there is no still-conformant derived case: `invalid/irregular-time-axis`
+> (the former pre-0.2 still-conformant M6 case) is now a fail-closed M6 rule-(b)
+> negative (see [the M6 subsection
+> below](#the-m6-rule-b-negative-irregular-time-axis-hdx-02)).
 
 ### `valid/minimal/` — the one valid four-quadrant dataset
 
@@ -230,13 +230,12 @@ and is pinned by Rust tests in `crates/core/src/validate.rs`:
 **It records which checks ran vs were skipped (spec §14 note).** The golden lists **all
 20** §14 ids; each carries its `status` (`ran` / `skipped`), its `result` (`pass` / `fail`,
 or `null` for a skip), its R3 `depth` (`metadata_deep` / `byte_deep`), and an opaque
-`detail`. On the valid fixture every check `ran:pass` **except** the v0.1 honest R3 skips —
-**M6** (per-basin axis regularity needs the full 1-D `time` array), **L3** (the
-absence-is-NaN-not-a-missing-file leg needs a byte-deep payload read), and **T2** (the
-cross-artifact full time-axis identity needs both 1-D axes) — each with a non-empty skip
-reason. `conformant` is `true` (a skip never flips the verdict; fail-closed applies only to
-a violated `MUST` that ran). This makes the §14-note requirement ("the validator MUST
-clearly report which checks ran") a **machine-readable, pinned artifact**.
+`detail`. On the valid fixture **all 20** checks `ran:pass` (20/20, no skips) under HDX
+0.2 — the byte-deep legs now run over the surfaced full per-basin axis + realized columns:
+**T2** (cross-artifact full time-axis identity, both 1-D axes as i64 micros), **M6** rule
+(b) (per-basin axis regularity over the full 1-D `time` array), and **L3** (absence-is-NaN,
+not a missing file). `conformant` is `true`. This makes the §14-note requirement ("the
+validator MUST clearly report which checks ran") a **machine-readable, pinned artifact**.
 
 **Versioned implicitly by `format_version` only.** Like the describe shape, the validate
 report carries no schema-version field; its only version is the manifest `format_version`
@@ -257,16 +256,13 @@ one-violation-per-check golden report matrix.
 > **The invalid family adds no field.** No invalid fixture introduces a new
 > domain field or mutates a manifest floor field, so this baseline
 > `goldens/valid-minimal.validate.json` is the **byte-unchanged** green floor every
-> invalid fixture is derived from. The still-conformant
-> `goldens/valid-irregular-time-axis.validate.json` is even byte-identical to this
-> baseline (the irregular spacing is byte-deep invisible to `validate`). Each
-> fail-closed invalid gets its own `goldens/invalid-<fixture>.validate.json`
-> pinning its single `ran:fail` report.
+> invalid fixture is derived from. Each fail-closed invalid gets its own
+> `goldens/invalid-<fixture>.validate.json` pinning its single `ran:fail` report.
 
-### The still-conformant M6 case: no enforceable M6 negative in v0.1
+### The M6 rule-(b) negative: `invalid/irregular-time-axis` (HDX 0.2)
 
-`valid/irregular-time-axis/` is the documented M6 still-conformant fixture, derived
-from the baseline by **exactly one surgical mutation**: ONE basin's
+`invalid/irregular-time-axis/` is the M6 rule-(b) negative, derived from the
+baseline by **exactly one surgical mutation**: ONE basin's
 `scalar_dynamic.parquet` `time` column is rewritten to an **irregular** but
 **strictly-ascending, non-null** axis (days `[0,1,3,7]` off the basin's start
 instead of the baseline `[0,1,2,3]` — gaps of 1, 2, 4 days), **and** that basin's
@@ -279,38 +275,39 @@ basin's `scalar_dynamic.parquet` and its Zarr `time` differ, the axis is strictl
 ascending with **non-uniform** gaps, the Zarr axis equals the scalar axis, and no
 file is added or removed.
 
-`validate` of this fixture reports **M6 `status:skipped`** with a non-empty reason
-naming the regularity leg, `result:null`, and top-level **`conformant:true`** — the
-golden is [`goldens/valid-irregular-time-axis.validate.json`](goldens/valid-irregular-time-axis.validate.json),
-byte-identical to the baseline `valid-minimal` validate golden (the irregular
-spacing is byte-deep invisible to `validate`). The pinned regression test is
-`irregular_time_axis_skips_m6_and_stays_conformant` in `crates/core/src/validate.rs`.
+`validate` of this fixture reports **M6 `status:ran result:fail`** with a reason
+naming the offending basin and the regularity leg, and top-level
+**`conformant:false`** — the golden is
+[`goldens/invalid-irregular-time-axis.validate.json`](goldens/invalid-irregular-time-axis.validate.json).
+The pinned regression test is
+`irregular_time_axis_fails_m6_rule_b_and_is_non_conformant` in
+`crates/core/src/validate.rs`.
 
-**Why there is NO enforceable M6 negative in v0.1.** `check_m6` is exactly two
-rules: rule (a) — `cadence` is a non-empty string (this also is M4;
-M6 references it) — and rule (b) — each basin's realized `time` axis is
-**internally regular** (a constant interior step, the §6.2 consequence of
-NaN-filled gaps). Rule (b) is honestly **R3 `ByteDeep`-skipped**: the v0.1
-discovery model surfaces only a **two-point `[start, end]` `TimeExtent`** plus a
-`sorted_ascending` flag, **from which a constant interior step is not derivable**
-(you would need the full 1-D `time` array). Because a `Skipped` leg is never a
-fail and rule (a) passes, an irregular per-basin axis stays `conformant:true`.
+**How M6 enforces rule (b) under HDX 0.2.** `check_m6` is exactly two rules: rule
+(a) — `cadence` is a non-empty string (this also is M4; M6 references it) — and
+rule (b) — each basin's realized `time` axis is **strictly increasing** with a
+**uniform interior step** (the §6.2 consequence of NaN-filled gaps). HDX 0.2
+surfaces the full per-basin 1-D `time` axis on the discovery model (the gridded
+`/time` int64-day decode normalized to i64 micros, or the scalar `time` column
+projection), so rule (b) **runs over the full axis** — a constant interior step is
+now derivable. An axis that is not strictly increasing or whose interior step is
+non-constant ⇒ `ran:fail` naming that basin.
+
+> **Pre-0.2 history.** In v0.1 the discovery model surfaced only a two-point
+> `[start, end]` `TimeExtent` + a `sorted_ascending` flag, from which a constant
+> interior step was not derivable, so rule (b) was honestly R3 `ByteDeep`-skipped
+> and this fixture was a still-conformant `valid/irregular-time-axis` case. The 0.2
+> unskip reclassified it to this fail-closed negative.
 
 Two hard guardrails this fixture documents and the test pins:
 
 - **M6 never interprets the cadence *word*.** It does NOT read `"daily"` as a
   1-day step (that would be the semantic interpretation HDX must avoid, spec
-  §1/§6.4). The skip reason names *axis regularity*, never the cadence word.
+  §1/§6.4). The fail reason names *axis regularity*, never the cadence word.
 - **M6 asserts no cross-basin step equality.** §6.1 explicitly permits **ragged
   per-basin time extents**, so a merely-different cross-basin step is not a
-  failure. No cross-basin cadence rule is resurrected; the reason states this
-  explicitly ("no cross-basin step equality asserted").
-
-So the only M6 *fail* form is an empty cadence (rule (a)) — and that is already
-rejected at the M4 entry gate before `check_m6` runs (the `empty-cadence` invalid
-pins M4, not M6). There is therefore **no fixture that makes M6 `ran:fail`** in
-v0.1; the irregular-time-axis fixture is the documented still-conformant case in
-its place.
+  failure — rule (b) is decided **per basin in isolation**. No cross-basin cadence
+  rule is resurrected.
 
 ### `invalid/wrong-format-version/` — pins **M2**
 
@@ -336,9 +333,9 @@ one surgical mutation** (the generator's
 `assert_differs_in_exactly_one_way` self-assertion proves the one-mutation
 invariant at generation time) and pins **exactly one** spec §14 check. The table
 lists **every** fixture a clean `regenerate.sh` emits beyond the valid baseline:
-the **12 enforceable negatives** (a clean `conformant:false` report — or, for
-M2/M3/M4, an entry-gate `Err` — with exactly one §14 check failing) plus the
-**one still-conformant** `valid/irregular-time-axis` case (M6's R3 skip). Each row
+the **13 enforceable negatives** (a clean `conformant:false` report — or, for
+M2/M3/M4, an entry-gate `Err` — with exactly one §14 check failing), including the
+HDX-0.2 M6 rule-(b) negative `invalid/irregular-time-axis`. Each row
 is the single fixture the generator's `Invalid` enum declares (one per
 `mutate.Invalid` variant); no row names a fixture that is not emitted, and every
 emitted fixture appears here.
@@ -357,12 +354,12 @@ emitted fixture appears here.
 | **M5** — the manifest `crs` matches every georeferenced file's recorded CRS (§7/§11). | `invalid/crs-mismatch/` | `conformant:false` | `manifest.json` `crs`: `"EPSG:4326"` → `"EPSG:3857"` (the files keep `EPSG:4326`; all other floor fields unchanged). |
 | **G2** — a grid label shared across the COG and Zarr subtrees implies cell-for-cell alignment (§8). | `invalid/misaligned-shared-label/` | `conformant:false` | Re-emit one basin's `gridded_static/era5.tif` under the **same** `era5` label at a half-cell-shifted geometry (`west` `10.0` → `10.5`); its Zarr stays at the baseline geometry, so the shared label no longer coincides. |
 | **H2** — the grid-label set is identical across basins (§8). | `invalid/divergent-grid-label-set/` | `conformant:false` | Re-emit one basin's COG **and** Zarr under a divergent `era5b` label (`era5.*` → `era5b.*`); that basin's label set becomes `{era5b}` while every other basin's is `{era5}`. |
-| **M6 (skip)** — *no enforceable negative*; M6 rule (b) regularity is R3-skipped. STILL **`conformant:true`** (a valid-shaped fixture, not a fail-closed invalid). | `valid/irregular-time-axis/` | still-conformant (M6 skip) | Rewrite one basin's `scalar_dynamic` `time` to an irregular but strictly-ascending, non-null axis (days `[0,1,3,7]`) **and** its matching Zarr `time` to the identical axis. See [the M6 subsection](#the-still-conformant-m6-case-no-enforceable-m6-negative-in-v01). |
+| **M6** — each basin's realized `time` axis is strictly increasing with a uniform interior step (rule (b), §6.2/§6.4). | `invalid/irregular-time-axis/` | `conformant:false` | Rewrite one basin's `scalar_dynamic` `time` to an irregular but strictly-ascending, non-null axis (days `[0,1,3,7]` — gaps 1,2,4) **and** its matching Zarr `time` to the identical axis; rule (b) runs over the full axis and fails the non-constant interior step. See [the M6 subsection](#the-m6-rule-b-negative-invalid-irregular-time-axis-hdx-02). |
 
 > **The one-invalid-per-check family is exhaustive.** It spans the entry-gate
 > M2/M3/M4, the I1/I2/H1/T1/L2 parquet/layout negatives, the M5/G2/H2
-> georef/grid-label negatives, and the still-conformant M6 case. **The 13 rows
-> above are exactly the fixtures a clean `regenerate.sh` emits** (one per
+> georef/grid-label negatives, and the M6 rule-(b) regularity negative. **The 13
+> rows above are exactly the fixtures a clean `regenerate.sh` emits** (one per
 > `mutate.Invalid` variant). The full §14 classification matrix — every check id
 > placed in exactly one of three buckets — is the [next section](#14-check-id-classification-matrix).
 > Every invalid is added the same way: add a mutation to the generator and
@@ -377,10 +374,12 @@ G1–G3, Geo1). Every id falls into **exactly one** of three buckets, determined
 what [`crates/core/src/validate.rs`](../crates/core/src/validate.rs) `build_report`
 actually does on the fixture set. **This matrix was confirmed by reading
 `crates/core/src/validate.rs`** (the `build_report` function and each `check_*`
-rule); the three buckets below are, respectively, the `ran:fail`-on-its-negative
-set, the `ran:pass`-with-no-isolable-negative set, and the three honest R3 skips.
+rule); the two buckets below are, respectively, the `ran:fail`-on-its-negative
+set and the `ran:pass`-with-no-isolable-on-disk-negative set. Under HDX 0.2 there
+are **no** R3 skips left — all 20 checks RUN (T2, M6 rule (b), and L3 read the
+surfaced full per-basin axis + realized columns).
 
-### (a) Enforced, with an on-disk negative — 12 ids
+### (a) Enforced, with an on-disk negative — 13 ids
 
 These checks **run** on every fixture and `ran:fail` on a dedicated on-disk
 negative that is one surgical mutation off the baseline (the
@@ -403,8 +402,9 @@ check `ran:fail`.
 | **H2** | identical grid-label set across basins | `invalid/divergent-grid-label-set/` | `check_h2` |
 | **T1** | `time` named/typed/non-null/sorted | `invalid/non-monotonic-time/` | `check_t1` |
 | **G2** | shared grid label ⇒ cell-for-cell alignment | `invalid/misaligned-shared-label/` | `check_g2` |
+| **M6** | rule (b): per-basin axis strictly-increasing + interior-regular | `invalid/irregular-time-axis/` | `check_m6` |
 
-### (b) Enforced, but no isolable v0.1 negative — 5 ids
+### (b) Enforced, but no isolable on-disk negative — 7 ids
 
 These checks **run and pass** on the valid fixture (they are real `check_*` rules,
 not skips), but v0.1 cannot construct a fixture that makes **only** this check
@@ -420,27 +420,15 @@ on-disk bytes).
 | **G1** | `Field::new` makes a **label-less gridded field unrepresentable** (a gridded `Field` carries `Some(GridLabel)` by construction — see `check_g1`'s doc), so no on-disk tree with a "positional channel axis" (a gridded field that fails to self-name) is constructible: discovery would never build such a `Field`. The rule still runs (the explicit no-positional-channel-axis check), but it cannot be made to fail on disk. | `g1_passes_only_when_every_gridded_field_self_names` (the in-memory falsifiable form) |
 | **G3** | The gridded readers **error `MissingGridGeoref`** the moment a present artifact lacks georeferencing, so an on-disk no-georef tree fails **discovery** as an `Err` (`ValidateError::Discovery`) — it never reaches `build_report` to produce a `G3 ran:fail` report. `check_g3`'s falsifiable form is an empty-CRS `GridInfo`, which discovery can never build. | `data_var_without_grid_mapping_target_returns_missing_grid_georef` (the reader-side `Err`) |
 | **Geo1** | The geoparquet reader **requires** `basin_id`/`delineation`/`geometry` and errors (`MissingGeometryColumn`) otherwise, and reads a single root file (recording `partitioned_by_delineation=false`). So a missing-column or partitioned outlines fails **discovery** as an `Err`, never yielding a `Geo1 ran:fail` report. (An *absent* outlines is an L1 fail; Geo1 then honestly `skipped`.) | covered by the geoparquet-reader error tests + `check_geo1`'s skip path on the L1 fixture (`missing_root_rollup_pins_exactly_l1_and_is_non_conformant`) |
+| **L3** | The builder structurally NaN-fills an absent field's column over the full per-basin axis, so it cannot emit a basin that declares a `scalar_dynamic` yet materializes zero time rows — the absence-is-NaN-not-a-missing-file negative. `check_l3` runs byte-deep (each declared basin must materialize real time rows) and passes on every committed fixture; its fail-path is exercised by the in-memory/zero-row falsifiable form. | `check_l3` runs+passes on the valid fixture; the byte-deep absence-vs-NaN leg is `low3_*` reader-side coverage + the `check_l3` zero-row fail path |
+| **T2** | The builder force-aligns every basin's gridded `time` axis onto the scalar axis, so it structurally cannot emit a scalar-vs-gridded mismatch — the negative needs a deliberate **on-disk corruption** of an otherwise-conformant fixture, not a builder output. `check_t2` runs byte-deep (full i64-micros axis identity) and passes on the valid fixture. | `check_t2_runs_and_fails_on_corrupted_scalar_time_column` (the on-disk corruptor) + `check_t2_runs_and_passes_on_builder_axes` |
 
-### (c) R3-skipped in v0.1 — 3 ids
-
-These legs are **honest R3 `Skipped`-with-reason** (`status:"skipped"`,
-`result:null`, `depth:"byte_deep"`, a non-empty reason): they would need a
-byte-deep / full-axis read v0.1 discovery does not perform (architecture §7 R3). A
-skip **never** flips `conformant`, so the valid fixture stays `conformant:true`.
-
-| Id | Skipped leg | Why byte-deep (code-grounded) | `validate.rs` site |
-|---|---|---|---|
-| **M6** | rule (b) per-basin axis **regularity** | discovery surfaces only a two-point `[start,end]` extent + a `sorted_ascending` flag — a constant interior step is not derivable without the full 1-D `time` array. Rule (a) (cadence non-empty) runs and passes. | `check_m6` |
-| **L3** | absence-is-NaN-not-a-missing-file | the metadata-deep legs hold by construction (the walk ignores dot-cruft; every present artifact decoded during discovery); the absence-vs-NaN leg needs a byte-deep read of the cell payloads, which `validate` never performs. | `check_l3` |
-| **T2** | cross-artifact **full** time-axis identity | the scalar `[start,end]` extent and the Zarr per-grid geometry are surfaced, but **not** a comparable 1-D gridded `time` axis on the model — full-axis identity needs both 1-D axes. | `check_t2` |
-
-> **Bucket arithmetic (the closed 20).** (a) 12 + (b) 5 + (c) 3 = **20** — every
-> §14 id placed in exactly one bucket. The classification is the human-readable
-> twin of the pinned golden test
+> **Bucket arithmetic (the closed 20).** (a) 13 + (b) 7 = **20** — every §14 id
+> placed in exactly one bucket, and **all 20 RUN** under HDX 0.2 (no R3 skips
+> remain). The classification is the human-readable twin of the pinned golden test
 > `golden_clearly_reports_which_checks_ran_vs_skipped` in
 > [`crates/core/src/validate.rs`](../crates/core/src/validate.rs), which asserts
-> the **exact three skips** are `{M6, L3, T2}` and every other id `ran:pass` on the
-> valid fixture.
+> every id `ran:pass` on the valid fixture (20/20).
 
 ### Confirmed against `validate.rs build_report`
 

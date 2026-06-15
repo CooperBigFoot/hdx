@@ -76,9 +76,10 @@ def derive_invalids(dataset_root: Path) -> None:
 
     The repo root is recovered from ``dataset_root`` (``<repo>/conformance/valid/
     minimal``) so each fixture lands under its :func:`~hdx_fixtures.mutate.invalid_root`
-    location — fail-closed invalids under ``<repo>/conformance/invalid/<name>/`` and
-    the still-conformant :attr:`~hdx_fixtures.mutate.Invalid.IRREGULAR_TIME_AXIS`
-    case under ``<repo>/conformance/valid/<name>/`` (MS8-S3). For every
+    location — every variant is a fail-closed invalid under HDX 0.2, under
+    ``<repo>/conformance/invalid/<name>/`` (the former still-conformant
+    :attr:`~hdx_fixtures.mutate.Invalid.IRREGULAR_TIME_AXIS` case is now a fail-closed
+    M6 rule-(b) negative). For every
     :class:`Invalid`, the baseline is copied and exactly one surgical mutation is
     applied, then the "differs in exactly one way" self-assertion runs (aborting on
     failure) before the next fixture. The loop iterates the :class:`Invalid` enum,
@@ -124,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"conformance fixtures regenerated: valid baseline (four quadrants) at "
         f"{dataset_root}; fail-closed invalids derived under conformance/invalid/ "
-        "and the still-conformant irregular-time-axis fixture under conformance/valid/; "
+        "(including the irregular-time-axis M6 rule-(b) negative); "
         "all self-assertions passed"
     )
     return 0

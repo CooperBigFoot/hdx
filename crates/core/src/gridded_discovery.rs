@@ -1042,12 +1042,13 @@ mod tests {
             "basin 0001 gridded axis: int64 days 10957..10961 -> i64 micros, regular step 1 day"
         );
 
-        // (2) valid/irregular-time-axis: basin 0003 is the mutated basin — offsets
+        // (2) invalid/irregular-time-axis: basin 0003 is the mutated basin — offsets
         //     (0,1,3,7) off 2005-03-01 (day 12843) -> days [12843,12844,12846,12850],
         //     steps 1,2,4 days: strictly increasing but NON-regular. This proves the
         //     green-to-red M6(b) regression is a REAL check before the S6 rule-b unskip.
-        let irregular: Discovery = discover(conformance("valid/irregular-time-axis"))
-            .expect("valid/irregular-time-axis must discover");
+        //     (S6 reclassified the fixture valid/ -> invalid/ once M6(b) landed.)
+        let irregular: Discovery = discover(conformance("invalid/irregular-time-axis"))
+            .expect("invalid/irregular-time-axis must discover");
         let irregular0003 = irregular
             .gridded()
             .per_basin()

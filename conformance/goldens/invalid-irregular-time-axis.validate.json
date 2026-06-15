@@ -37,10 +37,10 @@
     },
     {
       "id": "M6",
-      "status": "skipped",
-      "result": null,
+      "status": "ran",
+      "result": "fail",
       "depth": "byte_deep",
-      "detail": "rule (a) cadence-non-empty passed; rule (b) per-basin axis REGULARITY needs the full 1-D time array, but v0.1 discovery surfaces only [start,end] + sortedness — byte-deep axis-regularity verification deferred (no cadence-word interpretation, no cross-basin step equality asserted)"
+      "detail": "rule (a) cadence-non-empty passed; rule (b): basin \"0003\" realized time axis is NOT strictly-increasing + interior-regular (a conformant per-basin axis has a constant interior step — §6.2 gaps are NaN-filled; no cadence-word interpretation, no cross-basin step asserted)"
     },
     {
       "id": "L1",
@@ -58,10 +58,10 @@
     },
     {
       "id": "L3",
-      "status": "skipped",
-      "result": null,
+      "status": "ran",
+      "result": "pass",
       "depth": "byte_deep",
-      "detail": "the metadata-deep legs hold by construction: the walk ignores dot-cruft and every present artifact decoded during discovery. The remaining leg — that a field's absence is a NaN-filled column, never a missing file (spec §5) — needs a byte-deep read of the cell payloads, which validate deliberately never performs; it is an honest skip"
+      "detail": null
     },
     {
       "id": "I1",
@@ -141,5 +141,5 @@
       "detail": null
     }
   ],
-  "conformant": true
+  "conformant": false
 }
