@@ -1,11 +1,8 @@
 # HDX — Hydrology Dataset Exchange (format_version `0.2` current; `0.1` also recognized)
 
-> **Status: canonical in-repo specification.** This document is the faithful,
-> normative distillation of the settled design record at
-> `../tethys/HDX.md` (the "design record"). Where this spec and the design
-> record disagree, **the design record wins** and this file is the bug. All
-> `[decided]` sections and the five resolved open questions of the design record
-> are treated as settled contract and are NOT re-litigated here.
+> **Status: canonical in-repo specification.** This document is the sole
+> normative source of truth for the HDX format and is self-contained: every
+> conformance requirement is stated here in full.
 >
 > Normative keywords **MUST**, **MUST NOT**, **SHOULD**, **MAY** are used in the
 > RFC 2119 sense. A dataset is **conformant** iff it satisfies every **MUST** in
