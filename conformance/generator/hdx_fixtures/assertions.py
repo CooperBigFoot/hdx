@@ -26,6 +26,7 @@ import zarr
 from hdx_fixtures import get_logger
 from hdx_fixtures.grids import (
     COMPANION_MASK_FIELD,
+    COVERAGE_POLYGON,
     DIVERGENT_GRID_LABEL,
     EPSG_CODE,
     GRID_LABEL,
@@ -33,8 +34,10 @@ from hdx_fixtures.grids import (
     GRIDDED_STATIC_FIELD,
     SECOND_DYNAMIC_LABELS,
     SECOND_STATIC_LABELS,
+    _basin_geometry,
     _time_since_epoch,
     cog_path,
+    coverage_surface,
     zarr_path,
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS, build_manifest
@@ -695,8 +698,8 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
     """Confirm every basin carries BOTH static + BOTH dynamic family artifacts.
 
     For each basin: a ``gridded_static/<label>.tif`` COG for every label in
-    :data:`SECOND_STATIC_LABELS` (dem, landcover) whose single band is the
-    label's distinct field name (self-naming, G1), and a
+    :data:`SECOND_STATIC_LABELS` (dem, era5, landcover, merit) whose single band
+    is the label's distinct field name (self-naming, G1), and a
     ``gridded_dynamic/<label>.zarr`` Zarr for every label in
     :data:`SECOND_DYNAMIC_LABELS` (era5, merit) carrying its distinct data-var
     field + companion mask. Both static label fields differ and both dynamic label
@@ -706,16 +709,21 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
     log = get_logger("assert.multi")
     for basin in BASINS:
         bdir = basin_dir(dataset_root, basin.basin_id)
-        for label, field_name in SECOND_STATIC_LABELS:
+        for label, field_name, units in SECOND_STATIC_LABELS:
             path = cog_path(bdir, label)
             _require(path.exists(), f"{path}: missing static label {label!r} COG")
             with rasterio.open(path) as src:
                 descs = list(src.descriptions)
+                observed_units = src.tags(1).get("units")
             _require(
                 field_name in descs,
                 f"{path}: band descriptions {descs} omit field {field_name!r} (G1)",
             )
-        for label, field_name in SECOND_DYNAMIC_LABELS:
+            _require(
+                observed_units == units,
+                f"{path}: units {observed_units!r} != {units!r}",
+            )
+        for label, field_name, units in SECOND_DYNAMIC_LABELS:
             store = zarr_path(bdir, label)
             _require(store.exists(), f"{store}: missing dynamic label {label!r} Zarr")
             group = zarr.open_group(str(store), mode="r")
@@ -729,37 +737,113 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
                 companion in names,
                 f"{store}: missing companion mask {companion!r}",
             )
+            _require(
+                group[field_name].attrs.get("units") == units,
+                f"{store}: {field_name} units "
+                f"{group[field_name].attrs.get('units')!r} != {units!r}",
+            )
         log.info(
             "multi-family labels OK basin=%s static=%s dynamic=%s",
             basin.basin_id,
-            [lbl for lbl, _ in SECOND_STATIC_LABELS],
-            [lbl for lbl, _ in SECOND_DYNAMIC_LABELS],
+            [lbl for lbl, _, _ in SECOND_STATIC_LABELS],
+            [lbl for lbl, _, _ in SECOND_DYNAMIC_LABELS],
         )
 
 
-def assert_multi_family_labels_homogeneous(dataset_root: Path) -> None:
-    """Confirm every basin carries the SAME four-label set (H2 stays pass).
+def assert_multi_family_coverage(dataset_root: Path) -> None:
+    """Confirm authored coverage fractions and same-label G2 alignment."""
+    geom = _basin_geometry()
+    expected = np.tile(
+        np.array([0.5, 1.0, 1.0, 0.5, 0.0, 0.0], dtype="float32"),
+        (8, 1),
+    )
+    first = coverage_surface(geom)
+    second = coverage_surface(geom)
+    _require(COVERAGE_POLYGON[0] == COVERAGE_POLYGON[-1], "coverage polygon is open")
+    _require(np.array_equal(first, second), "successive coverage computations differ")
+    _require(np.array_equal(first, expected), f"computed coverage differs: {first}")
+    _require(
+        np.all((first >= 0.0) & (first <= 1.0)),
+        "coverage fractions fall outside [0, 1]",
+    )
+    _require(
+        first[0, 0] == 0.5 and first[0, 1] == 1.0 and first[0, 4] == 0.0,
+        "coverage lacks pinned partial/interior/exterior cells",
+    )
 
-    H2 requires the grid-label set to be identical across basins. The two-family
-    fixture emits the same ``{dem, landcover}`` static + ``{era5, merit}`` dynamic
-    labels for every basin, so the per-basin label set is invariant and H2 passes.
-    The static and dynamic label sets are disjoint, so no label is shared across
-    subtrees — G2 finds no pair to compare and passes trivially.
+    coverage_fields = {"era5": "era5_coverage_frac", "merit": "merit_coverage_frac"}
+    for basin in BASINS:
+        bdir = basin_dir(dataset_root, basin.basin_id)
+        for label, field_name in coverage_fields.items():
+            path = cog_path(bdir, label)
+            store = zarr_path(bdir, label)
+            with rasterio.open(path) as src:
+                authored = src.read(1)
+                cog_crs = src.crs
+                cog_bounds = tuple(src.bounds)
+                cog_res = tuple(src.res)
+                cog_shape = (src.height, src.width)
+                cog_lon = np.array(
+                    [
+                        rasterio.transform.xy(
+                            src.transform, 0, col, offset="center"
+                        )[0]
+                        for col in range(src.width)
+                    ]
+                )
+                cog_lat = np.array(
+                    [
+                        rasterio.transform.xy(
+                            src.transform, row, 0, offset="center"
+                        )[1]
+                        for row in range(src.height)
+                    ]
+                )
+            _require(
+                np.array_equal(authored, expected),
+                f"{path}: coverage table differs for {field_name}",
+            )
+            group = zarr.open_group(str(store), mode="r")
+            zarr_lon = np.asarray(group["lon"][:])
+            zarr_lat = np.asarray(group["lat"][:])
+            zarr_bounds = (
+                float(zarr_lon[0] - geom.res / 2),
+                float(zarr_lat[-1] - geom.res / 2),
+                float(zarr_lon[-1] + geom.res / 2),
+                float(zarr_lat[0] + geom.res / 2),
+            )
+            _require(cog_crs.to_epsg() == EPSG_CODE, f"{path}: CRS mismatch")
+            _require(cog_bounds == zarr_bounds, f"{path} / {store}: bounds differ")
+            _require(cog_res == (geom.res, geom.res), f"{path}: resolution differs")
+            _require(cog_shape == (len(zarr_lat), len(zarr_lon)), f"{path}: shape differs")
+            _require(
+                np.array_equal(cog_lon, zarr_lon) and np.array_equal(cog_lat, zarr_lat),
+                f"{path} / {store}: cell ordering differs",
+            )
+
+
+def assert_multi_family_labels_homogeneous(dataset_root: Path) -> None:
+    """Confirm every basin carries the same static and dynamic label sets.
+
+    H2 requires each quadrant's grid-label set to be identical across basins. The
+    fixture emits static ``{dem, era5, landcover, merit}`` and dynamic
+    ``{era5, merit}`` labels for every basin. Their shared intersection is exactly
+    ``{era5, merit}``, making G2 substantive.
     """
     log = get_logger("assert.multi")
-    static_labels = sorted(lbl for lbl, _ in SECOND_STATIC_LABELS)
-    dynamic_labels = sorted(lbl for lbl, _ in SECOND_DYNAMIC_LABELS)
-    _require(
-        not (set(static_labels) & set(dynamic_labels)),
-        f"static labels {static_labels} and dynamic labels {dynamic_labels} "
-        "must be disjoint (so no label is shared across subtrees, G2 trivial)",
-    )
+    static_labels = ["dem", "era5", "landcover", "merit"]
+    dynamic_labels = ["era5", "merit"]
+    expected_shared = ["era5", "merit"]
+    observed_static_sets: list[list[str]] = []
+    observed_dynamic_sets: list[list[str]] = []
     for basin in BASINS:
         bdir = basin_dir(dataset_root, basin.basin_id)
         observed_static = sorted(p.stem for p in (bdir / "gridded_static").glob("*.tif"))
         observed_dynamic = sorted(
             p.stem for p in (bdir / "gridded_dynamic").glob("*.zarr")
         )
+        observed_static_sets.append(observed_static)
+        observed_dynamic_sets.append(observed_dynamic)
         _require(
             observed_static == static_labels,
             f"basin {basin.basin_id}: static labels {observed_static} "
@@ -770,6 +854,18 @@ def assert_multi_family_labels_homogeneous(dataset_root: Path) -> None:
             f"basin {basin.basin_id}: dynamic labels {observed_dynamic} "
             f"!= {dynamic_labels} (H2)",
         )
+        _require(
+            sorted(set(observed_static) & set(observed_dynamic)) == expected_shared,
+            f"basin {basin.basin_id}: shared labels are not {expected_shared} (G2)",
+        )
+    _require(
+        all(labels == observed_static_sets[0] for labels in observed_static_sets),
+        f"static label sets differ across basins: {observed_static_sets}",
+    )
+    _require(
+        all(labels == observed_dynamic_sets[0] for labels in observed_dynamic_sets),
+        f"dynamic label sets differ across basins: {observed_dynamic_sets}",
+    )
     log.info(
         "multi-family label sets homogeneous across basins: static=%s dynamic=%s",
         static_labels,
@@ -792,6 +888,7 @@ def run_multi_grid_multi_static_assertions(dataset_root: Path) -> None:
     run_scalar_assertions(dataset_root)
     assert_zarr_time_ragged_across_basins(dataset_root)
     assert_multi_family_labels_present(dataset_root)
+    assert_multi_family_coverage(dataset_root)
     assert_multi_family_labels_homogeneous(dataset_root)
     log.info("all multi_grid_multi_static self-assertions passed")
 

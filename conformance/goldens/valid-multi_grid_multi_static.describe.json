@@ -44,6 +44,16 @@
       "grid_label": "dem"
     },
     {
+      "name": "era5_coverage_frac",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "frac",
+      "grid_label": "era5"
+    },
+    {
       "name": "landcover_class",
       "quadrant": {
         "temporal": "static",
@@ -54,17 +64,27 @@
       "grid_label": "landcover"
     },
     {
-      "name": "era5_precipitation",
+      "name": "merit_coverage_frac",
+      "quadrant": {
+        "temporal": "static",
+        "shape": "gridded"
+      },
+      "dtype": "f32",
+      "units": "frac",
+      "grid_label": "merit"
+    },
+    {
+      "name": "era5_precipitation_mm_d",
       "quadrant": {
         "temporal": "dynamic",
         "shape": "gridded"
       },
       "dtype": "f32",
-      "units": "mm",
+      "units": "mm_d",
       "grid_label": "era5"
     },
     {
-      "name": "era5_precipitation_was_filled",
+      "name": "era5_precipitation_mm_d_was_filled",
       "quadrant": {
         "temporal": "dynamic",
         "shape": "gridded"
@@ -74,17 +94,17 @@
       "grid_label": "era5"
     },
     {
-      "name": "merit_flow_accumulation",
+      "name": "merit_flow_accumulation_m",
       "quadrant": {
         "temporal": "dynamic",
         "shape": "gridded"
       },
       "dtype": "f32",
-      "units": "mm",
+      "units": "m",
       "grid_label": "merit"
     },
     {
-      "name": "merit_flow_accumulation_was_filled",
+      "name": "merit_flow_accumulation_m_was_filled",
       "quadrant": {
         "temporal": "dynamic",
         "shape": "gridded"
@@ -112,7 +132,39 @@
       "crs": "EPSG:4326"
     },
     {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
       "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
       "extent": {
         "west": 10.0,
         "north": 50.0,
@@ -176,7 +228,39 @@
       "crs": "EPSG:4326"
     },
     {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
       "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
       "extent": {
         "west": 10.0,
         "north": 50.0,
@@ -240,7 +324,39 @@
       "crs": "EPSG:4326"
     },
     {
+      "grid_label": "era5",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
       "grid_label": "landcover",
+      "extent": {
+        "west": 10.0,
+        "north": 50.0,
+        "east": 11.5,
+        "south": 48.0
+      },
+      "resolution": {
+        "x_res": 0.25,
+        "y_res": -0.25
+      },
+      "width": 6,
+      "height": 8,
+      "crs": "EPSG:4326"
+    },
+    {
+      "grid_label": "merit",
       "extent": {
         "west": 10.0,
         "north": 50.0,
