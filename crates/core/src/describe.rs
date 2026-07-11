@@ -1548,13 +1548,13 @@ mod tests {
 
     /// merge-gen M1 RED→GREEN — the END-TO-END field-catalog completeness proof.
     ///
-    /// `describe` of the two-family `multi_grid_multi_static` fixture (two distinct
-    /// grid labels per gridded quadrant: `dem`+`landcover` gridded·static,
-    /// `era5`+`merit` gridded·dynamic) must equal the committed describe golden,
+    /// `describe` of the `multi_grid_multi_static` fixture (`dem`+`era5`+
+    /// `landcover`+`merit` gridded·static, `era5`+`merit` gridded·dynamic)
+    /// must equal the committed describe golden,
     /// whose `fields[]` enumerates BOTH families' fields. On the PRE-Step-1
     /// first-artifact-only catalog this is unsatisfiable: the catalog surfaced only
     /// ONE static label's band field and ONE dynamic label's data-var field(s), so
-    /// the 2nd family's fields (`landcover_class`, `merit_flow_accumulation`) were
+    /// the 2nd family's fields (`landcover_class`, `merit_flow_accumulation_m`) were
     /// absent from `describe.fields()` (`describe.rs` `Description::from_discovery`
     /// reads `discovery.fields()` directly) — both the golden-equality assertion and
     /// the explicit BOTH-families membership assertions FAIL red. With Step 1's
@@ -1598,10 +1598,14 @@ mod tests {
             .filter_map(|f| f.get("name").and_then(Value::as_str))
             .collect();
         for expected in [
-            "dem_elevation",           // gridded·static label `dem`
-            "landcover_class",         // gridded·static label `landcover` (2nd static family)
-            "era5_precipitation",      // gridded·dynamic label `era5`
-            "merit_flow_accumulation", // gridded·dynamic label `merit` (2nd dynamic family)
+            "dem_elevation",                        // gridded·static label `dem`
+            "landcover_class", // gridded·static label `landcover` (2nd static family)
+            "era5_coverage_frac", // gridded·static label `era5`
+            "merit_coverage_frac", // gridded·static label `merit`
+            "era5_precipitation_mm_d", // gridded·dynamic label `era5`
+            "era5_precipitation_mm_d_was_filled", // ordinary companion
+            "merit_flow_accumulation_m", // gridded·dynamic label `merit`
+            "merit_flow_accumulation_m_was_filled", // ordinary companion
         ] {
             assert!(
                 field_names.contains(&expected),

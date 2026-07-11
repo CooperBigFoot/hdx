@@ -109,9 +109,11 @@ def build_multi_grid_multi_static_baseline(dataset_root: Path) -> None:
     """Emit the merge-gen M1 two-family baseline (spec §4/§7/§8).
 
     A full four-quadrant dataset like :func:`build_scalar_baseline` +
-    :func:`build_gridded_baseline`, except the gridded half carries TWO DISTINCT
-    grid labels per quadrant (``dem``+``landcover`` static, ``era5``+``merit``
-    dynamic) via :func:`~hdx_fixtures.grids.write_multi_family_grids`. The scalar
+    :func:`build_gridded_baseline`, except the gridded half carries four static
+    labels (``dem``+``era5``+``landcover``+``merit``) and two
+    dynamic labels (``era5``+``merit``) via
+    :func:`~hdx_fixtures.grids.write_multi_family_grids`. Same-label coverage
+    COG/Zarr pairs make the G2 alignment check substantive. The scalar
     half, outlines, and 0.1 manifest are the baseline shape, so the only axis that
     differs is the multi-family gridded catalog — the field-catalog-completeness
     proof surface.
@@ -264,8 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     run_geometry_less_assertions(geometry_less)
 
     # The merge-gen M1 two-family fixture lives under valid/multi_grid_multi_static/,
-    # a sibling of valid/minimal/: two distinct grid labels per gridded quadrant so
-    # the field catalog must union fields across families (the M1 completeness proof).
+    # a sibling of valid/minimal/: four static labels and two dynamic labels, with
+    # era5/merit shared across quadrants so G2 performs real alignment checks.
     multi = valid_multi_grid_multi_static_root(repo_root)
     build_multi_grid_multi_static_baseline(multi)
     run_multi_grid_multi_static_assertions(multi)
@@ -278,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"conformance fixtures regenerated: valid baseline (four quadrants) at "
         f"{dataset_root}; geometry-less (0.2, no outlines) at {geometry_less}; "
-        f"multi_grid_multi_static (two grid families) at {multi}; "
+        f"multi_grid_multi_static (four static labels, two dynamic labels, "
+        f"shared-label coverage with substantive G2 alignment) at {multi}; "
         "fail-closed invalids derived under conformance/invalid/ "
         "(including the irregular-time-axis M6 rule-(b) negative); "
         "all self-assertions passed"
