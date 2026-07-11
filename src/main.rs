@@ -41,7 +41,11 @@ use hdx_core::validate::validate;
 
 /// The `hdx` CLI: a thin JSON-emitting surface over the `hdx-core` verbs.
 #[derive(Debug, Parser)]
-#[command(name = "hdx", version, about = "Thin JSON-emitting CLI over the hdx-core verbs")]
+#[command(
+    name = "hdx",
+    version,
+    about = "Thin JSON-emitting CLI over the hdx-core verbs"
+)]
 struct Cli {
     /// The verb to run.
     #[command(subcommand)]

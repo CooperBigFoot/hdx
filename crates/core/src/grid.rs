@@ -139,7 +139,10 @@ impl GridExtent {
     pub fn from_edge_origin(west: f64, north: f64, res: f64, width: usize, height: usize) -> Self {
         let east = west + res * width as f64;
         let south = north - res * height as f64;
-        debug!(west, north, east, south, "derived grid extent from edge origin");
+        debug!(
+            west,
+            north, east, south, "derived grid extent from edge origin"
+        );
         Self {
             west,
             north,

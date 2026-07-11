@@ -460,7 +460,10 @@ mod tests {
             assert_eq!(time.name(), "time");
             assert_eq!(time.dtype(), Dtype::Timestamp);
             assert!(!time.is_nullable(), "fixture time is non-nullable");
-            assert!(time.is_sorted_ascending(), "fixture time is sorted ascending");
+            assert!(
+                time.is_sorted_ascending(),
+                "fixture time is sorted ascending"
+            );
 
             // The extent comes from row-group statistics (not the bounded fallback).
             let extent = basin
@@ -477,8 +480,8 @@ mod tests {
 
     #[test]
     fn ragged_extents_across_basins_are_surfaced_as_facts() {
-        let discovery = discover_scalar(conformance("valid/minimal"))
-            .expect("the valid fixture must discover");
+        let discovery =
+            discover_scalar(conformance("valid/minimal")).expect("the valid fixture must discover");
 
         let extents: Vec<_> = discovery
             .per_basin()
@@ -517,8 +520,9 @@ mod tests {
     fn missing_root_rollup_discovers_successfully_with_the_gap_recorded() {
         // Gaps-as-facts: discovery SUCCEEDS (no verdict) on the missing-root-rollup
         // tree and reports the absent rollup + the present basins. L1 is a `validate` rule.
-        let discovery = discover_scalar(conformance("invalid/missing-root-rollup"))
-            .expect("discovery must SUCCEED and record the gap (L1 enforcement is a validate rule)");
+        let discovery = discover_scalar(conformance("invalid/missing-root-rollup")).expect(
+            "discovery must SUCCEED and record the gap (L1 enforcement is a validate rule)",
+        );
 
         // `outlines.geoparquet` is the absent rollup in this fixture.
         assert!(discovery.root_rollups().scalar_static_present());
@@ -540,8 +544,8 @@ mod tests {
         // surface to read, and no name-pattern special-casing (spec §1/§2). The
         // Field type structurally cannot carry such a field — this asserts the
         // catalog is exactly the two ordinary fields with their verbatim names.
-        let discovery = discover_scalar(conformance("valid/minimal"))
-            .expect("the valid fixture must discover");
+        let discovery =
+            discover_scalar(conformance("valid/minimal")).expect("the valid fixture must discover");
 
         for field in discovery.scalar_fields() {
             // Scalar fields carry no grid label (the only conditional Field datum).
@@ -575,8 +579,8 @@ mod tests {
     /// accessors so they cannot be silently reshaped.
     #[test]
     fn scalar_discovery_exposes_the_ms4_seam_accessors() {
-        let discovery = discover_scalar(conformance("valid/minimal"))
-            .expect("the valid fixture must discover");
+        let discovery =
+            discover_scalar(conformance("valid/minimal")).expect("the valid fixture must discover");
 
         // The four scalar-half accessors the gridded half builds on (compile + shape check).
         let _basins: &[BasinId] = discovery.basins();

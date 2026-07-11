@@ -62,7 +62,10 @@ fn fixture_arg(rel: &str) -> String {
 #[test]
 fn describe_emits_json_object_to_stdout() {
     let path = fixture("conformance/valid/minimal");
-    let stdout = run_hdx(&["describe", path.to_str().expect("fixture path is valid UTF-8")]);
+    let stdout = run_hdx(&[
+        "describe",
+        path.to_str().expect("fixture path is valid UTF-8"),
+    ]);
 
     assert!(!stdout.is_empty(), "describe produced empty stdout");
 
@@ -73,7 +76,10 @@ fn describe_emits_json_object_to_stdout() {
 #[test]
 fn validate_emits_report_object_with_conformant_key() {
     let path = fixture("conformance/valid/minimal");
-    let stdout = run_hdx(&["validate", path.to_str().expect("fixture path is valid UTF-8")]);
+    let stdout = run_hdx(&[
+        "validate",
+        path.to_str().expect("fixture path is valid UTF-8"),
+    ]);
 
     assert!(!stdout.is_empty(), "validate produced empty stdout");
 
@@ -126,9 +132,13 @@ fn validate_valid_minimal_exits_zero_conformant_true() {
 /// verbatim, so a 0.2-conformant geometry-less dataset exits 0 just like `valid/minimal`.
 #[test]
 fn validate_geometry_less_exits_zero_conformant_true_under_0_2() {
-    let (code, stdout) = run_hdx_full(&["validate", &fixture_arg("conformance/valid/geometry-less")]);
+    let (code, stdout) =
+        run_hdx_full(&["validate", &fixture_arg("conformance/valid/geometry-less")]);
 
-    assert_eq!(code, 0, "a 0.2-conformant geometry-less dataset must exit 0");
+    assert_eq!(
+        code, 0,
+        "a 0.2-conformant geometry-less dataset must exit 0"
+    );
     let value: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
     assert_eq!(
         value.get("conformant").and_then(Value::as_bool),
@@ -154,17 +164,27 @@ fn validate_geometry_less_exits_zero_conformant_true_under_0_2() {
 /// `describe` of `valid/geometry-less` → exit 0, a JSON object with empty delineations.
 #[test]
 fn describe_geometry_less_exits_zero_empty_delineations() {
-    let (code, stdout) = run_hdx_full(&["describe", &fixture_arg("conformance/valid/geometry-less")]);
+    let (code, stdout) =
+        run_hdx_full(&["describe", &fixture_arg("conformance/valid/geometry-less")]);
 
-    assert_eq!(code, 0, "describe of a 0.2 geometry-less dataset must exit 0");
+    assert_eq!(
+        code, 0,
+        "describe of a 0.2 geometry-less dataset must exit 0"
+    );
     let value: Value = serde_json::from_slice(&stdout).expect("describe stdout is valid JSON");
     assert_eq!(
-        value.get("manifest").and_then(|m| m.get("format_version")).and_then(Value::as_str),
+        value
+            .get("manifest")
+            .and_then(|m| m.get("format_version"))
+            .and_then(Value::as_str),
         Some("0.2"),
         "the geometry-less manifest is format_version 0.2"
     );
     assert_eq!(
-        value.get("delineations").and_then(Value::as_array).map(Vec::len),
+        value
+            .get("delineations")
+            .and_then(Value::as_array)
+            .map(Vec::len),
         Some(0),
         "a geometry-less dataset has empty delineations (no outlines)"
     );
@@ -234,10 +254,8 @@ fn describe_wrong_format_version_exits_two_no_json_on_stdout() {
 /// `validate` of a nonexistent path → exit 2 (`ManifestUnreadable`); no stdout.
 #[test]
 fn validate_nonexistent_path_exits_two() {
-    let (code, stdout) = run_hdx_full(&[
-        "validate",
-        &fixture_arg("conformance/does-not-exist-xyz"),
-    ]);
+    let (code, stdout) =
+        run_hdx_full(&["validate", &fixture_arg("conformance/does-not-exist-xyz")]);
 
     assert_eq!(code, 2, "a nonexistent dataset path is an exit-2 error");
     assert!(
@@ -250,10 +268,8 @@ fn validate_nonexistent_path_exits_two() {
 /// `describe` of a nonexistent path → exit 2 (`ManifestUnreadable`); no stdout.
 #[test]
 fn describe_nonexistent_path_exits_two() {
-    let (code, stdout) = run_hdx_full(&[
-        "describe",
-        &fixture_arg("conformance/does-not-exist-xyz"),
-    ]);
+    let (code, stdout) =
+        run_hdx_full(&["describe", &fixture_arg("conformance/does-not-exist-xyz")]);
 
     assert_eq!(code, 2, "a nonexistent dataset path is an exit-2 error");
     assert!(
@@ -291,7 +307,9 @@ fn validate_without_path_exits_two_usage_error() {
 
 /// Resolve a committed schema path relative to the bin crate root (the workspace root).
 fn schema(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("schemas").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("schemas")
+        .join(rel)
 }
 
 /// Load and compile a committed JSON Schema with `jsonschema`.
@@ -310,7 +328,8 @@ fn load_schema(file: &str) -> Validator {
 
 /// Parse a process's stdout bytes as a JSON `Value`, panicking with context on failure.
 fn stdout_as_json(stdout: &[u8], what: &str) -> Value {
-    serde_json::from_slice(stdout).unwrap_or_else(|e| panic!("{what} stdout is not valid JSON: {e}"))
+    serde_json::from_slice(stdout)
+        .unwrap_or_else(|e| panic!("{what} stdout is not valid JSON: {e}"))
 }
 
 /// `describe` stdout validates against the committed `describe.schema.json` (R4).
@@ -377,7 +396,10 @@ fn nonconformant_validate_stdout_still_validates_against_schema() {
         &fixture_arg("conformance/invalid/missing-root-rollup"),
     ]);
 
-    assert_eq!(code, 1, "the missing-root-rollup fixture is non-conformant (exit 1)");
+    assert_eq!(
+        code, 1,
+        "the missing-root-rollup fixture is non-conformant (exit 1)"
+    );
     let value = stdout_as_json(&stdout, "validate (non-conformant)");
     assert_eq!(
         value.get("conformant").and_then(Value::as_bool),
@@ -386,6 +408,8 @@ fn nonconformant_validate_stdout_still_validates_against_schema() {
     );
 
     if let Err(error) = validator.validate(&value) {
-        panic!("a conformant:false report must still validate against validate.schema.json: {error}");
+        panic!(
+            "a conformant:false report must still validate against validate.schema.json: {error}"
+        );
     }
 }

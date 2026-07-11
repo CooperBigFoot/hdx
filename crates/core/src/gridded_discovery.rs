@@ -1021,8 +1021,11 @@ mod tests {
         let gridded_dynamic = temp.join("basin=0001/gridded_dynamic");
 
         // Plant a SECOND + THIRD static label (byte-copy the COG).
-        std::fs::copy(gridded_static.join("era5.tif"), gridded_static.join("dem.tif"))
-            .expect("plant dem.tif");
+        std::fs::copy(
+            gridded_static.join("era5.tif"),
+            gridded_static.join("dem.tif"),
+        )
+        .expect("plant dem.tif");
         std::fs::copy(
             gridded_static.join("era5.tif"),
             gridded_static.join("landcover.tif"),
@@ -1045,8 +1048,7 @@ mod tests {
         // Membership helper: the catalog contains a field with this (name, grid_label).
         let has = |name: &str, label: &str| -> bool {
             gridded.gridded_fields().iter().any(|f| {
-                f.name().as_str() == name
-                    && f.grid_label() == Some(&GridLabel::new(label))
+                f.name().as_str() == name && f.grid_label() == Some(&GridLabel::new(label))
             })
         };
 
@@ -1134,9 +1136,12 @@ mod tests {
         let minimal: Discovery =
             discover(conformance("valid/minimal")).expect("valid/minimal must discover");
         for basin in minimal.gridded().per_basin() {
-            let axis = basin
-                .gridded_time_axis()
-                .unwrap_or_else(|| panic!("basin {} surfaces a gridded time axis", basin.basin_id_folder().as_str()));
+            let axis = basin.gridded_time_axis().unwrap_or_else(|| {
+                panic!(
+                    "basin {} surfaces a gridded time axis",
+                    basin.basin_id_folder().as_str()
+                )
+            });
             assert!(
                 is_strictly_increasing_and_regular(axis),
                 "valid/minimal basin {} gridded axis is M6(b)-regular: {axis:?}",
@@ -1145,7 +1150,10 @@ mod tests {
             // The per-basin accessor agrees with the first dynamic artifact's axis.
             assert_eq!(
                 Some(axis),
-                basin.dynamic_artifacts().first().map(|a| a.gridded_time_axis()),
+                basin
+                    .dynamic_artifacts()
+                    .first()
+                    .map(|a| a.gridded_time_axis()),
                 "the per-basin axis is the first dynamic artifact's axis"
             );
         }

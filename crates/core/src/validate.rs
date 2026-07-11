@@ -64,8 +64,8 @@
 //! | [`ValidationReport`] | the full report: the per-check outcomes + `conformant` ("no ran-fail") |
 //! | ran / skipped (§14 note) | the report MUST clearly state which checks ran; a skip is honest, with a reason |
 
-use std::collections::BTreeSet;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -389,7 +389,11 @@ impl ValidationReport {
     /// are projected onto it. Borrowing — no clones beyond the `&str` views the DTO holds.
     pub fn to_dto(&self) -> ValidationReportDto<'_> {
         ValidationReportDto {
-            checks: self.checks.iter().map(CheckOutcomeDto::from_outcome).collect(),
+            checks: self
+                .checks
+                .iter()
+                .map(CheckOutcomeDto::from_outcome)
+                .collect(),
             conformant: self.conformant,
         }
     }
@@ -1463,10 +1467,7 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     // The cross-file / cross-basin checks. L1's outlines leg is geometry-conditional:
     // the manifest's `format_version` decides whether an absent `outlines.geoparquet` is
     // an L1 fail (0.1, required) or a skipped leg (0.2, optional).
-    let l1 = check_l1(
-        discovery,
-        manifest.format_version().geometry_expectation(),
-    );
+    let l1 = check_l1(discovery, manifest.format_version().geometry_expectation());
     let l2 = check_l2(discovery);
     let l3 = check_l3(discovery);
     let i1 = check_i1(discovery);
@@ -1479,7 +1480,11 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
         .collect();
     let i2 = check_i2(&i2_pairs);
 
-    let m5 = check_m5(manifest.crs(), discovery.grids(), discovery.gridded().outlines());
+    let m5 = check_m5(
+        manifest.crs(),
+        discovery.grids(),
+        discovery.gridded().outlines(),
+    );
     let m6_axes = per_basin_m6_axes(discovery);
     let m6 = check_m6(manifest.cadence(), &m6_axes);
     let t2 = check_t2(discovery);
@@ -1770,7 +1775,9 @@ mod tests {
             Err(ValidateError::Manifest(CoreError::ExtraManifestField { field })) => {
                 assert_eq!(field, "content_hash", "M3 names the offending extra key");
             }
-            other => panic!("expected Err(Manifest(ExtraManifestField)) at the entry gate, got {other:?}"),
+            other => panic!(
+                "expected Err(Manifest(ExtraManifestField)) at the entry gate, got {other:?}"
+            ),
         }
     }
 
@@ -1788,7 +1795,9 @@ mod tests {
         // tree is an M4 entry-gate `Err`, so no spurious M6 empty-cadence negative exists.
         match validate(conformance("invalid/empty-cadence")) {
             Err(ValidateError::Manifest(CoreError::EmptyCadence)) => {}
-            other => panic!("expected Err(Manifest(EmptyCadence)) at the entry gate (M4, not M6), got {other:?}"),
+            other => panic!(
+                "expected Err(Manifest(EmptyCadence)) at the entry gate (M4, not M6), got {other:?}"
+            ),
         }
     }
 
@@ -2097,7 +2106,11 @@ mod tests {
             .expect("basin 0001 present");
         let cog = basin0001.static_artifacts()[0].grid_info();
         let zarr = basin0001.dynamic_artifacts()[0].grid_info();
-        assert_eq!(cog.extent(), zarr.extent(), "COG and Zarr era5 extents coincide");
+        assert_eq!(
+            cog.extent(),
+            zarr.extent(),
+            "COG and Zarr era5 extents coincide"
+        );
         assert_eq!(cog.extent().west(), 10.0);
         assert_eq!(cog.extent().north(), 50.0);
         assert_eq!(cog.extent().east(), 11.5);
@@ -2151,7 +2164,8 @@ mod tests {
         assert_eq!(l1.status(), CheckStatus::Ran, "L1 ran");
         assert_eq!(l1.result(), Some(CheckResult::Fail), "L1 failed");
         assert!(
-            l1.detail().is_some_and(|d| d.contains("outlines.geoparquet")),
+            l1.detail()
+                .is_some_and(|d| d.contains("outlines.geoparquet")),
             "L1 detail names the missing outlines rollup"
         );
 
@@ -2186,10 +2200,22 @@ mod tests {
 
         // M6 now RUNS both rules: rule (a) cadence-non-empty and rule (b) per-basin axis
         // regularity. On the conformant daily-regular fixture both pass.
-        assert_eq!(m6.status(), CheckStatus::Ran, "M6 runs (rule (b) reads the full axis)");
-        assert_eq!(m6.result(), Some(CheckResult::Pass), "M6 passes on a regular fixture");
+        assert_eq!(
+            m6.status(),
+            CheckStatus::Ran,
+            "M6 runs (rule (b) reads the full axis)"
+        );
+        assert_eq!(
+            m6.result(),
+            Some(CheckResult::Pass),
+            "M6 passes on a regular fixture"
+        );
         assert_eq!(m6.detail(), None, "a passing M6 carries no detail");
-        assert_eq!(m6.depth(), DepthClass::ByteDeep, "regularity leg is byte-deep");
+        assert_eq!(
+            m6.depth(),
+            DepthClass::ByteDeep,
+            "regularity leg is byte-deep"
+        );
     }
 
     #[test]
@@ -2197,11 +2223,21 @@ mod tests {
         // §6.1: ragged per-basin extents must NOT fail M6 — rule (b) is decided per basin in
         // ISOLATION (no cross-basin step equality). Two basins with internally-regular but
         // DIFFERENT steps (1-day vs 7-day) both pass; a non-empty cadence passes rule (a).
-        let daily: Vec<i64> = [0_i64, 1, 2, 3].iter().map(|d| d * 86_400_000_000).collect();
-        let weekly: Vec<i64> = [0_i64, 7, 14, 21].iter().map(|d| d * 86_400_000_000).collect();
+        let daily: Vec<i64> = [0_i64, 1, 2, 3]
+            .iter()
+            .map(|d| d * 86_400_000_000)
+            .collect();
+        let weekly: Vec<i64> = [0_i64, 7, 14, 21]
+            .iter()
+            .map(|d| d * 86_400_000_000)
+            .collect();
         let axes: Vec<(&str, &[i64])> = vec![("0001", &daily), ("0002", &weekly)];
         let outcome = check_m6(&Cadence::new("daily"), &axes);
-        assert_eq!(outcome.status(), CheckStatus::Ran, "M6 runs over the per-basin axes");
+        assert_eq!(
+            outcome.status(),
+            CheckStatus::Ran,
+            "M6 runs over the per-basin axes"
+        );
         assert_eq!(
             outcome.result(),
             Some(CheckResult::Pass),
@@ -2209,10 +2245,17 @@ mod tests {
         );
 
         // An irregular basin (gaps 1,2,4) FAILS rule (b), naming that basin.
-        let irregular: Vec<i64> = [0_i64, 1, 3, 7].iter().map(|d| d * 86_400_000_000).collect();
+        let irregular: Vec<i64> = [0_i64, 1, 3, 7]
+            .iter()
+            .map(|d| d * 86_400_000_000)
+            .collect();
         let mixed: Vec<(&str, &[i64])> = vec![("0001", &daily), ("0003", &irregular)];
         let bad = check_m6(&Cadence::new("daily"), &mixed);
-        assert_eq!(bad.result(), Some(CheckResult::Fail), "an irregular basin fails rule (b)");
+        assert_eq!(
+            bad.result(),
+            Some(CheckResult::Fail),
+            "an irregular basin fails rule (b)"
+        );
         assert!(
             bad.detail().is_some_and(|d| d.contains("0003")),
             "the fail detail names the irregular basin"
@@ -2220,7 +2263,11 @@ mod tests {
 
         // An empty cadence DOES fail rule (a) (independent of the axes).
         let empty = check_m6(&Cadence::new(""), &axes);
-        assert_eq!(empty.result(), Some(CheckResult::Fail), "empty cadence fails M6 rule (a)");
+        assert_eq!(
+            empty.result(),
+            Some(CheckResult::Fail),
+            "empty cadence fails M6 rule (a)"
+        );
     }
 
     #[test]
@@ -2237,26 +2284,58 @@ mod tests {
         let report = validate(conformance(name)).expect("the irregular-time fixture validates");
 
         // The dataset is now NON-conformant (the irregular axis trips M6 rule (b)).
-        assert!(!report.conformant(), "{name} ⇒ conformant:false (M6 rule (b) now enforces regularity)");
+        assert!(
+            !report.conformant(),
+            "{name} ⇒ conformant:false (M6 rule (b) now enforces regularity)"
+        );
 
         // M6 RAN and FAILED on the irregular axis, naming the offending basin + the
         // regularity leg (NOT the cadence word, NOT a cross-basin step).
         let m6 = report.find(CheckId::M6).expect("M6 present");
-        assert_eq!(m6.status(), CheckStatus::Ran, "M6 RAN (rule (b) now reads the full axis)");
-        assert_eq!(m6.result(), Some(CheckResult::Fail), "the irregular axis FAILS M6 rule (b)");
-        assert_eq!(m6.depth(), DepthClass::ByteDeep, "the regularity leg is byte-deep");
+        assert_eq!(
+            m6.status(),
+            CheckStatus::Ran,
+            "M6 RAN (rule (b) now reads the full axis)"
+        );
+        assert_eq!(
+            m6.result(),
+            Some(CheckResult::Fail),
+            "the irregular axis FAILS M6 rule (b)"
+        );
+        assert_eq!(
+            m6.depth(),
+            DepthClass::ByteDeep,
+            "the regularity leg is byte-deep"
+        );
         let detail = m6.detail().expect("M6 carries a reason").to_lowercase();
-        assert!(detail.contains("0003"), "the reason names the offending basin: {detail}");
-        assert!(detail.contains("regular"), "the reason names the regularity leg: {detail}");
+        assert!(
+            detail.contains("0003"),
+            "the reason names the offending basin: {detail}"
+        );
+        assert!(
+            detail.contains("regular"),
+            "the reason names the regularity leg: {detail}"
+        );
         // M6 never interprets the cadence WORD.
-        assert!(!detail.contains("daily"), "M6 must not interpret the cadence word");
+        assert!(
+            !detail.contains("daily"),
+            "M6 must not interpret the cadence word"
+        );
 
         // T1 and T2 are NOT ran:fail (the rewritten axis stays sorted/non-null/named,
         // and the matched Zarr axis is identical so T2 does not spuriously co-trip).
         let t1 = report.find(CheckId::T1).expect("T1 present");
-        assert_ne!(t1.result(), Some(CheckResult::Fail), "T1 must not fail (axis stays sorted)");
+        assert_ne!(
+            t1.result(),
+            Some(CheckResult::Fail),
+            "T1 must not fail (axis stays sorted)"
+        );
         let t2 = report.find(CheckId::T2).expect("T2 present");
-        assert_ne!(t2.result(), Some(CheckResult::Fail), "T2 must not fail (axes stay identical)");
+        assert_ne!(
+            t2.result(),
+            Some(CheckResult::Fail),
+            "T2 must not fail (axes stay identical)"
+        );
 
         // PURITY: EXACTLY M6 fails; every other check is pass-or-skip.
         for other in report.checks() {
@@ -2302,12 +2381,20 @@ mod tests {
         let mismatched = [grid_with_crs("EPSG:3857")];
         let outcome = check_m5(manifest.crs(), &mismatched, None);
         assert_eq!(outcome.status(), CheckStatus::Ran, "M5 ran");
-        assert_eq!(outcome.result(), Some(CheckResult::Fail), "M5 fails on mismatch");
+        assert_eq!(
+            outcome.result(),
+            Some(CheckResult::Fail),
+            "M5 fails on mismatch"
+        );
 
         // Match: a grid in EPSG:4326 ⇒ pass.
         let matching = [grid_with_crs("EPSG:4326")];
         let outcome = check_m5(manifest.crs(), &matching, None);
-        assert_eq!(outcome.result(), Some(CheckResult::Pass), "M5 passes on match");
+        assert_eq!(
+            outcome.result(),
+            Some(CheckResult::Pass),
+            "M5 passes on match"
+        );
     }
 
     // --- I2 in-memory falsifiable leg -------------------------------------------------
@@ -2321,7 +2408,11 @@ mod tests {
         let mismatch = vec![(&folder, Some(&wrong))];
         let outcome = crate::validate::check_i2(&mismatch);
         assert_eq!(outcome.status(), CheckStatus::Ran, "I2 ran");
-        assert_eq!(outcome.result(), Some(CheckResult::Fail), "I2 fails on mismatch");
+        assert_eq!(
+            outcome.result(),
+            Some(CheckResult::Fail),
+            "I2 fails on mismatch"
+        );
 
         // folder=0001, in_file=0001 ⇒ ran:pass.
         let matching = BasinId::new("0001");
@@ -2358,7 +2449,8 @@ mod tests {
             .map(|f| f.name().as_str())
             .collect();
         assert!(
-            names.contains(&"era5_precipitation") && names.contains(&"era5_precipitation_was_filled"),
+            names.contains(&"era5_precipitation")
+                && names.contains(&"era5_precipitation_was_filled"),
             "both the {{source}}_{{variable}} field and its companion mask are present, verbatim"
         );
 
@@ -2396,8 +2488,7 @@ mod tests {
     #[test]
     fn geometry_less_fixture_conformant_under_0_2_nonconformant_under_0_1() {
         // Under 0.2 (the fixture's manifest version): conformant via the real verb.
-        let report =
-            validate(conformance("valid/geometry-less")).expect("geometry-less validates");
+        let report = validate(conformance("valid/geometry-less")).expect("geometry-less validates");
         assert!(
             report.conformant(),
             "a geometry-less dataset (scalar_static present, outlines absent) is conformant \
@@ -2443,7 +2534,10 @@ mod tests {
         // geometry-less dataset is non-conformant (the version flips the leg, not the bytes).
         let discovery = crate::gridded_discovery::discover(conformance("valid/geometry-less"))
             .expect("geometry-less discovers");
-        let l1_under_v0_1 = check_l1(&discovery, GeometryExpectation::for_version(FormatVersion::V0_1));
+        let l1_under_v0_1 = check_l1(
+            &discovery,
+            GeometryExpectation::for_version(FormatVersion::V0_1),
+        );
         assert_eq!(
             l1_under_v0_1.status(),
             CheckStatus::Ran,
@@ -2463,7 +2557,10 @@ mod tests {
         );
 
         // And the 0.2 expectation passes the SAME discovery (the leg is skipped).
-        let l1_under_v0_2 = check_l1(&discovery, GeometryExpectation::for_version(FormatVersion::V0_2));
+        let l1_under_v0_2 = check_l1(
+            &discovery,
+            GeometryExpectation::for_version(FormatVersion::V0_2),
+        );
         assert_eq!(
             l1_under_v0_2.result(),
             Some(CheckResult::Pass),
@@ -2518,7 +2615,9 @@ mod tests {
         let validator = validate_validator();
         let golden = golden_value();
         if let Err(error) = validator.validate(&golden) {
-            panic!("the golden validate report must validate against validate.schema.json: {error}");
+            panic!(
+                "the golden validate report must validate against validate.schema.json: {error}"
+            );
         }
     }
 
@@ -2584,8 +2683,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} present"))
         };
         let l1 = by_id("L1");
-        assert_eq!(l1.get("status").and_then(Value::as_str), Some("ran"), "L1 ran");
-        assert_eq!(l1.get("result").and_then(Value::as_str), Some("pass"), "L1 passes");
+        assert_eq!(
+            l1.get("status").and_then(Value::as_str),
+            Some("ran"),
+            "L1 ran"
+        );
+        assert_eq!(
+            l1.get("result").and_then(Value::as_str),
+            Some("pass"),
+            "L1 passes"
+        );
         let geo1 = by_id("Geo1");
         assert_eq!(
             geo1.get("status").and_then(Value::as_str),
@@ -2617,14 +2724,20 @@ mod tests {
             "M1", "M2", "M3", "M4", "M5", "M6", "L1", "L2", "L3", "I1", "I2", "I3", "H1", "H2",
             "T1", "T2", "G1", "G2", "G3", "Geo1",
         ];
-        assert_eq!(ids, expected_ids, "the golden lists every §14 id in spec order");
+        assert_eq!(
+            ids, expected_ids,
+            "the golden lists every §14 id in spec order"
+        );
 
         // Every check RAN and PASSED on the valid fixture — no v0.1 honest skips remain
         // (M6 rule (b) + L3 now run byte-deep, S6; T2 ran since S5). 20/20 ran.
         for check in checks {
             let id = check.get("id").and_then(Value::as_str).expect("id");
             let status = check.get("status").and_then(Value::as_str).expect("status");
-            assert_eq!(status, "ran", "{id} ran on the valid fixture (20/20, no skips)");
+            assert_eq!(
+                status, "ran",
+                "{id} ran on the valid fixture (20/20, no skips)"
+            );
             assert_eq!(
                 check.get("result").and_then(Value::as_str),
                 Some("pass"),
@@ -2726,7 +2839,11 @@ mod tests {
             .iter()
             .find(|c| c.get("id").and_then(Value::as_str) == Some("L1"))
             .expect("L1 present");
-        assert_eq!(l1.get("status").and_then(Value::as_str), Some("ran"), "L1 ran");
+        assert_eq!(
+            l1.get("status").and_then(Value::as_str),
+            Some("ran"),
+            "L1 ran"
+        );
         assert_eq!(
             l1.get("result").and_then(Value::as_str),
             Some("fail"),
@@ -2781,8 +2898,9 @@ mod tests {
     /// assertion that guards a second check from tripping), and the produced report is
     /// snapshot-equal to the committed per-fixture golden.
     fn assert_pins_exactly(name: &str, pinned: CheckId) {
-        let report = validate(conformance(name))
-            .unwrap_or_else(|e| panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}"));
+        let report = validate(conformance(name)).unwrap_or_else(|e| {
+            panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}")
+        });
 
         // The pinned check ran and FAILED.
         let outcome = report
@@ -2867,14 +2985,19 @@ mod tests {
         // spurious co-trip but the correct identity verdict on a reversed axis. Every OTHER
         // check stays pass-or-skip, and the report snapshot-equals the regenerated golden.
         let name = "invalid/non-monotonic-time";
-        let report = validate(conformance(name))
-            .unwrap_or_else(|e| panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}"));
+        let report = validate(conformance(name)).unwrap_or_else(|e| {
+            panic!("{name} must discover (the gap is a check fail, not an Err): {e:?}")
+        });
 
         assert!(!report.conformant(), "{name} ⇒ non-conformant");
 
         let t1 = report.find(CheckId::T1).expect("T1 present");
         assert_eq!(t1.status(), CheckStatus::Ran, "T1 ran");
-        assert_eq!(t1.result(), Some(CheckResult::Fail), "T1 fails (axis not ascending)");
+        assert_eq!(
+            t1.result(),
+            Some(CheckResult::Fail),
+            "T1 fails (axis not ascending)"
+        );
 
         let t2 = report.find(CheckId::T2).expect("T2 present");
         assert_eq!(t2.status(), CheckStatus::Ran, "T2 ran");
@@ -2981,7 +3104,10 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(top_keys, expected_top, "top level is exactly {{checks, conformant}}");
+        assert_eq!(
+            top_keys, expected_top,
+            "top level is exactly {{checks, conformant}}"
+        );
 
         let check_keys: BTreeSet<String> = ["id", "status", "result", "depth", "detail"]
             .iter()
@@ -3096,7 +3222,11 @@ mod tests {
 
             let schema = Arc::new(Schema::new(vec![
                 ArrowField::new("basin_id", DataType::Utf8, false),
-                ArrowField::new("time", DataType::Timestamp(TimeUnit::Microsecond, None), false),
+                ArrowField::new(
+                    "time",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    false,
+                ),
                 ArrowField::new("streamflow", DataType::Float64, true),
             ]));
             let batch = RecordBatch::try_new(
@@ -3175,7 +3305,8 @@ mod tests {
 
         let report = validate(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        let report = report.expect("validate must succeed on the corrupted (still-readable) fixture");
+        let report =
+            report.expect("validate must succeed on the corrupted (still-readable) fixture");
 
         let t2 = report.find(CheckId::T2).expect("T2 outcome present");
         assert_eq!(
@@ -3223,8 +3354,15 @@ mod tests {
             Some(CheckResult::Fail),
             "the irregular axis (gaps 1,2,4 days) must FAIL M6 rule (b) interior-regularity"
         );
-        assert_eq!(m6.depth(), DepthClass::ByteDeep, "the regularity leg is byte-deep");
-        let detail = m6.detail().expect("a failing M6 carries a detail").to_lowercase();
+        assert_eq!(
+            m6.depth(),
+            DepthClass::ByteDeep,
+            "the regularity leg is byte-deep"
+        );
+        let detail = m6
+            .detail()
+            .expect("a failing M6 carries a detail")
+            .to_lowercase();
         assert!(
             detail.contains("0003"),
             "the M6 fail detail names the offending basin: {detail}"
@@ -3247,13 +3385,20 @@ mod tests {
         // (strict-increasing + interior-regular) both RAN and PASSED.
         let report = validate(conformance("valid/minimal")).expect("valid/minimal validates");
         let m6 = report.find(CheckId::M6).expect("M6 present");
-        assert_eq!(m6.status(), CheckStatus::Ran, "M6 must RUN on the regular fixture");
+        assert_eq!(
+            m6.status(),
+            CheckStatus::Ran,
+            "M6 must RUN on the regular fixture"
+        );
         assert_eq!(
             m6.result(),
             Some(CheckResult::Pass),
             "a strictly-increasing, interior-regular axis passes M6 rule (b)"
         );
-        assert!(report.conformant(), "valid/minimal stays conformant with M6 running+passing");
+        assert!(
+            report.conformant(),
+            "valid/minimal stays conformant with M6 running+passing"
+        );
     }
 
     #[test]
@@ -3275,7 +3420,14 @@ mod tests {
             Some(CheckResult::Pass),
             "every catalogued scalar field materializes a full-length column in every basin"
         );
-        assert_eq!(l3.depth(), DepthClass::ByteDeep, "the absence-is-NaN leg is byte-deep");
-        assert!(report.conformant(), "valid/minimal stays conformant with L3 running+passing");
+        assert_eq!(
+            l3.depth(),
+            DepthClass::ByteDeep,
+            "the absence-is-NaN leg is byte-deep"
+        );
+        assert!(
+            report.conformant(),
+            "valid/minimal stays conformant with L3 running+passing"
+        );
     }
 }

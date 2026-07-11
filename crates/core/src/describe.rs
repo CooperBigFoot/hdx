@@ -407,12 +407,11 @@ pub fn describe(path: impl AsRef<Path>) -> Result<Description, DescribeError> {
     // A filesystem failure here is a *missing/unreadable* manifest, kept distinct from
     // a *malformed* one (which surfaces from `from_json` below).
     let manifest_path = path.join("manifest.json");
-    let manifest_json = fs::read_to_string(&manifest_path).map_err(|err| {
-        DescribeError::ManifestUnreadable {
+    let manifest_json =
+        fs::read_to_string(&manifest_path).map_err(|err| DescribeError::ManifestUnreadable {
             path: manifest_path.display().to_string(),
             detail: err.to_string(),
-        }
-    })?;
+        })?;
     debug!("read manifest.json");
 
     // Stage 2 — boundary-parse the manifest. Its FIRST act is the §0/§14 M2 hard
@@ -776,7 +775,8 @@ mod tests {
     /// pure assembler consumes — no `describe` verb yet).
     fn valid_inputs() -> (Manifest, Discovery) {
         let manifest = Manifest::from_json(VALID_MANIFEST).expect("the valid manifest must parse");
-        let discovery = discover(conformance("valid/minimal")).expect("the valid fixture discovers");
+        let discovery =
+            discover(conformance("valid/minimal")).expect("the valid fixture discovers");
         (manifest, discovery)
     }
 
@@ -886,7 +886,10 @@ mod tests {
 
         // No verdict key anywhere at the top level (facts only — spec §10).
         assert!(
-            !value.as_object().expect("object").contains_key("conformant"),
+            !value
+                .as_object()
+                .expect("object")
+                .contains_key("conformant"),
             "describe emits no `conformant` verdict key"
         );
     }
@@ -959,11 +962,10 @@ mod tests {
             .and_then(Value::as_array)
             .expect("fields array");
 
-        let ordinary_keys: BTreeSet<String> =
-            ["name", "quadrant", "dtype", "units", "grid_label"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let ordinary_keys: BTreeSet<String> = ["name", "quadrant", "dtype", "units", "grid_label"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         for target in ["era5_precipitation", "era5_precipitation_was_filled"] {
             let entry = fields
@@ -1065,7 +1067,8 @@ mod tests {
     /// `era5` grid geometry, the three ragged extents, the delineations).
     #[test]
     fn describe_valid_fixture_round_trips_every_fact() {
-        let description = describe(conformance("valid/minimal")).expect("the valid fixture describes");
+        let description =
+            describe(conformance("valid/minimal")).expect("the valid fixture describes");
 
         // Manifest round-trip (name / crs / cadence / created_at).
         let manifest = description.manifest();
@@ -1104,7 +1107,10 @@ mod tests {
         // The era5 grid geometry: extent 10.0/50.0/11.5/48.0, 6×8, EPSG:4326. Both the
         // COG (gridded_static) and the Zarr (gridded_dynamic) report the shared `era5`
         // grid, so assert every discovered grid carries that geometry.
-        assert!(!description.grids().is_empty(), "the era5 grid is discovered");
+        assert!(
+            !description.grids().is_empty(),
+            "the era5 grid is discovered"
+        );
         for grid in description.grids() {
             assert_eq!(grid.grid_label().as_str(), "era5");
             let extent = grid.extent();
@@ -1125,7 +1131,9 @@ mod tests {
             .collect();
         assert_eq!(extent_basins, vec!["0001", "0002", "0003"]);
         for entry in description.time_extents() {
-            let extent = entry.time_extent().expect("each fixture basin has an extent");
+            let extent = entry
+                .time_extent()
+                .expect("each fixture basin has an extent");
             assert_eq!(extent.source(), TimeExtentSource::Statistics);
         }
 
@@ -1279,7 +1287,9 @@ mod tests {
         let validator = describe_validator();
         let golden = golden_value();
         if let Err(error) = validator.validate(&golden) {
-            panic!("the golden describe output must validate against describe.schema.json: {error}");
+            panic!(
+                "the golden describe output must validate against describe.schema.json: {error}"
+            );
         }
     }
 
@@ -1328,7 +1338,10 @@ mod tests {
             .expect("golden time_extents array");
         assert!(!entries.is_empty(), "the gridded fixture has basins");
         for entry in entries {
-            let id = entry.get("basin_id").and_then(Value::as_str).expect("basin_id");
+            let id = entry
+                .get("basin_id")
+                .and_then(Value::as_str)
+                .expect("basin_id");
             let axis = entry
                 .get("gridded_time_axis")
                 .unwrap_or_else(|| panic!("basin {id}: gridded_time_axis present (gridded basin)"));
@@ -1343,7 +1356,10 @@ mod tests {
                 Some("proleptic_gregorian"),
                 "basin {id}: gridded axis CF calendar"
             );
-            let micros = axis.get("micros").and_then(Value::as_array).expect("micros array");
+            let micros = axis
+                .get("micros")
+                .and_then(Value::as_array)
+                .expect("micros array");
             assert!(!micros.is_empty(), "basin {id}: gridded axis is non-empty");
             // The first micros equals the scalar extent start in micros (T2 alignment).
             let first = micros[0].as_i64().expect("micros are integers");
@@ -1389,12 +1405,18 @@ mod tests {
             "the geometry-less manifest is format_version 0.2"
         );
         assert_eq!(
-            produced.get("delineations").and_then(Value::as_array).map(Vec::len),
+            produced
+                .get("delineations")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0),
             "a geometry-less dataset has empty delineations (no outlines)"
         );
         assert_eq!(
-            produced.get("grids").and_then(Value::as_array).map(Vec::len),
+            produced
+                .get("grids")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0),
             "a pure-scalar geometry-less dataset has no grids"
         );
@@ -1408,7 +1430,10 @@ mod tests {
                 "a pure-scalar basin omits gridded_time_axis"
             );
             assert!(
-                entry.get("time_extent").map(|t| !t.is_null()).unwrap_or(false),
+                entry
+                    .get("time_extent")
+                    .map(|t| !t.is_null())
+                    .unwrap_or(false),
                 "the scalar time extent is present"
             );
         }
@@ -1439,11 +1464,10 @@ mod tests {
             .and_then(Value::as_array)
             .expect("golden fields array");
 
-        let ordinary_keys: BTreeSet<String> =
-            ["name", "quadrant", "dtype", "units", "grid_label"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let ordinary_keys: BTreeSet<String> = ["name", "quadrant", "dtype", "units", "grid_label"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         // Each of the forbidden, name-pattern-derived keys must be absent everywhere.
         let forbidden = ["mask", "companion", "source", "variable", "belongs_to"];
@@ -1574,10 +1598,10 @@ mod tests {
             .filter_map(|f| f.get("name").and_then(Value::as_str))
             .collect();
         for expected in [
-            "dem_elevation",            // gridded·static label `dem`
-            "landcover_class",          // gridded·static label `landcover` (2nd static family)
-            "era5_precipitation",       // gridded·dynamic label `era5`
-            "merit_flow_accumulation",  // gridded·dynamic label `merit` (2nd dynamic family)
+            "dem_elevation",           // gridded·static label `dem`
+            "landcover_class",         // gridded·static label `landcover` (2nd static family)
+            "era5_precipitation",      // gridded·dynamic label `era5`
+            "merit_flow_accumulation", // gridded·dynamic label `merit` (2nd dynamic family)
         ] {
             assert!(
                 field_names.contains(&expected),
@@ -1603,7 +1627,10 @@ mod tests {
         // trip validate — confirming validate is field-catalog-insensitive.
         let report = crate::validate::validate(&fixture)
             .expect("validate succeeds on the two-family fixture");
-        assert!(report.conformant(), "the two-family fixture must be conformant");
+        assert!(
+            report.conformant(),
+            "the two-family fixture must be conformant"
+        );
         for outcome in report.checks() {
             assert_ne!(
                 outcome.result(),

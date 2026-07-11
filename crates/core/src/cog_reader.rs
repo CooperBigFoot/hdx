@@ -169,7 +169,9 @@ where
         let body = &after_start[gt + 1..];
         if attr_match(open_tag) {
             // The value is the text up to the closing `</Item>`.
-            return body.find("</Item>").map(|end| body[..end].trim().to_string());
+            return body
+                .find("</Item>")
+                .map(|end| body[..end].trim().to_string());
         }
         // Advance past this `<Item` occurrence and keep scanning.
         rest = &after_start[gt + 1..];
@@ -297,10 +299,7 @@ fn epsg_from_geokey_directory(dir: &[u16]) -> Option<u16> {
 /// | the standard georef tags (`ModelPixelScale` / `ModelTiepoint` / `GeoKeyDirectory`) are absent | [`CoreError::MissingGridGeoref`] |
 /// | the `(SampleFormat, BitsPerSample)` pair does not map to a supported [`Dtype`] | [`CoreError::UnknownDtype`] |
 #[instrument(skip(grid_label), fields(path = %path.as_ref().display()))]
-pub fn read_cog_grid(
-    path: impl AsRef<Path>,
-    grid_label: GridLabel,
-) -> Result<CogGrid, CoreError> {
+pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<CogGrid, CoreError> {
     let artifact = path.as_ref().display().to_string();
 
     let file = std::fs::File::open(path.as_ref()).map_err(|e| CoreError::CogRead {
@@ -321,24 +320,24 @@ pub fn read_cog_grid(
             artifact: artifact.clone(),
             detail: format!("ImageWidth tag unreadable: {e}"),
         })?;
-    let height: u32 = decoder
-        .get_tag_unsigned(Tag::ImageLength)
-        .map_err(|e| CoreError::CogRead {
-            artifact: artifact.clone(),
-            detail: format!("ImageLength tag unreadable: {e}"),
-        })?;
+    let height: u32 =
+        decoder
+            .get_tag_unsigned(Tag::ImageLength)
+            .map_err(|e| CoreError::CogRead {
+                artifact: artifact.clone(),
+                detail: format!("ImageLength tag unreadable: {e}"),
+            })?;
     let width = width as usize;
     let height = height as usize;
 
     // --- Georef (G3): the standard GeoTIFF tags --------------------------------
     // ModelPixelScale (33550): [x_res, y_res, z]. Required to place the grid.
-    let pixel_scale =
-        decoder
-            .get_tag_f64_vec(Tag::ModelPixelScaleTag)
-            .map_err(|_| CoreError::MissingGridGeoref {
-                artifact: artifact.clone(),
-                detail: "GeoTIFF ModelPixelScale (tag 33550) absent".to_string(),
-            })?;
+    let pixel_scale = decoder
+        .get_tag_f64_vec(Tag::ModelPixelScaleTag)
+        .map_err(|_| CoreError::MissingGridGeoref {
+            artifact: artifact.clone(),
+            detail: "GeoTIFF ModelPixelScale (tag 33550) absent".to_string(),
+        })?;
     if pixel_scale.len() < 2 {
         return Err(CoreError::MissingGridGeoref {
             artifact: artifact.clone(),
@@ -355,13 +354,12 @@ pub fn read_cog_grid(
 
     // ModelTiepoint (33922): [i, j, k, X, Y, Z]; the NW cell-edge origin is (X, Y)
     // for the raster origin tiepoint (i = j = 0). Already edge-based — no conversion.
-    let tiepoint =
-        decoder
-            .get_tag_f64_vec(Tag::ModelTiepointTag)
-            .map_err(|_| CoreError::MissingGridGeoref {
-                artifact: artifact.clone(),
-                detail: "GeoTIFF ModelTiepoint (tag 33922) absent".to_string(),
-            })?;
+    let tiepoint = decoder
+        .get_tag_f64_vec(Tag::ModelTiepointTag)
+        .map_err(|_| CoreError::MissingGridGeoref {
+            artifact: artifact.clone(),
+            detail: "GeoTIFF ModelTiepoint (tag 33922) absent".to_string(),
+        })?;
     if tiepoint.len() < 6 {
         return Err(CoreError::MissingGridGeoref {
             artifact: artifact.clone(),
@@ -380,13 +378,12 @@ pub fn read_cog_grid(
     let extent = GridExtent::from_edge_origin(west, north, x_res.abs(), width, height);
 
     // GeoKeyDirectory (34735): the packed EPSG code. Required to place the grid.
-    let geokey_dir =
-        decoder
-            .get_tag_u16_vec(Tag::GeoKeyDirectoryTag)
-            .map_err(|_| CoreError::MissingGridGeoref {
-                artifact: artifact.clone(),
-                detail: "GeoTIFF GeoKeyDirectory (tag 34735) absent".to_string(),
-            })?;
+    let geokey_dir = decoder
+        .get_tag_u16_vec(Tag::GeoKeyDirectoryTag)
+        .map_err(|_| CoreError::MissingGridGeoref {
+            artifact: artifact.clone(),
+            detail: "GeoTIFF GeoKeyDirectory (tag 34735) absent".to_string(),
+        })?;
     // CRS-recording rule: record `EPSG:<code>` when an EPSG id resolves, else the raw
     // key-directory form verbatim (here the fixture always resolves an inline EPSG
     // code).
@@ -405,7 +402,11 @@ pub fn read_cog_grid(
 
     // --- Dtype: SampleFormat (339) + BitsPerSample (258), tags only ------------
     // SampleFormat defaults to 1 (unsigned int) when absent per the TIFF baseline.
-    let sample_format: u16 = decoder.find_tag_unsigned(Tag::SampleFormat).ok().flatten().unwrap_or(1);
+    let sample_format: u16 = decoder
+        .find_tag_unsigned(Tag::SampleFormat)
+        .ok()
+        .flatten()
+        .unwrap_or(1);
     let bits_per_sample: u16 =
         decoder
             .get_tag_unsigned(Tag::BitsPerSample)
@@ -432,8 +433,8 @@ pub fn read_cog_grid(
                 }
                 None => {
                     // The tag exists but carries no role="description" Item.
-                    let reason = "tag 42112 GDAL_METADATA has no role=\"description\" <Item>"
-                        .to_string();
+                    let reason =
+                        "tag 42112 GDAL_METADATA has no role=\"description\" <Item>".to_string();
                     warn!(reason = %reason, "band description unavailable (skip)");
                     return Err(CoreError::CogRead {
                         artifact: artifact.clone(),
@@ -553,7 +554,11 @@ mod tests {
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5")).expect("fixture must read");
         let info = grid.grid_info();
 
-        assert_eq!(info.resolution().x_res(), 0.25, "x_res +0.25 (east-marching)");
+        assert_eq!(
+            info.resolution().x_res(),
+            0.25,
+            "x_res +0.25 (east-marching)"
+        );
         assert_eq!(
             info.resolution().y_res(),
             -0.25,
@@ -677,16 +682,16 @@ mod tests {
     /// NO GeoTIFF georef tags. Used to exercise the `MissingGridGeoref` path.
     fn minimal_tiff_no_georef() -> Vec<u8> {
         build_tiff(&[
-            (256, TYPE_SHORT, 1, 1),     // ImageWidth = 1
-            (257, TYPE_SHORT, 1, 1),     // ImageLength = 1
-            (258, TYPE_SHORT, 1, 8),     // BitsPerSample = 8
-            (259, TYPE_SHORT, 1, 1),     // Compression = none
-            (262, TYPE_SHORT, 1, 1),     // Photometric = BlackIsZero
-            (273, TYPE_LONG, 1, 0),      // StripOffsets (placeholder; never read)
-            (277, TYPE_SHORT, 1, 1),     // SamplesPerPixel = 1
-            (278, TYPE_SHORT, 1, 1),     // RowsPerStrip = 1
-            (279, TYPE_LONG, 1, 1),      // StripByteCounts = 1
-            (339, TYPE_SHORT, 1, 1),     // SampleFormat = unsigned int
+            (256, TYPE_SHORT, 1, 1), // ImageWidth = 1
+            (257, TYPE_SHORT, 1, 1), // ImageLength = 1
+            (258, TYPE_SHORT, 1, 8), // BitsPerSample = 8
+            (259, TYPE_SHORT, 1, 1), // Compression = none
+            (262, TYPE_SHORT, 1, 1), // Photometric = BlackIsZero
+            (273, TYPE_LONG, 1, 0),  // StripOffsets (placeholder; never read)
+            (277, TYPE_SHORT, 1, 1), // SamplesPerPixel = 1
+            (278, TYPE_SHORT, 1, 1), // RowsPerStrip = 1
+            (279, TYPE_LONG, 1, 1),  // StripByteCounts = 1
+            (339, TYPE_SHORT, 1, 1), // SampleFormat = unsigned int
         ])
     }
 
@@ -702,7 +707,7 @@ mod tests {
                 (258, TYPE_SHORT, 1, 32),
                 (259, TYPE_SHORT, 1, 1),
                 (262, TYPE_SHORT, 1, 1),
-                (273, TYPE_LONG, 1, 0),  // StripOffsets (placeholder; never read)
+                (273, TYPE_LONG, 1, 0), // StripOffsets (placeholder; never read)
                 (277, TYPE_SHORT, 1, 1),
                 (278, TYPE_SHORT, 1, 1), // RowsPerStrip = 1
                 (279, TYPE_LONG, 1, 4),  // StripByteCounts = 4

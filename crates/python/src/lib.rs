@@ -178,7 +178,7 @@ fn hdx(m: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use hdx_core::error::{CoreError, DescribeError, ValidateError};
 
-    use super::{HdxExceptionKind, __core_version};
+    use super::{__core_version, HdxExceptionKind};
 
     /// Asserts the import/link-proof function returns a non-empty version string.
     ///

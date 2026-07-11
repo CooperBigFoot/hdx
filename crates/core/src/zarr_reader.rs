@@ -221,7 +221,10 @@ fn zarr_dtype(data_type: &str) -> Result<Dtype, CoreError> {
 
 /// Reads a string attribute from a Zarr array's `attributes` map, if present.
 fn string_attr(meta: &ArrayMetadataV3, key: &str) -> Option<String> {
-    meta.attributes.get(key).and_then(Value::as_str).map(str::to_string)
+    meta.attributes
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Returns `true` iff this array self-references the single dimension `name` —
@@ -261,11 +264,7 @@ fn is_three_dim_grid(meta: &ArrayMetadataV3) -> bool {
 /// |---|---|
 /// | the `<coord>/c/0` chunk is absent (the coordinate array is unread/unreadable) | [`CoreError::MissingGriddedCoordinate`] (the structurally required coordinate is missing) |
 /// | the chunk cannot be zstd-decoded, or its length is not a multiple of 8 | [`CoreError::ZarrRead`] |
-fn read_coord_f64(
-    store: &Path,
-    artifact: &str,
-    coord: &str,
-) -> Result<Vec<f64>, CoreError> {
+fn read_coord_f64(store: &Path, artifact: &str, coord: &str) -> Result<Vec<f64>, CoreError> {
     let chunk = store.join(coord).join("c").join("0");
     let raw = std::fs::read(&chunk).map_err(|_| CoreError::MissingGriddedCoordinate {
         artifact: artifact.to_string(),
@@ -387,7 +386,9 @@ pub(crate) fn read_coord_i64(
 /// producer's own `saturating_mul(MICROS_PER_DAY)` so the two axes are bit-identical;
 /// the conformant fixture's day magnitudes are tiny, so saturation never triggers.
 pub(crate) fn normalize_days_to_micros(days: &[i64]) -> Vec<i64> {
-    days.iter().map(|&d| d.saturating_mul(MICROS_PER_DAY)).collect()
+    days.iter()
+        .map(|&d| d.saturating_mul(MICROS_PER_DAY))
+        .collect()
 }
 
 /// Parses the root `zarr.json` and recovers the §8 inline consolidated-metadata map.
@@ -446,10 +447,8 @@ fn read_consolidated_map(
                 Some(other) => format!(
                     "consolidated_metadata.kind is {other:?}, not \"inline\" (no inline map to read)"
                 ),
-                None => {
-                    "root zarr.json has no consolidated_metadata object (uncosolidated store)"
-                        .to_string()
-                }
+                None => "root zarr.json has no consolidated_metadata object (uncosolidated store)"
+                    .to_string(),
             };
             warn!(reason = %reason, "consolidated-metadata path unavailable (skip)");
             // No usable map: surface the skip reason via a typed error so the caller
@@ -607,7 +606,8 @@ pub fn read_zarr_grid(
     // The `time` coordinate is the int64 day-count array (NOT f64): decode it via the
     // int64 leg and normalize to i64 micros — the comparable axis `check_t2`/`check_m6`
     // (S5/S6) enforce. A 1-D c/0 read; never a c/0/0/0 data chunk.
-    let gridded_time_micros = normalize_days_to_micros(&read_coord_i64(store, &artifact, COORD_TIME)?);
+    let gridded_time_micros =
+        normalize_days_to_micros(&read_coord_i64(store, &artifact, COORD_TIME)?);
     if lon.len() < 2 || lat.len() < 2 {
         return Err(CoreError::ZarrRead {
             artifact: artifact.clone(),
@@ -749,7 +749,11 @@ mod tests {
         // Raw centers / resolution / dims pinned to make the half-pixel step visible.
         assert_eq!(info.width(), 6, "lon has 6 cells");
         assert_eq!(info.height(), 8, "lat has 8 cells");
-        assert_eq!(info.resolution().x_res(), 0.25, "x_res +0.25 (east-marching)");
+        assert_eq!(
+            info.resolution().x_res(),
+            0.25,
+            "x_res +0.25 (east-marching)"
+        );
         assert_eq!(
             info.resolution().y_res(),
             -0.25,
@@ -1000,7 +1004,10 @@ mod tests {
         // normalize_days_to_micros applies the *86_400_000_000 scale (orthographos
         // axis.rs:24 / exec.rs); integral days -> exact i64 micros (no float).
         let micros = normalize_days_to_micros(&days);
-        assert_eq!(MICROS_PER_DAY, 86_400_000_000_i64, "one day in microseconds");
+        assert_eq!(
+            MICROS_PER_DAY, 86_400_000_000_i64,
+            "one day in microseconds"
+        );
         assert_eq!(
             micros,
             vec![
