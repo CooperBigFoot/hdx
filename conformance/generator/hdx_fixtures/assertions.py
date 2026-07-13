@@ -34,6 +34,7 @@ from hdx_fixtures.grids import (
     GRIDDED_STATIC_FIELD,
     SECOND_DYNAMIC_LABELS,
     SECOND_STATIC_LABELS,
+    STACKED_STATIC_FIELDS,
     _basin_geometry,
     _time_since_epoch,
     cog_path,
@@ -891,6 +892,64 @@ def run_multi_grid_multi_static_assertions(dataset_root: Path) -> None:
     assert_multi_family_coverage(dataset_root)
     assert_multi_family_labels_homogeneous(dataset_root)
     log.info("all multi_grid_multi_static self-assertions passed")
+
+
+def assert_stacked_static_cogs(dataset_root: Path) -> None:
+    """Confirm the stacked COG bytes preserve band order, metadata, and values."""
+    geom = _basin_geometry()
+    expected_elevation = np.arange(48, dtype="float32").reshape(8, 6)
+    expected_slope = np.arange(100, 148, dtype="float32").reshape(8, 6)
+    for basin in BASINS:
+        bdir = basin_dir(dataset_root, basin.basin_id)
+        path = cog_path(bdir, GRID_LABEL)
+        static_files = sorted(path.parent.glob("*.tif"))
+        _require(path.exists(), f"{path}: missing stacked static COG")
+        _require(static_files == [path], f"{path.parent}: expected only {path.name}")
+        with rasterio.open(path) as src:
+            _require(src.count == 2, f"{path}: band count {src.count} != 2")
+            _require(
+                src.dtypes == ("float32", "float32"),
+                f"{path}: dtypes {src.dtypes!r} != ('float32', 'float32')",
+            )
+            _require(
+                src.descriptions == tuple(name for name, _ in STACKED_STATIC_FIELDS),
+                f"{path}: descriptions {src.descriptions!r} are out of order",
+            )
+            _require(src.tags(1).get("units") == "m", f"{path}: band 1 units")
+            _require(
+                src.tags(2).get("units") == "degrees", f"{path}: band 2 units"
+            )
+            _require(
+                (src.height, src.width) == (8, 6), f"{path}: unexpected shape"
+            )
+            _require(src.crs.to_epsg() == 4326, f"{path}: unexpected CRS")
+            _require(tuple(src.res) == (0.25, 0.25), f"{path}: unexpected resolution")
+            _require(
+                tuple(src.bounds) == (10.0, 48.0, 11.5, 50.0),
+                f"{path}: unexpected bounds",
+            )
+            _require(src.transform == geom.transform, f"{path}: unexpected transform")
+            _require(
+                np.array_equal(src.read(1), expected_elevation),
+                f"{path}: elevation plane differs",
+            )
+            _require(
+                np.array_equal(src.read(2), expected_slope),
+                f"{path}: slope plane differs",
+            )
+        _require(zarr_path(bdir, GRID_LABEL).exists(), f"{bdir}: missing era5 Zarr")
+
+
+def run_multi_static_one_label_assertions(dataset_root: Path) -> None:
+    """Run self-assertions for the one-label, two-band static fixture."""
+    log = get_logger("assert")
+    run_scalar_assertions(dataset_root)
+    assert_shared_grid_label_and_alignment(dataset_root)
+    assert_zarr_self_naming_and_cf_georef(dataset_root)
+    assert_zarr_time_matches_scalar(dataset_root)
+    assert_zarr_time_ragged_across_basins(dataset_root)
+    assert_stacked_static_cogs(dataset_root)
+    log.info("all multi_static_one_label self-assertions passed")
 
 
 def run_gridded_assertions(dataset_root: Path) -> None:

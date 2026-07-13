@@ -1546,6 +1546,55 @@ mod tests {
         serde_json::from_str(&raw).expect("the multi describe golden must be valid JSON")
     }
 
+    fn multi_static_one_label_describe_golden() -> Value {
+        let path = conformance("goldens/valid-multi_static_one_label.describe.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the stacked-static describe golden must be valid JSON")
+    }
+
+    #[test]
+    fn multi_static_one_label_describe_golden_carries_both_bands() {
+        let fixture = conformance("valid/multi_static_one_label");
+        let produced: Value = serde_json::from_str(
+            &describe_json(&fixture).expect("describe_json succeeds on the stacked-static fixture"),
+        )
+        .expect("describe output is valid JSON");
+        let golden = multi_static_one_label_describe_golden();
+        assert_eq!(produced, golden);
+
+        let observed: Vec<(&str, &str, &str)> = produced["fields"]
+            .as_array()
+            .expect("fields array")
+            .iter()
+            .filter(|field| {
+                field.get("grid_label").and_then(Value::as_str) == Some("era5")
+                    && field["quadrant"]["temporal"].as_str() == Some("static")
+                    && field["quadrant"]["shape"].as_str() == Some("gridded")
+            })
+            .map(|field| {
+                (
+                    field["name"].as_str().expect("field name"),
+                    field["dtype"].as_str().expect("field dtype"),
+                    field["units"].as_str().expect("field units"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            vec![("elevation", "f32", "m"), ("slope", "f32", "degrees")]
+        );
+        let names: Vec<&str> = observed.iter().map(|(name, _, _)| *name).collect();
+        assert!(names.contains(&"elevation"), "era5 must carry elevation");
+        assert!(names.contains(&"slope"), "era5 must carry slope");
+
+        if let Err(error) = describe_validator().validate(&golden) {
+            panic!(
+                "the stacked-static describe golden must validate against describe.schema.json: {error}"
+            );
+        }
+    }
+
     /// merge-gen M1 RED→GREEN — the END-TO-END field-catalog completeness proof.
     ///
     /// `describe` of the `multi_grid_multi_static` fixture (`dem`+`era5`+
