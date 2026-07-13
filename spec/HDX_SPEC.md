@@ -176,6 +176,17 @@ basins×attributes table, the access pattern is cross-basin (cohort/clustering),
 the whole table is a few MB (loaded once, held in memory), and it dodges the
 50k-tiny-files cloud anti-pattern. (Resolved open question 4.)
 
+Each `basin=<id>/gridded_static/<label>.tif` **MUST** be a multiband TIFF with
+`SamplesPerPixel = N`, where `N >= 1`. Its physical bands are TIFF samples
+`0..N-1`, stored with `PlanarConfiguration = 2` (separate, band-sequential
+sample planes). Physical sample `i` **MUST** self-name through a GDAL metadata
+item written exactly as `<Item sample="i" role="description">FIELD</Item>`.
+Units **MAY** be supplied by the analogous GDAL units item carrying the same
+`sample="i"` index. All samples within one `<label>.tif` **MUST** use the same
+TIFF dtype; this is per-label dtype homogeneity and does not require different
+labels to share a dtype. The TIFF **MUST** carry one dataset-level `GDAL_NODATA`
+value, which applies to every band; per-band nodata values are **NOT PERMITTED**.
+
 ---
 
 ## 5. Homogeneity
@@ -246,11 +257,12 @@ encoding rules:
 
 - **Packing rule: one artifact = one grid.** Fields sharing an identical grid
   pack into one artifact. Fields on different grids stay in separate artifacts.
-- **Self-naming fields — no positional channel axis.** Each gridded field is its
-  own **named CF variable** in the Zarr (`[time,lat,lon]`) / its own **labelled
-  band** in the COG (band description = field name). Field names live in-file, so
-  discovery stays a one-file read. (Resolved open question 3 — this drops SLOTH's
-  nameless `channel` axis + positional `*_channels[]` lists.)
+- **Self-naming physical fields.** Each dynamic gridded field is its own **named
+  CF variable** in the Zarr (`[time,lat,lon]`). Each static gridded field is its
+  own labelled physical TIFF sample in the COG, named by the exact indexed GDAL
+  description item required in §4. Field names live in-file, so discovery stays
+  a one-file read. Consumer channel order, when declared in §11, is a separate
+  ABI and **MUST NOT** be inferred from physical TIFF sample order.
 - **The artifact is named after its grid** — a stable, producer-chosen **grid
   label** (`gridded_dynamic/era5.zarr`, `gridded_static/era5.tif`). The label
   names the *grid family* (the literal per-basin extent/affine lives in-file). A
@@ -318,11 +330,12 @@ HDX** and they MUST NOT appear in `hdx-core`.
 
 ---
 
-## 11. The manifest — the irreducible floor
+## 11. The manifest — non-derivable declarations
 
 Hive + self-describing files + homogeneity make almost everything discoverable,
-so the manifest declares **only what is not derivable**, and each declared field
-is **cross-checked against the data** ("declare + cross-check, no drift").
+so the manifest contains six required floor fields and one optional known
+consumer ABI declaration, all non-derivable. The six-field legacy form remains
+valid:
 
 ```json
 {
@@ -335,7 +348,25 @@ is **cross-checked against the data** ("declare + cross-check, no drift").
 }
 ```
 
-These are the **only** manifest fields. Field meanings and rules:
+The optional declaration expands the manifest as follows:
+
+```json
+{
+  "format_version": "0.2",
+  "name": "<dataset name>",
+  "created_at": "2026-06-01T00:00:00Z",
+  "producer_version": "<tool/version that wrote it>",
+  "crs": "EPSG:4326",
+  "cadence": "daily",
+  "gridded_static_channels": {
+    "era5": ["elevation", "soil_depth"],
+    "landcover": ["forest_fraction", "urban_fraction"]
+  }
+}
+```
+
+These six required fields and one optional known property are the only manifest
+properties. Field meanings and rules:
 
 | Field | Rule |
 |---|---|
@@ -345,12 +376,22 @@ These are the **only** manifest fields. Field meanings and rules:
 | `producer_version` | the tool/version that wrote the dataset. |
 | `crs` | dataset-wide CRS; MUST match the CRS carried in the files. |
 | `cadence` | dataset-wide cadence/calendar; a validated convention (§6.4). |
+| `gridded_static_channels` | OPTIONAL per-grid consumer channel ABI. It is an object whose keys are non-empty grid-label strings and whose values are non-empty ordered arrays of unique non-empty field-name strings. Object-member order is insignificant. Absence and `{}` both mean an empty legacy declaration. |
 
-**Everything else** — field catalog, basin list, per-field grids, time ranges,
-units, delineation labels — is **discovered**, never declared. Adding any
-derivable field to the manifest is a **conformance bug**: a declared value that
-restates the data can drift from it, and the floor exists precisely to make that
-impossible.
+`gridded_static_channels` is non-derivable declared consumer ABI data. Its array
+order is significant consumer order, independent of physical TIFF sample order.
+Consumers bind each declared name to the self-named TIFF sample and **MUST NOT**
+treat the array index as a physical sample index. For example, a TIFF physically
+storing samples `[soil_depth, elevation]` may legally declare consumer order
+`"era5": ["elevation", "soil_depth"]` because binding is by sample description.
+This declaration defines and validates shape only; append-only evolution and
+comparison with an earlier manifest are producer-side concerns outside this
+contract step.
+
+**Everything else** — catalogs, basins, grids, time ranges, units, delineation
+labels, and other derivable facts — is **discovered**, never declared. Adding any
+unknown or derivable property to the manifest is a **conformance bug**: a value
+that restates the data can drift from it. Unknown-field rejection remains strict.
 
 ---
 
@@ -407,7 +448,9 @@ requirements.)
 - M1 `manifest.json` exists, is valid JSON, and `format_version` is read first.
 - M2 `format_version` is `"0.1"` or `"0.2"`; any other value is rejected outright
   (hard cut). `"0.2"` admits the geometry-optional shape (L1/Geo1/I1 below).
-- M3 Exactly the six floor fields are present (§11); no derivable fields added.
+- M3 All six required floor fields are present, the optional known channel
+  declaration conforms when present, and no unknown or derivable fields are
+  present (§11).
 - M4 `created_at` is RFC 3339; `crs`, `cadence` are non-empty strings.
 - M5 `crs` matches the CRS carried in every georeferenced file.
 - M6 `cadence` is consistent with the realized `time` axes.
@@ -442,12 +485,17 @@ requirements.)
   share the identical time axis (§6.2); gaps are NaN-filled.
 
 **Grids / artifacts**
-- G1 One artifact = one grid; fields self-name (CF variable / COG band
-  description = field name); no positional channel axis.
+- G1 One artifact = one grid; fields self-name (CF variable / indexed COG sample
+  description = field name). A declared static consumer channel order binds by
+  those descriptions and is independent of physical TIFF sample order.
 - G2 Each artifact is named after its grid label; a shared label across the
   static/dynamic subtrees implies (and MUST exhibit) cell-for-cell alignment.
-- G3 Zarr is CF-georeferenced (explicit `lat`/`lon` + `grid_mapping`); COG
-  carries standard georeferencing tags.
+- G3 Zarr is CF-georeferenced (explicit `lat`/`lon` + `grid_mapping`). Each COG
+  carries standard georeferencing tags and satisfies the §4 multiband contract:
+  `SamplesPerPixel >= 1`, physical samples `0..N-1`,
+  `PlanarConfiguration = 2`, exact indexed GDAL descriptions, one dtype per
+  label, and one dataset-level `GDAL_NODATA` applying to every band with no
+  per-band nodata.
 
 **Geometry**
 - Geo1 `outlines.geoparquet` has rows `(basin_id, delineation, geometry)`; the
