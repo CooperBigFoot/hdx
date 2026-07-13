@@ -209,6 +209,23 @@ pub enum CoreError {
         detail: String,
     },
 
+    /// Fires when a multiband COG's physical samples do not share one dtype.
+    #[error(
+        "COG {artifact:?} sample {sample_index} has dtype {found}, expected {expected} from sample 0",
+        found = .found.as_str(),
+        expected = .expected.as_str()
+    )]
+    CogSampleDtypeMismatch {
+        /// A name for the artifact whose samples have heterogeneous dtypes.
+        artifact: String,
+        /// The first physical sample index whose dtype differs from sample 0.
+        sample_index: usize,
+        /// The dtype established by physical sample 0.
+        expected: crate::field::Dtype,
+        /// The mismatching physical sample's dtype.
+        found: crate::field::Dtype,
+    },
+
     /// Fires when the `outlines.geoparquet` artifact cannot be opened or its
     /// metadata fails to decode (spec §9, architecture §1): the byte source is not a
     /// valid parquet file, its footer/`geo` key-value metadata is malformed, or the

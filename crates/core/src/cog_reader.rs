@@ -5,24 +5,26 @@
 //! facts — the gridded·static field catalog plus a [`GridInfo`] — **never** its
 //! scientific pixel raster. It reads **tags only** (architecture §1):
 //!
-//! 1. the **band metadata** from tag `42112` (`GDAL_METADATA`), an ASCII
-//!    `<GDALMetadata>` XML carrying the band description (= field name) and units;
+//! 1. the **indexed sample metadata** from tag `42112` (`GDAL_METADATA`), an ASCII
+//!    `<GDALMetadata>` XML carrying each sample's description (= field name) and units;
 //! 2. the **standard GeoTIFF georef tags** — `33550` `ModelPixelScale`
 //!    (resolution), `33922` `ModelTiepoint` (the NW cell-edge origin, already
 //!    edge-based — no conversion), `ImageWidth` / `ImageLength` (dimensions), and
 //!    `34735` `GeoKeyDirectory` (the EPSG code); and
-//! 3. the **`SampleFormat` + `BitsPerSample`** tags to map the band to a [`Dtype`].
+//! 3. the **`SampleFormat` + `BitsPerSample`** vectors to map every physical sample
+//!    to a [`Dtype`] in sample order.
 //!
 //! It **never** decodes a pixel strip or tile: the public API exposes no pixel
-//! buffer, and the reader only ever calls `find_tag` / `get_tag_*` — never
-//! `read_chunk` / `read_image`. The pixel raster is an opaque leaf.
+//! buffer, and the normal reader only calls `find_tag` / `get_tag_*`; the narrow
+//! heterogeneous-format recovery reads first-IFD sample tags directly. Neither path
+//! calls `read_chunk` / `read_image`. The pixel raster is an opaque leaf.
 //!
 //! ## The band-description protocol — read tag 42112, not IFD tag 270
 //!
 //! The band description lives in tag `42112` `GDAL_METADATA`, **not** in IFD tag
 //! `270` (`ImageDescription`). The pure-Rust `tiff` crate surfaces tag `42112` as an
 //! ASCII string, from which HDX parses the small fixed `<GDALMetadata>` XML for the
-//! two `<Item>`s it needs:
+//! indexed `<Item>` elements it needs:
 //!
 //! - `<Item ... role="description">NAME</Item>` → the field name (`elevation`);
 //! - `<Item name="units" ...>UNIT</Item>` → the units (`m`).
@@ -49,9 +51,10 @@
 //! GeoKeyDirectory is parsed by hand (the `tiff` crate surfaces it as a raw `u16`
 //! vector). **No GDAL, no C toolchain, no pixel decode.**
 //!
-//! The single band becomes one ordinary [`Field`] named **exactly** as the tag-42112
-//! description, with no name special-casing (spec §1/§2). Like the Zarr reader, this
-//! is a discovery surface — it records facts and enforces no spec §14 check.
+//! Every physical sample becomes one ordinary [`Field`] named **exactly** as its
+//! tag-42112 description, with no name special-casing (spec §1/§2). Fields retain
+//! physical sample order. Like the Zarr reader, this is a discovery surface; it
+//! records facts and enforces no spec §14 check.
 //!
 //! ## Glossary
 //!
@@ -63,6 +66,7 @@
 //! | GeoKeyDirectory (tag 34735) | the packed GeoTIFF key/value block carrying the EPSG code |
 //! | edge origin | the NW cell-edge `(west, north)` — the single grid convention |
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use tiff::decoder::Decoder;
@@ -109,17 +113,17 @@ pub enum CogBandSource {
 
 /// The discovered facts of one `gridded_static/<label>.tif` COG (spec §7/§8).
 ///
-/// Holds the single gridded·static [`Field`] (the band, named from tag 42112), the
+/// Holds the gridded·static [`Field`]s (samples named from tag 42112), the
 /// per-artifact [`GridInfo`] (the edge-based extent + signed resolution + dims +
 /// recorded CRS), and which [`CogBandSource`] path produced the band. It records
 /// facts; it enforces nothing.
 ///
-/// Inert / agnostic (spec §1): a field, a grid geometry, a CRS string, and the band
+/// Inert / agnostic (spec §1): fields, a grid geometry, a CRS string, and the band
 /// source — no transform/role/semantic/provenance, and no pixel buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CogGrid {
     grid_info: GridInfo,
-    field: Field,
+    fields: Vec<Field>,
     band_source: CogBandSource,
 }
 
@@ -129,9 +133,9 @@ impl CogGrid {
         &self.grid_info
     }
 
-    /// Borrows the single gridded·static field (the band, named from tag 42112).
-    pub fn field(&self) -> &Field {
-        &self.field
+    /// Borrows all gridded·static fields in physical TIFF sample order.
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
     }
 
     /// Borrows the band source the reader took.
@@ -140,55 +144,239 @@ impl CogGrid {
     }
 }
 
-/// The band description + units parsed from a tag-42112 `<GDALMetadata>` XML.
+/// One sample's band description + units parsed from tag-42112 metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GdalBandMetadata {
     /// The `role="description"` `<Item>` value (= the field name).
-    description: Option<String>,
+    description: String,
     /// The `name="units"` `<Item>` value (= the units), if present.
     units: Option<String>,
 }
 
-/// Extracts the inner text of the first `<Item ...>TEXT</Item>` element whose opening
-/// tag satisfies `attr_match`, treating the value as an opaque producer string.
-///
-/// This is a minimal, dependency-free scan over the small fixed `<GDALMetadata>` XML:
-/// it finds an `<Item` start, isolates the opening tag up to its `>`, tests the tag's
-/// attributes, and returns the text up to the matching `</Item>`. It parses no
-/// general XML and interprets no value (spec §1/§2).
-fn extract_item<F>(xml: &str, attr_match: F) -> Option<String>
-where
-    F: Fn(&str) -> bool,
-{
+fn item_attribute<'a>(open_tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!(" {name}=\"");
+    let start = open_tag.find(&needle)? + needle.len();
+    let value = &open_tag[start..];
+    value.find('"').map(|end| &value[..end])
+}
+
+/// Parses every indexed description and units item in tag 42112.
+fn parse_gdal_metadata(
+    xml: &str,
+    samples_per_pixel: usize,
+) -> Result<Vec<GdalBandMetadata>, String> {
+    let mut descriptions = vec![Vec::<String>::new(); samples_per_pixel];
+    let mut units = vec![Vec::<String>::new(); samples_per_pixel];
     let mut rest = xml;
     while let Some(start) = rest.find("<Item") {
         let after_start = &rest[start..];
-        // Isolate the opening tag (attributes) up to its closing `>`.
-        let gt = after_start.find('>')?;
+        let gt = after_start
+            .find('>')
+            .ok_or_else(|| "tag 42112 has an unterminated <Item> opening tag".to_string())?;
         let open_tag = &after_start[..gt];
         let body = &after_start[gt + 1..];
-        if attr_match(open_tag) {
-            // The value is the text up to the closing `</Item>`.
-            return body
-                .find("</Item>")
-                .map(|end| body[..end].trim().to_string());
+        let end = body
+            .find("</Item>")
+            .ok_or_else(|| "tag 42112 has an unterminated <Item> body".to_string())?;
+        let value = body[..end].trim().to_string();
+        let is_description = item_attribute(open_tag, "role") == Some("description");
+        let is_units = item_attribute(open_tag, "name") == Some("units");
+        if is_description || is_units {
+            let sample_index = match item_attribute(open_tag, "sample") {
+                None => 0,
+                Some(raw) => raw
+                    .parse::<usize>()
+                    .map_err(|_| format!("tag 42112 has malformed sample index {raw:?}"))?,
+            };
+            if sample_index >= samples_per_pixel {
+                return Err(format!(
+                    "tag 42112 item sample index {sample_index} is out of range for {samples_per_pixel} samples"
+                ));
+            }
+            if is_description {
+                descriptions[sample_index].push(value.clone());
+            }
+            if is_units {
+                units[sample_index].push(value);
+            }
         }
-        // Advance past this `<Item` occurrence and keep scanning.
-        rest = &after_start[gt + 1..];
+        rest = &body[end + "</Item>".len()..];
     }
-    None
+
+    descriptions
+        .into_iter()
+        .zip(units)
+        .enumerate()
+        .map(|(sample_index, (descriptions, units))| {
+            let description = match descriptions.as_slice() {
+                [] => {
+                    return Err(format!(
+                        "tag 42112 sample {sample_index} is missing description"
+                    ));
+                }
+                [description] => description.clone(),
+                _ => {
+                    return Err(format!(
+                        "tag 42112 sample {sample_index} has duplicate descriptions"
+                    ));
+                }
+            };
+            let units = match units.as_slice() {
+                [] => None,
+                [units] => Some(units.clone()),
+                _ => {
+                    return Err(format!(
+                        "tag 42112 sample {sample_index} has duplicate units"
+                    ));
+                }
+            };
+            Ok(GdalBandMetadata { description, units })
+        })
+        .collect()
 }
 
-/// Parses the two `<Item>`s HDX needs from a tag-42112 `<GDALMetadata>` XML.
-///
-/// Reads only `<Item ... role="description">NAME</Item>` (the field name) and
-/// `<Item name="units" ...>UNIT</Item>` (the units); every other `<Item>` (e.g. the
-/// `rio_overview` resampling hint) is ignored. The values are opaque producer
-/// strings (spec §2).
-fn parse_gdal_metadata(xml: &str) -> GdalBandMetadata {
-    let description = extract_item(xml, |tag| tag.contains("role=\"description\""));
-    let units = extract_item(xml, |tag| tag.contains("name=\"units\""));
-    GdalBandMetadata { description, units }
+fn checked_cardinality(
+    artifact: &str,
+    tag: &str,
+    expected: usize,
+    found: usize,
+) -> Result<(), CoreError> {
+    if found == expected {
+        Ok(())
+    } else {
+        Err(CoreError::CogRead {
+            artifact: artifact.to_string(),
+            detail: format!("{tag} tag cardinality: expected {expected}, found {found}"),
+        })
+    }
+}
+
+/// Reads only SamplesPerPixel and BitsPerSample from a classic little-endian first IFD.
+fn recover_classic_le_sample_tags(path: &Path) -> Result<(usize, Vec<u16>), String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut header = [0_u8; 8];
+    file.read_exact(&mut header).map_err(|e| e.to_string())?;
+    if &header[..2] != b"II" || u16::from_le_bytes([header[2], header[3]]) != 42 {
+        return Err("not a classic little-endian TIFF".to_string());
+    }
+    let ifd_offset = u32::from_le_bytes(header[4..8].try_into().map_err(|_| "bad header")?);
+    file.seek(SeekFrom::Start(u64::from(ifd_offset)))
+        .map_err(|e| e.to_string())?;
+    let mut count_bytes = [0_u8; 2];
+    file.read_exact(&mut count_bytes)
+        .map_err(|e| e.to_string())?;
+    let entry_count = u16::from_le_bytes(count_bytes);
+    let mut samples_per_pixel = None;
+    let mut bits = None;
+    for _ in 0..entry_count {
+        let mut entry = [0_u8; 12];
+        file.read_exact(&mut entry).map_err(|e| e.to_string())?;
+        let tag = u16::from_le_bytes([entry[0], entry[1]]);
+        if tag != 258 && tag != 277 {
+            continue;
+        }
+        let field_type = u16::from_le_bytes([entry[2], entry[3]]);
+        let count = u32::from_le_bytes(entry[4..8].try_into().map_err(|_| "bad count")?);
+        if field_type != 3 || count == 0 {
+            return Err(format!("tag {tag} is not a nonempty SHORT vector"));
+        }
+        let byte_count = usize::try_from(count)
+            .ok()
+            .and_then(|count| count.checked_mul(2))
+            .ok_or_else(|| format!("tag {tag} count overflows"))?;
+        let mut raw = vec![0_u8; byte_count];
+        if byte_count <= 4 {
+            raw.copy_from_slice(&entry[8..8 + byte_count]);
+        } else {
+            let return_pos = file.stream_position().map_err(|e| e.to_string())?;
+            let value_offset =
+                u32::from_le_bytes(entry[8..12].try_into().map_err(|_| "bad offset")?);
+            file.seek(SeekFrom::Start(u64::from(value_offset)))
+                .map_err(|e| e.to_string())?;
+            file.read_exact(&mut raw).map_err(|e| e.to_string())?;
+            file.seek(SeekFrom::Start(return_pos))
+                .map_err(|e| e.to_string())?;
+        }
+        let values: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        if tag == 258 {
+            bits = Some(values);
+        } else {
+            samples_per_pixel = values.first().copied();
+        }
+    }
+    let samples_per_pixel = usize::from(samples_per_pixel.unwrap_or(1));
+    if samples_per_pixel == 0 {
+        return Err("SamplesPerPixel tag is zero".to_string());
+    }
+    let bits = bits.ok_or_else(|| "BitsPerSample tag absent".to_string())?;
+    Ok((samples_per_pixel, bits))
+}
+
+fn normalize_unsupported_sample_formats(
+    path: &Path,
+    artifact: &str,
+    sample_formats: &[tiff::tags::SampleFormat],
+) -> CoreError {
+    let original_detail = format!("not a valid TIFF: unsupported sample format {sample_formats:?}");
+    let Ok((samples_per_pixel, bits_per_sample)) = recover_classic_le_sample_tags(path) else {
+        return CoreError::CogRead {
+            artifact: artifact.to_string(),
+            detail: original_detail,
+        };
+    };
+    if let Err(error) = checked_cardinality(
+        artifact,
+        "SampleFormat",
+        samples_per_pixel,
+        sample_formats.len(),
+    ) {
+        return error;
+    }
+    if let Err(error) = checked_cardinality(
+        artifact,
+        "BitsPerSample",
+        samples_per_pixel,
+        bits_per_sample.len(),
+    ) {
+        return error;
+    }
+    let dtypes: Result<Vec<Dtype>, CoreError> = sample_formats
+        .iter()
+        .zip(bits_per_sample)
+        .map(|(format, bits)| geotiff_dtype(format.to_u16(), bits))
+        .collect();
+    let dtypes = match dtypes {
+        Ok(dtypes) => dtypes,
+        Err(error) => return error,
+    };
+    let Some(expected) = dtypes.first().copied() else {
+        return CoreError::CogRead {
+            artifact: artifact.to_string(),
+            detail: original_detail,
+        };
+    };
+    if let Some((sample_index, found)) = dtypes
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(1)
+        .find(|(_, found)| *found != expected)
+    {
+        CoreError::CogSampleDtypeMismatch {
+            artifact: artifact.to_string(),
+            sample_index,
+            expected,
+            found,
+        }
+    } else {
+        CoreError::CogRead {
+            artifact: artifact.to_string(),
+            detail: original_detail,
+        }
+    }
 }
 
 /// Maps a GeoTIFF `SampleFormat` + `BitsPerSample` pair to the canonical dtype string
@@ -279,9 +467,10 @@ fn epsg_from_geokey_directory(dir: &[u16]) -> Option<u16> {
 /// 42112, the standard GeoTIFF georef tags (`ModelPixelScale`, `ModelTiepoint`,
 /// `ImageWidth`/`ImageLength`, `GeoKeyDirectory`) into an edge-based [`GridExtent`]
 /// (the tiepoint is already a cell-edge origin — no conversion), and the
-/// `SampleFormat` + `BitsPerSample` for the dtype. Maps the band to one ordinary
-/// `GriddedStatic` [`Field`]. **No pixel raster is ever decoded**: the reader calls
-/// only `find_tag` / `get_tag_*`.
+/// indexed `SampleFormat` + `BitsPerSample` values for dtype. Maps every physical
+/// sample to an ordinary `GriddedStatic` [`Field`] in sample order. **No pixel raster
+/// is ever decoded**: the reader calls only `find_tag` / `get_tag_*` on the normal
+/// path; the typed heterogeneous-format recovery reads only first-IFD sample tags.
 ///
 /// `grid_label` is the label of the artifact (e.g. `era5`), supplied by the caller
 /// from the artifact name; HDX names nothing from the file contents.
@@ -297,7 +486,8 @@ fn epsg_from_geokey_directory(dir: &[u16]) -> Option<u16> {
 /// |---|---|
 /// | the artifact is absent / unreadable / not a valid TIFF, or a required tag fails to decode | [`CoreError::CogRead`] |
 /// | the standard georef tags (`ModelPixelScale` / `ModelTiepoint` / `GeoKeyDirectory`) are absent | [`CoreError::MissingGridGeoref`] |
-/// | the `(SampleFormat, BitsPerSample)` pair does not map to a supported [`Dtype`] | [`CoreError::UnknownDtype`] |
+/// | a `(SampleFormat, BitsPerSample)` pair does not map to a supported [`Dtype`] | [`CoreError::UnknownDtype`] |
+/// | a later physical sample's dtype differs from sample 0 | [`CoreError::CogSampleDtypeMismatch`] |
 #[instrument(skip(grid_label), fields(path = %path.as_ref().display()))]
 pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<CogGrid, CoreError> {
     let artifact = path.as_ref().display().to_string();
@@ -308,10 +498,24 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
     })?;
     let reader = std::io::BufReader::new(file);
     // `Decoder::new` reads the header + the first IFD's tags; it decodes NO pixels.
-    let mut decoder = Decoder::new(reader).map_err(|e| CoreError::CogRead {
-        artifact: artifact.clone(),
-        detail: format!("not a valid TIFF: {e}"),
-    })?;
+    let mut decoder = match Decoder::new(reader) {
+        Ok(decoder) => decoder,
+        Err(tiff::TiffError::UnsupportedError(
+            tiff::TiffUnsupportedError::UnsupportedSampleFormat(sample_formats),
+        )) => {
+            return Err(normalize_unsupported_sample_formats(
+                path.as_ref(),
+                &artifact,
+                &sample_formats,
+            ));
+        }
+        Err(error) => {
+            return Err(CoreError::CogRead {
+                artifact: artifact.clone(),
+                detail: format!("not a valid TIFF: {error}"),
+            });
+        }
+    };
 
     // --- Dimensions (ImageWidth / ImageLength), tags only ----------------------
     let width: u32 = decoder
@@ -400,48 +604,85 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
 
     let grid_info = GridInfo::new(grid_label.clone(), extent, resolution, width, height, crs);
 
-    // --- Dtype: SampleFormat (339) + BitsPerSample (258), tags only ------------
-    // SampleFormat defaults to 1 (unsigned int) when absent per the TIFF baseline.
-    let sample_format: u16 = decoder
-        .find_tag_unsigned(Tag::SampleFormat)
-        .ok()
-        .flatten()
+    // --- Per-sample dtype, tags only -------------------------------------------
+    let samples_per_pixel: u16 = decoder
+        .find_tag_unsigned(Tag::SamplesPerPixel)
+        .map_err(|error| CoreError::CogRead {
+            artifact: artifact.clone(),
+            detail: format!("SamplesPerPixel tag unreadable: {error}"),
+        })?
         .unwrap_or(1);
-    let bits_per_sample: u16 =
-        decoder
-            .get_tag_unsigned(Tag::BitsPerSample)
-            .map_err(|e| CoreError::CogRead {
-                artifact: artifact.clone(),
-                detail: format!("BitsPerSample tag unreadable: {e}"),
-            })?;
-    let dtype = geotiff_dtype(sample_format, bits_per_sample)?;
+    if samples_per_pixel == 0 {
+        return Err(CoreError::CogRead {
+            artifact: artifact.clone(),
+            detail: "SamplesPerPixel tag is zero".to_string(),
+        });
+    }
+    let samples_per_pixel = usize::from(samples_per_pixel);
+    let sample_formats = decoder
+        .find_tag_unsigned_vec::<u16>(Tag::SampleFormat)
+        .map_err(|error| CoreError::CogRead {
+            artifact: artifact.clone(),
+            detail: format!("SampleFormat tag unreadable: {error}"),
+        })?
+        .unwrap_or_else(|| vec![1; samples_per_pixel]);
+    checked_cardinality(
+        &artifact,
+        "SampleFormat",
+        samples_per_pixel,
+        sample_formats.len(),
+    )?;
+    let bits_per_sample = decoder
+        .get_tag_u16_vec(Tag::BitsPerSample)
+        .map_err(|error| CoreError::CogRead {
+            artifact: artifact.clone(),
+            detail: format!("BitsPerSample tag unreadable: {error}"),
+        })?;
+    checked_cardinality(
+        &artifact,
+        "BitsPerSample",
+        samples_per_pixel,
+        bits_per_sample.len(),
+    )?;
+    let dtypes: Vec<Dtype> = sample_formats
+        .into_iter()
+        .zip(bits_per_sample)
+        .map(|(sample_format, bits)| geotiff_dtype(sample_format, bits))
+        .collect::<Result<_, _>>()?;
+    let Some(expected) = dtypes.first().copied() else {
+        return Err(CoreError::CogRead {
+            artifact: artifact.clone(),
+            detail: "no sample dtype remained after cardinality checks".to_string(),
+        });
+    };
+    if let Some((sample_index, found)) = dtypes
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(1)
+        .find(|(_, found)| *found != expected)
+    {
+        return Err(CoreError::CogSampleDtypeMismatch {
+            artifact: artifact.clone(),
+            sample_index,
+            expected,
+            found,
+        });
+    }
 
     // --- Band description + units: tag 42112 GDAL_METADATA ---------------------
     let gdal_xml = decoder
         .get_tag_ascii_string(Tag::from_u16_exhaustive(TAG_GDAL_METADATA))
         .ok();
-    let (band_name, units, band_source) = match gdal_xml.as_deref() {
+    let (metadata, band_source) = match gdal_xml.as_deref() {
         Some(xml) => {
-            let meta = parse_gdal_metadata(xml);
-            match meta.description {
-                Some(name) => {
-                    debug!(
-                        band = %name,
-                        "read band description from tag 42112 GDAL_METADATA"
-                    );
-                    (name, meta.units, CogBandSource::GdalMetadataTag)
+            let metadata = parse_gdal_metadata(xml, samples_per_pixel).map_err(|detail| {
+                CoreError::CogRead {
+                    artifact: artifact.clone(),
+                    detail,
                 }
-                None => {
-                    // The tag exists but carries no role="description" Item.
-                    let reason =
-                        "tag 42112 GDAL_METADATA has no role=\"description\" <Item>".to_string();
-                    warn!(reason = %reason, "band description unavailable (skip)");
-                    return Err(CoreError::CogRead {
-                        artifact: artifact.clone(),
-                        detail: reason,
-                    });
-                }
-            }
+            })?;
+            (metadata, CogBandSource::GdalMetadataTag)
         }
         None => {
             // The pure-Rust read could not surface tag 42112 at all: the band name
@@ -456,16 +697,28 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
         }
     };
 
-    let field = Field::new(
-        FieldName::new(band_name),
-        Quadrant::GriddedStatic,
-        dtype,
-        Units::new(units),
-        Some(grid_label),
-    )?;
+    let fields: Vec<Field> = metadata
+        .into_iter()
+        .zip(dtypes)
+        .enumerate()
+        .map(|(sample_index, (metadata, dtype))| {
+            debug!(
+                sample_index,
+                band = %metadata.description,
+                "read indexed band metadata from tag 42112 GDAL_METADATA"
+            );
+            Field::new(
+                FieldName::new(metadata.description),
+                Quadrant::GriddedStatic,
+                dtype,
+                Units::new(metadata.units),
+                Some(grid_label.clone()),
+            )
+        })
+        .collect::<Result<_, _>>()?;
 
     info!(
-        band = %field.name().as_str(),
+        field_count = fields.len(),
         width,
         height,
         west = extent.west(),
@@ -475,15 +728,188 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
 
     Ok(CogGrid {
         grid_info,
-        field,
+        fields,
         band_source,
     })
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+
+    const TYPE_ASCII: u16 = 2;
+    pub(crate) const TYPE_SHORT: u16 = 3;
+    pub(crate) const TYPE_LONG: u16 = 4;
+    const TYPE_DOUBLE: u16 = 12;
+
+    #[derive(Clone)]
+    pub(crate) enum TiffValue {
+        Short(Vec<u16>),
+        Long(Vec<u32>),
+        Double(Vec<f64>),
+        Ascii(Vec<u8>),
+    }
+
+    impl TiffValue {
+        fn field_type(&self) -> u16 {
+            match self {
+                Self::Ascii(_) => TYPE_ASCII,
+                Self::Short(_) => TYPE_SHORT,
+                Self::Long(_) => TYPE_LONG,
+                Self::Double(_) => TYPE_DOUBLE,
+            }
+        }
+
+        fn count(&self) -> u32 {
+            match self {
+                Self::Short(values) => values.len() as u32,
+                Self::Long(values) => values.len() as u32,
+                Self::Double(values) => values.len() as u32,
+                Self::Ascii(values) => values.len() as u32,
+            }
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            match self {
+                Self::Short(values) => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                Self::Long(values) => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                Self::Double(values) => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                Self::Ascii(values) => values.clone(),
+            }
+        }
+    }
+
+    pub(crate) type TiffEntry = (u16, TiffValue);
+
+    pub(crate) fn write_temp(tag: &str, bytes: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hdx-cog-{tag}-{}-{}.tif",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, bytes).expect("write temp tif");
+        path
+    }
+
+    pub(crate) fn build_tiff(entries: &[(u16, u16, u32, u32)]) -> Vec<u8> {
+        let entries = entries
+            .iter()
+            .map(|&(tag, field_type, count, value)| {
+                let value = match field_type {
+                    TYPE_SHORT => TiffValue::Short(vec![value as u16; count as usize]),
+                    TYPE_LONG => TiffValue::Long(vec![value; count as usize]),
+                    other => panic!("unsupported inline TIFF type {other}"),
+                };
+                (tag, value)
+            })
+            .collect();
+        build_tiff_full(entries, &[])
+    }
+
+    pub(crate) fn build_tiff_full(
+        mut entries: Vec<TiffEntry>,
+        sample_planes: &[[u8; 4]],
+    ) -> Vec<u8> {
+        entries.sort_by_key(|(tag, _)| *tag);
+        let ifd_start = 8usize;
+        let ifd_len = 2 + 12 * entries.len() + 4;
+        let heap_start = ifd_start + ifd_len;
+        let heap_len: usize = entries
+            .iter()
+            .map(|(_, value)| value.bytes().len())
+            .filter(|len| *len > 4)
+            .sum();
+        let pixel_start = heap_start + heap_len;
+
+        if let Some((_, TiffValue::Long(offsets))) = entries.iter_mut().find(|(tag, _)| *tag == 273)
+        {
+            if offsets.len() == sample_planes.len() && offsets.len() > 1 {
+                for (index, offset) in offsets.iter_mut().enumerate() {
+                    *offset = (pixel_start + index * 4) as u32;
+                }
+            }
+        }
+
+        let mut heap_offset = heap_start;
+        let mut heap = Vec::new();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"II");
+        out.extend_from_slice(&42u16.to_le_bytes());
+        out.extend_from_slice(&(ifd_start as u32).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, value) in entries {
+            let bytes = value.bytes();
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&value.field_type().to_le_bytes());
+            out.extend_from_slice(&value.count().to_le_bytes());
+            if bytes.len() <= 4 {
+                out.extend_from_slice(&bytes);
+                out.resize(out.len() + (4 - bytes.len()), 0);
+            } else {
+                out.extend_from_slice(&(heap_offset as u32).to_le_bytes());
+                heap_offset += bytes.len();
+                heap.extend_from_slice(&bytes);
+            }
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&heap);
+        for plane in sample_planes {
+            out.extend_from_slice(plane);
+        }
+        out
+    }
+
+    pub(crate) fn two_sample_tiff(sample_formats: [u16; 2]) -> Vec<u8> {
+        two_sample_tiff_variant(
+            vec![32, 32],
+            Some(sample_formats.to_vec()),
+            b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item><Item sample=\"0\" name=\"units\">m</Item><Item sample=\"1\" role=\"description\">soil_depth</Item><Item sample=\"1\" name=\"units\">cm</Item></GDALMetadata>\0".to_vec(),
+        )
+    }
+
+    pub(crate) fn two_sample_tiff_variant(
+        bits_per_sample: Vec<u16>,
+        sample_formats: Option<Vec<u16>>,
+        metadata: Vec<u8>,
+    ) -> Vec<u8> {
+        let mut entries = vec![
+            (256, TiffValue::Short(vec![1])),
+            (257, TiffValue::Short(vec![1])),
+            (258, TiffValue::Short(bits_per_sample)),
+            (259, TiffValue::Short(vec![1])),
+            (262, TiffValue::Short(vec![1])),
+            (273, TiffValue::Long(vec![0, 0])),
+            (277, TiffValue::Short(vec![2])),
+            (278, TiffValue::Short(vec![1])),
+            (279, TiffValue::Long(vec![4, 4])),
+            (284, TiffValue::Short(vec![2])),
+            (338, TiffValue::Short(vec![0])),
+            (33550, TiffValue::Double(vec![0.25, 0.25, 0.0])),
+            (
+                33922,
+                TiffValue::Double(vec![0.0, 0.0, 0.0, 10.0, 50.0, 0.0]),
+            ),
+            (34735, TiffValue::Short(vec![1, 1, 0, 1, 2048, 0, 1, 4326])),
+            (42112, TiffValue::Ascii(metadata)),
+        ];
+        if let Some(sample_formats) = sample_formats {
+            entries.push((339, TiffValue::Short(sample_formats)));
+        }
+        build_tiff_full(entries, &[[0; 4], [0; 4]])
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use crate::cog_reader::test_support::{
+        TiffValue, build_tiff, build_tiff_full, two_sample_tiff, two_sample_tiff_variant,
+        write_temp,
+    };
     use crate::cog_reader::{CogBandSource, read_cog_grid};
     use crate::error::CoreError;
     use crate::field::{Dtype, Quadrant};
@@ -501,20 +927,6 @@ mod tests {
         conformance("valid/minimal/basin=0001/gridded_static/era5.tif")
     }
 
-    /// Writes `bytes` to a fresh temp file and returns its path (test helper).
-    fn write_temp(tag: &str, bytes: &[u8]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "hdx-cog-{tag}-{}-{}.tif",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&path, bytes).expect("write temp tif");
-        path
-    }
-
     // --- Band-description round-trip --------------------------------------------
 
     #[test]
@@ -525,8 +937,9 @@ mod tests {
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5"))
             .expect("fixture COG must read its band description via tag 42112");
 
+        assert_eq!(grid.fields().len(), 1, "legacy fixture has one sample");
         assert_eq!(
-            grid.field().name().as_str(),
+            grid.fields()[0].name().as_str(),
             "elevation",
             "band description = field name, read from tag 42112"
         );
@@ -541,7 +954,7 @@ mod tests {
     fn med4_band_units_read_from_tag_42112_xml() {
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5")).expect("fixture must read");
         assert_eq!(
-            grid.field().units().as_deref(),
+            grid.fields()[0].units().as_deref(),
             Some("m"),
             "units == m from the same tag-42112 GDALMetadata XML"
         );
@@ -591,7 +1004,9 @@ mod tests {
     #[test]
     fn g1_band_is_one_ordinary_gridded_static_field() {
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5")).expect("fixture must read");
-        let field = grid.field();
+        let [field] = grid.fields() else {
+            panic!("legacy fixture must expose one field")
+        };
 
         assert_eq!(field.name().as_str(), "elevation", "named verbatim");
         assert_eq!(
@@ -612,11 +1027,11 @@ mod tests {
     #[test]
     fn low3_returns_metadata_without_decoding_pixels() {
         // The read succeeds returning full metadata; the public `CogGrid` API exposes
-        // NO pixel buffer (only grid_info / field / band_source), and the reader only
+        // NO pixel buffer (only grid_info / fields / band_source), and the reader only
         // ever calls find_tag/get_tag_* — never read_chunk/read_image. Tags-only.
         let grid = read_cog_grid(fixture_cog(), GridLabel::new("era5")).expect("fixture must read");
         // Metadata is fully populated from tags alone.
-        assert_eq!(grid.field().name().as_str(), "elevation");
+        assert_eq!(grid.fields()[0].name().as_str(), "elevation");
         assert_eq!(grid.grid_info().width(), 6);
         assert_eq!(grid.grid_info().height(), 8);
     }
@@ -676,6 +1091,173 @@ mod tests {
         }
     }
 
+    #[test]
+    fn two_physical_samples_become_two_fields_in_order() {
+        let path = write_temp("two-sample", &two_sample_tiff([3, 3]));
+        let result = read_cog_grid(&path, GridLabel::new("era5"));
+        std::fs::remove_file(&path).ok();
+        let grid = result.expect("two-sample COG must read");
+
+        assert_eq!(grid.fields().len(), 2);
+        let expected = [
+            ("elevation", Dtype::F32, Some("m")),
+            ("soil_depth", Dtype::F32, Some("cm")),
+        ];
+        for (field, (name, dtype, units)) in grid.fields().iter().zip(expected) {
+            assert_eq!(field.name().as_str(), name);
+            assert_eq!(field.quadrant(), Quadrant::GriddedStatic);
+            assert_eq!(field.dtype(), dtype);
+            assert_eq!(field.units().as_deref(), units);
+            assert_eq!(field.grid_label(), Some(&GridLabel::new("era5")));
+        }
+        assert_eq!(grid.grid_info().width(), 1);
+        assert_eq!(grid.grid_info().height(), 1);
+        assert_eq!(grid.grid_info().extent().west(), 10.0);
+        assert_eq!(grid.grid_info().extent().north(), 50.0);
+        assert_eq!(grid.band_source(), &CogBandSource::GdalMetadataTag);
+    }
+
+    #[test]
+    fn heterogeneous_samples_return_typed_dtype_mismatch() {
+        let path = write_temp("heterogeneous", &two_sample_tiff([3, 2]));
+        let result = read_cog_grid(&path, GridLabel::new("era5"));
+        std::fs::remove_file(&path).ok();
+
+        match result {
+            Err(CoreError::CogSampleDtypeMismatch {
+                artifact,
+                sample_index,
+                expected,
+                found,
+            }) => {
+                assert_eq!(artifact, path.display().to_string());
+                assert_eq!(sample_index, 1);
+                assert_eq!(expected, Dtype::F32);
+                assert_eq!(found, Dtype::I32);
+            }
+            other => panic!("expected CogSampleDtypeMismatch, got {other:?}"),
+        }
+    }
+
+    fn assert_cog_read_detail(bytes: Vec<u8>, expected_fragments: &[&str]) {
+        let path = write_temp("malformed", &bytes);
+        let result = read_cog_grid(&path, GridLabel::new("era5"));
+        std::fs::remove_file(&path).ok();
+        match result {
+            Err(CoreError::CogRead { detail, .. }) => {
+                for fragment in expected_fragments {
+                    assert!(detail.contains(fragment), "{detail:?} lacks {fragment:?}");
+                }
+            }
+            other => panic!("expected CogRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiband_bits_per_sample_cardinality_is_exact() {
+        assert_cog_read_detail(
+            two_sample_tiff_variant(
+                vec![32],
+                Some(vec![3, 3]),
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item><Item sample=\"1\" role=\"description\">soil_depth</Item></GDALMetadata>\0".to_vec(),
+            ),
+            &["BitsPerSample", "expected 2", "found 1"],
+        );
+    }
+
+    #[test]
+    fn multiband_sample_format_cardinality_is_exact_when_present() {
+        assert_cog_read_detail(
+            two_sample_tiff_variant(
+                vec![32, 32],
+                Some(vec![3]),
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item><Item sample=\"1\" role=\"description\">soil_depth</Item></GDALMetadata>\0".to_vec(),
+            ),
+            &["SampleFormat", "expected 2", "found 1"],
+        );
+    }
+
+    #[test]
+    fn every_sample_requires_one_description() {
+        assert_cog_read_detail(
+            two_sample_tiff_variant(
+                vec![32, 32],
+                Some(vec![3, 3]),
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item></GDALMetadata>\0".to_vec(),
+            ),
+            &["sample 1", "description"],
+        );
+    }
+
+    #[test]
+    fn duplicate_sample_description_is_rejected() {
+        assert_cog_read_detail(
+            two_sample_tiff_variant(
+                vec![32, 32],
+                Some(vec![3, 3]),
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item><Item sample=\"1\" role=\"description\">soil_depth</Item><Item sample=\"1\" role=\"description\">duplicate</Item></GDALMetadata>\0".to_vec(),
+            ),
+            &["sample 1", "duplicate", "description"],
+        );
+    }
+
+    #[test]
+    fn absent_sample_format_defaults_for_every_sample() {
+        let bytes = two_sample_tiff_variant(
+            vec![8, 8],
+            None,
+            b"<GDALMetadata><Item role=\"description\">mask_a</Item><Item sample=\"1\" role=\"description\">mask_b</Item></GDALMetadata>\0".to_vec(),
+        );
+        let path = write_temp("default-sample-format", &bytes);
+        let result = read_cog_grid(&path, GridLabel::new("era5"));
+        std::fs::remove_file(&path).ok();
+        let grid = result.expect("absent SampleFormat defaults to unsigned for every sample");
+        assert_eq!(grid.fields().len(), 2);
+        assert!(
+            grid.fields()
+                .iter()
+                .all(|field| field.dtype() == Dtype::Bool)
+        );
+    }
+
+    #[test]
+    fn malformed_and_out_of_range_sample_attributes_are_rejected() {
+        for (metadata, fragments) in [
+            (
+                b"<GDALMetadata><Item sample=\"x\" role=\"description\">bad</Item></GDALMetadata>\0".to_vec(),
+                &["malformed", "sample index"] as &[&str],
+            ),
+            (
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">a</Item><Item sample=\"2\" name=\"units\">m</Item><Item sample=\"1\" role=\"description\">b</Item></GDALMetadata>\0".to_vec(),
+                &["sample index 2", "out of range"],
+            ),
+        ] {
+            assert_cog_read_detail(
+                two_sample_tiff_variant(vec![32, 32], Some(vec![3, 3]), metadata),
+                fragments,
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_units_and_unindexed_sample_zero_description_are_rejected() {
+        for (metadata, fragments) in [
+            (
+                b"<GDALMetadata><Item sample=\"0\" role=\"description\">a</Item><Item sample=\"0\" name=\"units\">m</Item><Item sample=\"0\" name=\"units\">cm</Item><Item sample=\"1\" role=\"description\">b</Item></GDALMetadata>\0".to_vec(),
+                &["sample 0", "duplicate units"] as &[&str],
+            ),
+            (
+                b"<GDALMetadata><Item role=\"description\">a</Item><Item sample=\"0\" role=\"description\">duplicate</Item><Item sample=\"1\" role=\"description\">b</Item></GDALMetadata>\0".to_vec(),
+                &["sample 0", "duplicate descriptions"],
+            ),
+        ] {
+            assert_cog_read_detail(
+                two_sample_tiff_variant(vec![32, 32], Some(vec![3, 3]), metadata),
+                fragments,
+            );
+        }
+    }
+
     // --- Synthetic TIFF builders (test-only) ------------------------------------
 
     /// Builds a minimal little-endian baseline TIFF (1×1, 8-bit, single strip) with
@@ -701,106 +1283,28 @@ mod tests {
         // Doubles for ModelPixelScale (3) + ModelTiepoint (6) live in the value heap;
         // build_tiff_full handles the out-of-line DOUBLE/SHORT-vector tags.
         build_tiff_full(
-            &[
-                (256, TYPE_SHORT, 1, 1), // ImageWidth = 1
-                (257, TYPE_SHORT, 1, 1), // ImageLength = 1
-                (258, TYPE_SHORT, 1, 32),
-                (259, TYPE_SHORT, 1, 1),
-                (262, TYPE_SHORT, 1, 1),
-                (273, TYPE_LONG, 1, 0), // StripOffsets (placeholder; never read)
-                (277, TYPE_SHORT, 1, 1),
-                (278, TYPE_SHORT, 1, 1), // RowsPerStrip = 1
-                (279, TYPE_LONG, 1, 4),  // StripByteCounts = 4
-                (339, TYPE_SHORT, 1, 4), // SampleFormat = Void (unmappable)
+            vec![
+                (256, TiffValue::Short(vec![1])),
+                (257, TiffValue::Short(vec![1])),
+                (258, TiffValue::Short(vec![32])),
+                (259, TiffValue::Short(vec![1])),
+                (262, TiffValue::Short(vec![1])),
+                (273, TiffValue::Long(vec![0])),
+                (277, TiffValue::Short(vec![1])),
+                (278, TiffValue::Short(vec![1])),
+                (279, TiffValue::Long(vec![4])),
+                (339, TiffValue::Short(vec![4])),
+                (33550, TiffValue::Double(vec![0.25, 0.25, 0.0])),
+                (
+                    33922,
+                    TiffValue::Double(vec![0.0, 0.0, 0.0, 10.0, 50.0, 0.0]),
+                ),
+                (34735, TiffValue::Short(vec![1, 1, 0, 1, 2048, 0, 1, 4326])),
             ],
-            &[0.25, 0.25, 0.0],
-            &[0.0, 0.0, 0.0, 10.0, 50.0, 0.0],
-            &[1, 1, 0, 1, 2048, 0, 1, 4326],
+            &[],
         )
     }
 
     const TYPE_SHORT: u16 = 3;
     const TYPE_LONG: u16 = 4;
-
-    /// Builds a baseline little-endian TIFF from inline (≤4-byte) SHORT/LONG entries.
-    fn build_tiff(entries: &[(u16, u16, u32, u32)]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"II");
-        out.extend_from_slice(&42u16.to_le_bytes());
-        out.extend_from_slice(&8u32.to_le_bytes()); // first IFD at offset 8
-        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-        for &(tag, typ, count, value) in entries {
-            out.extend_from_slice(&tag.to_le_bytes());
-            out.extend_from_slice(&typ.to_le_bytes());
-            out.extend_from_slice(&count.to_le_bytes());
-            // Inline value field (4 bytes); SHORT sits in the low 2 bytes.
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        out.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0 (none)
-        out
-    }
-
-    /// Builds a little-endian TIFF with inline SHORT/LONG entries plus out-of-line
-    /// `ModelPixelScale` (DOUBLE×n), `ModelTiepoint` (DOUBLE×n) and `GeoKeyDirectory`
-    /// (SHORT×n) tags whose values live in a heap after the IFD.
-    fn build_tiff_full(
-        inline: &[(u16, u16, u32, u32)],
-        pixel_scale: &[f64],
-        tiepoint: &[f64],
-        geokey: &[u16],
-    ) -> Vec<u8> {
-        // Layout: header(8) + IFD(count2 + 12*entries + next4) then the value heap.
-        let total_entries = inline.len() + 3; // + 3 georef tags
-        let ifd_start = 8usize;
-        let ifd_len = 2 + 12 * total_entries + 4;
-        let mut heap_off = ifd_start + ifd_len;
-
-        let pixel_off = heap_off;
-        heap_off += pixel_scale.len() * 8;
-        let tiepoint_off = heap_off;
-        heap_off += tiepoint.len() * 8;
-        let geokey_off = heap_off;
-
-        let mut out = Vec::new();
-        out.extend_from_slice(b"II");
-        out.extend_from_slice(&42u16.to_le_bytes());
-        out.extend_from_slice(&(ifd_start as u32).to_le_bytes());
-        out.extend_from_slice(&(total_entries as u16).to_le_bytes());
-
-        for &(tag, typ, count, value) in inline {
-            out.extend_from_slice(&tag.to_le_bytes());
-            out.extend_from_slice(&typ.to_le_bytes());
-            out.extend_from_slice(&count.to_le_bytes());
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        // 33550 ModelPixelScale (DOUBLE)
-        out.extend_from_slice(&33550u16.to_le_bytes());
-        out.extend_from_slice(&12u16.to_le_bytes()); // DOUBLE
-        out.extend_from_slice(&(pixel_scale.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(pixel_off as u32).to_le_bytes());
-        // 33922 ModelTiepoint (DOUBLE)
-        out.extend_from_slice(&33922u16.to_le_bytes());
-        out.extend_from_slice(&12u16.to_le_bytes());
-        out.extend_from_slice(&(tiepoint.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(tiepoint_off as u32).to_le_bytes());
-        // 34735 GeoKeyDirectory (SHORT)
-        out.extend_from_slice(&34735u16.to_le_bytes());
-        out.extend_from_slice(&3u16.to_le_bytes()); // SHORT
-        out.extend_from_slice(&(geokey.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(geokey_off as u32).to_le_bytes());
-
-        out.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
-
-        // Value heap, in declared order.
-        for &v in pixel_scale {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        for &v in tiepoint {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        for &v in geokey {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        out
-    }
 }

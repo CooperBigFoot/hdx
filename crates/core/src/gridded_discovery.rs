@@ -405,7 +405,7 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
 /// / gridded·dynamic artifact across **all basins** and taking their deterministic
 /// stable **union** (spec §5 — discovery; cross-family completeness for merge).
 ///
-/// Walks ALL static artifacts (re-reading each [`CogGrid`] band field) then ALL dynamic
+/// Walks ALL static artifacts (re-reading each [`CogGrid`] sample field) then ALL dynamic
 /// artifacts (re-reading each [`ZarrGrid`]'s data-var fields), in basin → static →
 /// dynamic order (each list already name-sorted, basins already in stable sorted order),
 /// and pushes each field into a `Vec<Field>` deduplicated by
@@ -443,9 +443,10 @@ fn assemble_gridded_field_catalog(
         for artifact in basin.static_artifacts() {
             let path = static_artifact_path(layout, basin.basin_id_folder(), artifact.grid_label());
             let cog = read_cog_grid(&path, artifact.grid_label().clone())?;
-            let field = cog.field();
-            if !already_seen(&catalog, field) {
-                catalog.push(field.clone());
+            for field in cog.fields() {
+                if !already_seen(&catalog, field) {
+                    catalog.push(field.clone());
+                }
             }
         }
     }
@@ -674,8 +675,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::cog_reader::CogGrid;
+    use crate::cog_reader::test_support::two_sample_tiff;
     use crate::discovery::ScalarDiscovery;
-    use crate::field::Quadrant;
+    use crate::error::CoreError;
+    use crate::field::{Dtype, Quadrant};
     use crate::grid::GridInfo;
     use crate::gridded_discovery::{Discovery, GriddedDiscovery, discover, discover_gridded};
     use crate::newtypes::{BasinId, Crs, DelineationLabel, GridLabel};
@@ -803,6 +806,61 @@ mod tests {
         // Every gridded field carries grid_label == era5.
         for field in fields {
             assert_eq!(field.grid_label(), Some(&GridLabel::new("era5")));
+        }
+    }
+
+    #[test]
+    fn discovery_catalog_starts_with_every_static_sample_in_physical_order() {
+        let temp = copy_fixture_to_temp("two-static-samples");
+        std::fs::write(
+            temp.join("basin=0001/gridded_static/era5.tif"),
+            two_sample_tiff([3, 3]),
+        )
+        .expect("overwrite static COG");
+        let result = discover_gridded(&temp);
+        std::fs::remove_dir_all(&temp).ok();
+        let gridded = result.expect("multiband static COG must discover");
+
+        let fields = gridded.gridded_fields();
+        assert_eq!(fields.len(), 4);
+        let expected = [
+            ("elevation", Dtype::F32, Some("m")),
+            ("soil_depth", Dtype::F32, Some("cm")),
+        ];
+        for (field, (name, dtype, units)) in fields[..2].iter().zip(expected) {
+            assert_eq!(field.name().as_str(), name);
+            assert_eq!(field.quadrant(), Quadrant::GriddedStatic);
+            assert_eq!(field.dtype(), dtype);
+            assert_eq!(field.units().as_deref(), units);
+            assert_eq!(field.grid_label(), Some(&GridLabel::new("era5")));
+        }
+        assert_eq!(fields[2].name().as_str(), "era5_precipitation");
+        assert_eq!(fields[2].quadrant(), Quadrant::GriddedDynamic);
+        assert_eq!(fields[3].name().as_str(), "era5_precipitation_was_filled");
+        assert_eq!(fields[3].quadrant(), Quadrant::GriddedDynamic);
+    }
+
+    #[test]
+    fn discovery_propagates_static_sample_dtype_mismatch_unchanged() {
+        let temp = copy_fixture_to_temp("heterogeneous-static-samples");
+        let artifact_path = temp.join("basin=0001/gridded_static/era5.tif");
+        std::fs::write(&artifact_path, two_sample_tiff([3, 2])).expect("overwrite static COG");
+        let result = discover_gridded(&temp);
+        std::fs::remove_dir_all(&temp).ok();
+
+        match result {
+            Err(CoreError::CogSampleDtypeMismatch {
+                artifact,
+                sample_index,
+                expected,
+                found,
+            }) => {
+                assert_eq!(artifact, artifact_path.display().to_string());
+                assert_eq!(sample_index, 1);
+                assert_eq!(expected, Dtype::F32);
+                assert_eq!(found, Dtype::I32);
+            }
+            other => panic!("expected CogSampleDtypeMismatch, got {other:?}"),
         }
     }
 
@@ -984,8 +1042,8 @@ mod tests {
 
     #[test]
     fn catalog_band_field_matches_the_per_artifact_read() {
-        // The catalog re-reads the representative COG for its band field; assert that
-        // re-read agrees with a direct read (no reshaping of the band).
+        // The catalog re-reads the representative COG for its sample fields; assert
+        // that the legacy single-sample re-read agrees with a direct read.
         let gridded = discover_gridded(conformance("valid/minimal"))
             .expect("the valid fixture must discover");
         let elevation = &gridded.gridded_fields()[0];
@@ -997,9 +1055,10 @@ mod tests {
         .expect("direct COG read");
         assert_eq!(
             elevation,
-            direct.field(),
+            &direct.fields()[0],
             "catalog band == direct read band"
         );
+        assert_eq!(direct.fields().len(), 1);
     }
 
     // --- Field-catalog completeness: walk-all + deterministic-union (merge-gen M1) -
