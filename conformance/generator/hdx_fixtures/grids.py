@@ -43,6 +43,7 @@ properties (including the MED-5 consolidated-metadata hand-off).
 
 import datetime as dt
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,6 +77,7 @@ DIVERGENT_GRID_LABEL = "era5b"
 
 # Opaque producer-chosen gridded field names (spec §2). Distinct quadrants:
 GRIDDED_STATIC_FIELD = "elevation"  # gridded·static COG band, f32
+STACKED_STATIC_FIELDS = (("elevation", "m"), ("slope", "degrees"))
 # gridded·dynamic Zarr variable, f32, using the {source}_{variable} pattern:
 GRIDDED_DYNAMIC_FIELD = "era5_precipitation"
 # Ordinary companion-mask field ({field}_was_filled). HDX gives the suffix no
@@ -368,6 +370,56 @@ def write_gridded_static(
     return path
 
 
+def write_stacked_gridded_static(
+    basin_dir_path: Path,
+    geom: GridGeometry,
+    label: str,
+    fields: Sequence[tuple[str, str, np.ndarray]],
+) -> Path:
+    """Write an ordered count-N f32 gridded-static COG."""
+    if not fields:
+        raise ValueError("stacked gridded-static fields must not be empty")
+
+    expected_shape = (geom.height, geom.width)
+    normalized: list[tuple[str, str, np.ndarray]] = []
+    for field_name, units, surface in fields:
+        if surface.shape != expected_shape:
+            raise ValueError(
+                f"field {field_name!r} has shape {surface.shape}, expected {expected_shape}"
+            )
+        normalized.append((field_name, units, np.asarray(surface, dtype="float32")))
+
+    static_dir = gridded_static_dir(basin_dir_path)
+    static_dir.mkdir(parents=True, exist_ok=True)
+    path = cog_path(basin_dir_path, label)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "count": len(normalized),
+        "height": geom.height,
+        "width": geom.width,
+        "crs": RasterioCRS.from_epsg(EPSG_CODE),
+        "transform": geom.transform,
+        "tiled": True,
+        "blockxsize": COG_BLOCK,
+        "blockysize": COG_BLOCK,
+        "compress": "deflate",
+        "nodata": float("nan"),
+    }
+
+    with rasterio.open(path, "w", **profile) as dst:
+        for band_index, (field_name, units, surface) in enumerate(
+            normalized, start=1
+        ):
+            dst.write(surface, band_index)
+            dst.set_band_description(band_index, field_name)
+            dst.update_tags(band_index, units=units)
+        dst.build_overviews([2, 4], Resampling.nearest)
+        dst.update_tags(ns="rio_overview", resampling="nearest")
+
+    return path
+
+
 def _write_cf_coord(
     group: zarr.Group,
     name: str,
@@ -558,6 +610,31 @@ def write_grids(dataset_root: Path) -> list[Path]:
     for basin in BASINS:
         cog, store = write_gridded_for_basin(dataset_root, basin)
         written.extend((cog, store))
+    return written
+
+
+def write_stacked_static_grids(dataset_root: Path) -> list[Path]:
+    """Write the two-band era5 COG and aligned dynamic Zarr for every basin."""
+    from hdx_fixtures.scalar import basin_dir
+
+    written: list[Path] = []
+    geom = _basin_geometry()
+    elevation = np.arange(48, dtype="float32").reshape(8, 6)
+    slope = np.arange(100, 148, dtype="float32").reshape(8, 6)
+    fields = (
+        (STACKED_STATIC_FIELDS[0][0], STACKED_STATIC_FIELDS[0][1], elevation),
+        (STACKED_STATIC_FIELDS[1][0], STACKED_STATIC_FIELDS[1][1], slope),
+    )
+    for basin in BASINS:
+        basin_dir_path = basin_dir(dataset_root, basin.basin_id)
+        written.append(
+            write_stacked_gridded_static(basin_dir_path, geom, GRID_LABEL, fields)
+        )
+        written.append(
+            write_gridded_dynamic(
+                basin_dir_path, geom, _time_axis(basin), label=GRID_LABEL
+            )
+        )
     return written
 
 

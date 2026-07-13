@@ -2607,6 +2607,13 @@ mod tests {
         serde_json::from_str(&raw).expect("the golden must be valid JSON")
     }
 
+    fn multi_static_one_label_validate_golden() -> Value {
+        let path = conformance("goldens/valid-multi_static_one_label.validate.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("the stacked-static validate golden must be valid JSON")
+    }
+
     /// R4 schema test (jsonschema dev-dep). The committed golden validate report of the
     /// valid fixture **validates** against the committed `validate.schema.json`, pinning
     /// the validate half of R4 (architecture §7).
@@ -2639,6 +2646,33 @@ mod tests {
             "validate of the valid fixture must equal the committed golden \
              (regenerate the golden only on a format_version bump — see conformance/README.md)"
         );
+    }
+
+    #[test]
+    fn multi_static_one_label_validate_equals_golden_and_is_conformant() {
+        let fixture = conformance("valid/multi_static_one_label");
+        let produced: Value = serde_json::from_str(
+            &validate_json(&fixture).expect("validate_json succeeds on the stacked-static fixture"),
+        )
+        .expect("validate output is valid JSON");
+        assert_eq!(produced, multi_static_one_label_validate_golden());
+        assert_eq!(produced.get("conformant"), Some(&Value::Bool(true)));
+
+        let report = validate(&fixture).expect("the stacked-static fixture validates");
+        assert!(
+            report.conformant(),
+            "the stacked-static fixture must be conformant"
+        );
+        for outcome in report.checks() {
+            assert_ne!(outcome.result(), Some(CheckResult::Fail));
+            if outcome.status() == CheckStatus::Skipped {
+                assert!(
+                    outcome.detail().is_some_and(|detail| !detail.is_empty()),
+                    "a skipped check must carry a reason"
+                );
+            }
+        }
+        assert_eq!(report.checks().len(), 20);
     }
 
     /// Golden snapshot for the geometry-less (0.2) fixture's validate report. The

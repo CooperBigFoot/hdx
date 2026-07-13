@@ -43,9 +43,14 @@ from hdx_fixtures.assertions import (
     run_gridded_assertions,
     run_invalid_assertions,
     run_multi_grid_multi_static_assertions,
+    run_multi_static_one_label_assertions,
     run_scalar_assertions,
 )
-from hdx_fixtures.grids import write_grids, write_multi_family_grids
+from hdx_fixtures.grids import (
+    write_grids,
+    write_multi_family_grids,
+    write_stacked_static_grids,
+)
 from hdx_fixtures.manifest import (
     FORMAT_VERSION_V0_2,
     MANIFEST_FIELDS,
@@ -87,6 +92,11 @@ def valid_multi_grid_multi_static_root(repo_root: Path) -> Path:
     return repo_root / "conformance" / "valid" / "multi_grid_multi_static"
 
 
+def valid_multi_static_one_label_root(repo_root: Path) -> Path:
+    """Return the one-label, two-band gridded-static fixture root."""
+    return repo_root / "conformance" / "valid" / "multi_static_one_label"
+
+
 def build_scalar_baseline(dataset_root: Path) -> None:
     """Emit the scalar/geometry artifacts into ``dataset_root`` (spec §4)."""
     log = get_logger("build")
@@ -125,6 +135,17 @@ def build_multi_grid_multi_static_baseline(dataset_root: Path) -> None:
     write_outlines(dataset_root)
     write_multi_family_grids(dataset_root)
     log.info("multi_grid_multi_static baseline emitted")
+
+
+def build_multi_static_one_label_baseline(dataset_root: Path) -> None:
+    """Emit a baseline with elevation and slope stacked in one era5 COG."""
+    log = get_logger("build")
+    log.info("building multi_static_one_label baseline at %s", dataset_root)
+    write_manifest(dataset_root)
+    write_scalar(dataset_root)
+    write_outlines(dataset_root)
+    write_stacked_static_grids(dataset_root)
+    log.info("multi_static_one_label baseline emitted")
 
 
 def build_geometry_less_baseline(dataset_root: Path) -> None:
@@ -272,8 +293,13 @@ def main(argv: list[str] | None = None) -> int:
     build_multi_grid_multi_static_baseline(multi)
     run_multi_grid_multi_static_assertions(multi)
 
+    stacked = valid_multi_static_one_label_root(repo_root)
+    build_multi_static_one_label_baseline(stacked)
+    run_multi_static_one_label_assertions(stacked)
+
     log.info(
-        "baseline + derived fixtures + geometry-less + multi_grid_multi_static "
+        "baseline + derived fixtures + geometry-less + multi_grid_multi_static + "
+        "multi_static_one_label "
         "complete + self-assertions passed"
     )
     # User-facing status line (output, not a diagnostic) — see architecture §2.
@@ -282,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{dataset_root}; geometry-less (0.2, no outlines) at {geometry_less}; "
         f"multi_grid_multi_static (four static labels, two dynamic labels, "
         f"shared-label coverage with substantive G2 alignment) at {multi}; "
+        f"multi_static_one_label (two static bands under era5) at {stacked}; "
         "fail-closed invalids derived under conformance/invalid/ "
         "(including the irregular-time-axis M6 rule-(b) negative); "
         "all self-assertions passed"
