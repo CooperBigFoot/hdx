@@ -10,19 +10,21 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CoreError {
-    /// Fires when `manifest.format_version` is any string other than the single
-    /// supported version `"0.1"`. The version is a hard cut (spec §0/§14 M2): an
-    /// unknown value is rejected outright before any other field is interpreted.
-    #[error("unknown format_version {found:?}: only \"0.1\" is supported")]
+    /// Fires when `manifest.format_version` is any string other than the
+    /// supported versions `"0.1"` and `"0.2"`. The version is a hard cut
+    /// (spec §0/§14 M2): an unknown value is rejected before other values.
+    #[error("unknown format_version {found:?}: only \"0.1\" and \"0.2\" are supported")]
     UnknownFormatVersion {
         /// The raw `format_version` string read from the manifest.
         found: String,
     },
 
-    /// Fires when the manifest carries a field beyond the six floor fields
-    /// (spec §11/§14 M3). The manifest is exactly six fields; any extra
-    /// (derivable) field is a conformance bug.
-    #[error("unexpected manifest field {field:?}: the manifest floor is exactly six fields")]
+    /// Fires when the manifest carries an unknown property beyond the six
+    /// required floor fields and the one optional known declaration
+    /// (spec §11/§14 M3). Unknown or derivable properties are conformance bugs.
+    #[error(
+        "unexpected manifest field {field:?}: only the six required fields and the optional gridded_static_channels declaration are known"
+    )]
     ExtraManifestField {
         /// The name of the offending extra field.
         field: String,
@@ -53,6 +55,45 @@ pub enum CoreError {
     /// cadence must be a non-empty string.
     #[error("cadence must be a non-empty string")]
     EmptyCadence,
+
+    /// Fires at the manifest boundary when a `gridded_static_channels` object
+    /// contains an empty grid-label key.
+    #[error("gridded_static_channels contains an empty grid label")]
+    EmptyGriddedStaticChannelLabel,
+
+    /// Fires at the manifest boundary when a grid label declares no consumer
+    /// channel names.
+    #[error("gridded_static_channels entry {label:?} must contain at least one channel")]
+    EmptyGriddedStaticChannelList {
+        /// The grid label whose channel list was empty.
+        label: String,
+    },
+
+    /// Fires at the manifest boundary when a channel name is empty.
+    #[error("gridded_static_channels entry {label:?} has an empty name at index {index}")]
+    EmptyGriddedStaticChannelName {
+        /// The grid label containing the empty name.
+        label: String,
+        /// The zero-based consumer channel index of the empty name.
+        index: usize,
+    },
+
+    /// Fires at the manifest boundary when one grid label repeats a channel name.
+    #[error("gridded_static_channels entry {label:?} repeats channel name {name:?}")]
+    DuplicateGriddedStaticChannelName {
+        /// The grid label containing the repeated name.
+        label: String,
+        /// The channel name that occurred more than once under the label.
+        name: String,
+    },
+
+    /// Fires at the manifest boundary when `gridded_static_channels` is not an
+    /// object, a label value is not an array, or an array element is not a string.
+    #[error("invalid gridded_static_channels shape: {detail}")]
+    InvalidGriddedStaticChannelsShape {
+        /// Context identifying the expected shape and offending label/index.
+        detail: String,
+    },
 
     /// Fires when a declared dtype string does not map to a supported [`Dtype`]
     /// (spec §2). HDX rejects unknown dtypes rather than carrying them, so the
@@ -298,7 +339,8 @@ pub enum DescribeError {
     /// absent, is a directory, or the read fails with a filesystem/permissions error
     /// (spec §0 — the manifest is read **first**, before any other file). This is
     /// **distinct from a malformed manifest**: a file that *is* read but whose
-    /// contents are not a conformant six-field manifest surfaces through
+    /// contents are not a conformant manifest with six required floor fields and
+    /// the optional known channel declaration surfaces through
     /// [`DescribeError::Manifest`] instead. The variant stays **inert/agnostic**
     /// (spec §1): it carries only the offending path and an opaque detail string from
     /// the underlying filesystem error — no domain field, no provenance.
@@ -312,7 +354,7 @@ pub enum DescribeError {
     },
 
     /// Fires when the `manifest.json` file was read but its contents are not a
-    /// conformant six-field manifest — most importantly the §0/§14 M2 **hard version
+    /// conformant manifest contract — most importantly the §0/§14 M2 **hard version
     /// cut** ([`CoreError::UnknownFormatVersion`]), which `describe` evaluates
     /// **before** any discovery (spec §0 entry discipline). Wraps the inner
     /// [`CoreError`] unchanged so the boundary-parse failure surfaces verbatim (a
@@ -374,7 +416,8 @@ pub enum ValidateError {
     /// absent, is a directory, or the read fails with a filesystem/permissions error
     /// (spec §0 — the manifest is read **first**, before any other file). This is
     /// **distinct from a malformed manifest**: a file that *is* read but whose contents
-    /// are not a conformant six-field manifest surfaces through
+    /// are not a conformant manifest with six required floor fields and the optional
+    /// known channel declaration surfaces through
     /// [`ValidateError::Manifest`] instead. The variant stays **inert/agnostic**
     /// (spec §1): it carries only the offending path and an opaque detail string from
     /// the underlying filesystem error — no domain field, no provenance.
@@ -388,12 +431,17 @@ pub enum ValidateError {
     },
 
     /// Fires when the `manifest.json` file was read but its contents are not a
-    /// conformant six-field manifest — most importantly the §0/§14 M2 **hard version
+    /// conformant manifest contract — most importantly the §0/§14 M2 **hard version
     /// cut** ([`CoreError::UnknownFormatVersion`]), which `validate` evaluates
     /// **before** any discovery (spec §0 entry discipline). Also wraps the M3/M4
     /// boundary failures ([`CoreError::ExtraManifestField`],
     /// [`CoreError::MissingManifestField`], [`CoreError::InvalidTimestamp`],
-    /// [`CoreError::EmptyCrs`], [`CoreError::EmptyCadence`]) — the manifest parser
+    /// [`CoreError::EmptyCrs`], [`CoreError::EmptyCadence`],
+    /// [`CoreError::EmptyGriddedStaticChannelLabel`],
+    /// [`CoreError::EmptyGriddedStaticChannelList`],
+    /// [`CoreError::EmptyGriddedStaticChannelName`],
+    /// [`CoreError::DuplicateGriddedStaticChannelName`], and
+    /// [`CoreError::InvalidGriddedStaticChannelsShape`]) — the manifest parser
     /// rejects all of these at the boundary, so M3/M4 are recorded as `ran:pass` once
     /// the manifest parses and surface here as an `Err` when it does not. Wraps the
     /// inner [`CoreError`] unchanged so a caller can match

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/manifest.schema.json",
   "title": "HDX manifest",
-  "description": "The irreducible six-field floor of an HDX dataset (spec §11). Mirrors the S4 boundary parser: exactly the six non-derivable fields, nothing more (additionalProperties:false rejects a 7th field, M3 too-many) and nothing less (required lists all six, M3 too-few). Adding any derivable field is a conformance bug, so no seventh property is permitted.",
+  "description": "The HDX manifest contract (spec §11): six required non-derivable floor properties plus one optional known gridded-static consumer channel ABI declaration. additionalProperties:false rejects every unknown or derivable property (M3 too-many), while required lists all six floor properties (M3 too-few).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -46,6 +46,22 @@
       "description": "Dataset-wide cadence/calendar convention; non-empty (spec §14 M4).",
       "type": "string",
       "minLength": 1
+    },
+    "gridded_static_channels": {
+      "description": "Optional per-grid consumer channel ABI. Keys are non-empty grid labels; each value is a non-empty ordered array of unique non-empty field names. Array order is consumer order, not physical TIFF sample order; absence is an empty legacy declaration.",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

@@ -1,11 +1,9 @@
-//! The manifest boundary parse — raw JSON into the six-field floor (spec §11).
+//! Parse raw manifest JSON into the declared HDX manifest contract (spec §11).
 //!
-//! [`Manifest`] is the *irreducible floor*: exactly the six non-derivable fields
-//! of spec §11 — `format_version`, `name`, `created_at`, `producer_version`,
-//! `crs`, `cadence` — and nothing else. Adding any derivable field (a content
-//! hash, a data version, a field catalog, a basin list) is a conformance bug, so
-//! it is unrepresentable here: the struct has exactly six private fields and the
-//! parser rejects any extra key.
+//! [`Manifest`] contains the six required, non-derivable floor fields of spec
+//! §11 plus the one optional, known `gridded_static_channels` consumer ABI
+//! declaration. Adding any other field (a content hash, a data version, a field
+//! catalog, a basin list) is a conformance bug, so the parser rejects it.
 //!
 //! [`Manifest::from_json`] is the only constructor and is the system boundary
 //! (parse, don't validate, architecture §3): it turns a raw JSON string into a
@@ -15,22 +13,21 @@
 //! | Check | Enforcement |
 //! |---|---|
 //! | M1 | valid JSON; `format_version` is read **first** |
-//! | M2 | `format_version == "0.1"`; any other value is a hard cut (rejected) |
-//! | M3 | exactly the six floor fields — a 7th field *and* a missing field both reject |
+//! | M2 | `format_version` is `"0.1"` or `"0.2"`; any other value is a hard cut (rejected) |
+//! | M3 | all six floor fields; the optional channel declaration when present; every unknown field and every missing floor field reject |
 //! | M4 | `created_at` is strict RFC 3339; `crs`/`cadence` are non-empty |
 //!
 //! The cross-file checks (M5 `crs` matches file georeferencing, M6 `cadence`
 //! matches the realized time axes) are **not** done here — they need dataset IO.
 //!
 //! Parsing proceeds in two stages. First the JSON is deserialized into a private
-//! raw DTO whose `#[serde(deny_unknown_fields)]` + required `String` fields catch
-//! *both* directions of M3 in one pass (a missing field and an unknown field are
-//! distinct serde errors, mapped to [`CoreError::MissingManifestField`] and
-//! [`CoreError::ExtraManifestField`]). Only after the DTO is in hand are the
-//! field *values* interpreted — and `format_version` is hard-cut **before** any
-//! other value is touched (M1/M2 ordering), so an unknown version wins over an
-//! also-broken `crs`/`cadence`/`created_at`.
+//! raw DTO whose `#[serde(deny_unknown_fields)]` plus required floor fields catch
+//! both directions of M3 (a missing field and an unknown field are distinct serde
+//! errors). Only after the DTO is in hand are values interpreted. The format
+//! version is hard-cut **before** every other value, including the optional
+//! channel declaration, so an unknown version wins over malformed channel data.
 
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -40,15 +37,17 @@ use tracing::{debug, instrument, warn};
 
 use crate::error::CoreError;
 use crate::format_version::FormatVersion;
-use crate::newtypes::{Cadence, Crs, DatasetName, ProducerVersion};
+use crate::newtypes::{Cadence, Crs, DatasetName, FieldName, GridLabel, ProducerVersion};
 
-/// The raw, all-string DTO the manifest JSON deserializes into.
+/// The raw DTO the manifest JSON deserializes into.
 ///
 /// This is the serde shape, deliberately separate from the domain [`Manifest`]:
 /// keeping it raw lets the value-level checks (the hard version cut, RFC 3339,
 /// non-empty strings) run *after* the structural checks, in the order spec §14
-/// requires. `deny_unknown_fields` rejects a 7th field (M3 too-many); every field
-/// being required (no `Option`) makes a missing field a serde error (M3 too-few).
+/// requires. `deny_unknown_fields` rejects every property other than the six
+/// required floor fields and the optional known declaration (M3 too-many); each
+/// floor field remains required (M3 too-few). The optional value stays raw so
+/// malformed declaration shapes receive dedicated typed errors after the hard cut.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestDto {
@@ -58,16 +57,17 @@ struct ManifestDto {
     producer_version: String,
     crs: String,
     cadence: String,
+    #[serde(default, deserialize_with = "deserialize_present_json_value")]
+    gridded_static_channels: Option<serde_json::Value>,
 }
 
-/// The manifest — the irreducible floor of an HDX dataset (spec §11).
+/// The non-derivable declarations of an HDX dataset (spec §11).
 ///
-/// Exactly the six floor fields, all private; read them through the accessors.
-/// Construct one only via [`Manifest::from_json`], which validates at the
-/// boundary so every constructed value is conformant with the manifest-local
-/// §14 checks (M1–M4). HDX is inert and agnostic (spec §1): there is no seventh,
-/// derivable field — adding one would let a declared value drift from the data
-/// the floor exists to keep underivable.
+/// The six floor fields and the optional gridded-static consumer channel ABI are
+/// private; read them through the accessors. Construct one only via
+/// [`Manifest::from_json`], which validates at the boundary so every constructed
+/// value is conformant with the manifest-local §14 checks (M1–M4). Unknown and
+/// derivable properties remain forbidden because they could drift from the data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     format_version: FormatVersion,
@@ -76,23 +76,29 @@ pub struct Manifest {
     producer_version: ProducerVersion,
     crs: Crs,
     cadence: Cadence,
+    gridded_static_channels: HashMap<GridLabel, Vec<FieldName>>,
 }
 
 impl Manifest {
     /// Parses a raw `manifest.json` string into a [`Manifest`] at the boundary.
     ///
     /// The parse is ordered to honor spec §0/§14: `format_version` is read and
-    /// hard-cut **before** any other field value is interpreted (M1/M2), the six
-    /// floor fields are enforced exactly (M3, both directions), and `created_at`
-    /// is required to be strict RFC 3339 with `crs`/`cadence` non-empty (M4).
+    /// hard-cut **before** any other field value is interpreted (M1/M2), all six
+    /// floor fields and only the optional known declaration are admitted (M3),
+    /// and `created_at` is strict RFC 3339 with `crs`/`cadence` non-empty (M4).
     ///
     /// # Errors
     ///
     /// | Condition | Error |
     /// |---|---|
     /// | a floor field is absent | [`CoreError::MissingManifestField`] (M3 too-few) |
-    /// | a key beyond the six floor fields is present | [`CoreError::ExtraManifestField`] (M3 too-many) |
-    /// | `format_version` is not `"0.1"` | [`CoreError::UnknownFormatVersion`] (M2 hard cut) — checked first |
+    /// | an unknown key beyond the six floor fields and optional known declaration is present | [`CoreError::ExtraManifestField`] (M3 too-many) |
+    /// | `format_version` is neither `"0.1"` nor `"0.2"` | [`CoreError::UnknownFormatVersion`] (M2 hard cut) — checked first |
+    /// | `gridded_static_channels` has a non-object, non-array member, or non-string element | [`CoreError::InvalidGriddedStaticChannelsShape`] |
+    /// | a channel label is empty | [`CoreError::EmptyGriddedStaticChannelLabel`] |
+    /// | a channel list is empty | [`CoreError::EmptyGriddedStaticChannelList`] |
+    /// | a channel name is empty | [`CoreError::EmptyGriddedStaticChannelName`] |
+    /// | a channel name repeats within one label | [`CoreError::DuplicateGriddedStaticChannelName`] |
     /// | `created_at` is not strict RFC 3339 | [`CoreError::InvalidTimestamp`] (M4) |
     /// | `crs` is empty | [`CoreError::EmptyCrs`] (M4) |
     /// | `cadence` is empty | [`CoreError::EmptyCadence`] (M4) |
@@ -110,7 +116,10 @@ impl Manifest {
         // version is rejected before any other field value is interpreted.
         let format_version = FormatVersion::from_str(&dto.format_version)?;
 
-        // Stage 2b — value-level conformance for the remaining fields (M4).
+        // Stage 2b — the optional consumer ABI, after the hard version cut.
+        let gridded_static_channels = parse_gridded_static_channels(dto.gridded_static_channels)?;
+
+        // Stage 2c — value-level conformance for the remaining fields (M4).
         let created_at = OffsetDateTime::parse(&dto.created_at, &Rfc3339).map_err(|_| {
             warn!(value = %dto.created_at, "rejecting non-RFC-3339 created_at");
             CoreError::InvalidTimestamp {
@@ -135,10 +144,11 @@ impl Manifest {
             producer_version: ProducerVersion::new(dto.producer_version),
             crs: Crs::new(dto.crs),
             cadence: Cadence::new(dto.cadence),
+            gridded_static_channels,
         })
     }
 
-    /// Returns the dataset's `format_version` (always [`FormatVersion::V0_1`]).
+    /// Returns the dataset's supported `format_version`.
     pub fn format_version(&self) -> FormatVersion {
         self.format_version
     }
@@ -163,13 +173,94 @@ impl Manifest {
     pub fn cadence(&self) -> &Cadence {
         &self.cadence
     }
+
+    /// Returns the declared per-grid consumer channel ABI.
+    pub fn gridded_static_channels(&self) -> &HashMap<GridLabel, Vec<FieldName>> {
+        &self.gridded_static_channels
+    }
+}
+
+/// Preserves a present JSON `null` so shape validation can reject it as non-object.
+fn deserialize_present_json_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+/// Parses the optional raw channel declaration into ordered domain names.
+fn parse_gridded_static_channels(
+    value: Option<serde_json::Value>,
+) -> Result<HashMap<GridLabel, Vec<FieldName>>, CoreError> {
+    let Some(value) = value else {
+        return Ok(HashMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| CoreError::InvalidGriddedStaticChannelsShape {
+            detail: "expected gridded_static_channels to be an object".to_string(),
+        })?;
+
+    object
+        .iter()
+        .map(|(label, value)| {
+            if label.is_empty() {
+                return Err(CoreError::EmptyGriddedStaticChannelLabel);
+            }
+            let array =
+                value
+                    .as_array()
+                    .ok_or_else(|| CoreError::InvalidGriddedStaticChannelsShape {
+                        detail: format!(
+                            "expected channel declaration for label {label:?} to be an array"
+                        ),
+                    })?;
+            if array.is_empty() {
+                return Err(CoreError::EmptyGriddedStaticChannelList {
+                    label: label.clone(),
+                });
+            }
+
+            let mut seen = HashSet::new();
+            let names = array
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let name = value.as_str().ok_or_else(|| {
+                        CoreError::InvalidGriddedStaticChannelsShape {
+                            detail: format!(
+                                "expected channel at label {label:?}, index {index} to be a string"
+                            ),
+                        }
+                    })?;
+                    if name.is_empty() {
+                        return Err(CoreError::EmptyGriddedStaticChannelName {
+                            label: label.clone(),
+                            index,
+                        });
+                    }
+                    if !seen.insert(name.to_string()) {
+                        return Err(CoreError::DuplicateGriddedStaticChannelName {
+                            label: label.clone(),
+                            name: name.to_string(),
+                        });
+                    }
+                    Ok(FieldName::new(name))
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?;
+
+            Ok((GridLabel::new(label), names))
+        })
+        .collect()
 }
 
 /// Maps a [`serde_json`] deserialization error onto a structural [`CoreError`].
 ///
-/// The two M3 cases are distinguished by the serde error category: a missing
-/// floor field becomes [`CoreError::MissingManifestField`] and an unknown key
-/// becomes [`CoreError::ExtraManifestField`], with the offending field name
+/// The two structural M3 cases are distinguished by the serde error category: a
+/// missing floor field becomes [`CoreError::MissingManifestField`] and an unknown
+/// property becomes [`CoreError::ExtraManifestField`], with the offending name
 /// extracted from the backtick-delimited segment of the serde message. Any other
 /// deserialization failure (a JSON syntax error, a wrong value type) is surfaced
 /// as [`CoreError::ExtraManifestField`] only when serde reports an unknown field;
@@ -238,6 +329,7 @@ mod tests {
         // `created_at` parsed to the expected instant (Z form → UTC).
         assert_eq!(manifest.created_at().year(), 2026);
         assert_eq!(manifest.created_at().unix_timestamp(), 1_780_272_000);
+        assert!(manifest.gridded_static_channels().is_empty());
     }
 
     #[test]
@@ -247,9 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn seventh_field_is_rejected_as_extra_m3_too_many() {
-        // The six floor fields plus a derivable `content_hash` (spec §0/§11
-        // forbid it) — M3 "too-many" direction.
+    fn unknown_derivable_field_is_rejected_as_extra_m3_too_many() {
+        // The six floor fields plus an unknown derivable `content_hash`
+        // (spec §0/§11 forbid it) — M3 "too-many" direction.
         let json = r#"{
             "format_version": "0.1",
             "name": "ds",
@@ -304,6 +396,23 @@ mod tests {
                     "the version error must win over the empty crs"
                 );
             }
+            other => panic!("expected UnknownFormatVersion (read first), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_format_version_wins_before_malformed_channels_are_validated() {
+        let json = r#"{
+            "format_version": "9.9",
+            "name": "ds",
+            "created_at": "2026-06-01T00:00:00Z",
+            "producer_version": "tool/1.0",
+            "crs": "EPSG:4326",
+            "cadence": "daily",
+            "gridded_static_channels": []
+        }"#;
+        match Manifest::from_json(json) {
+            Err(CoreError::UnknownFormatVersion { found }) => assert_eq!(found, "9.9"),
             other => panic!("expected UnknownFormatVersion (read first), got {other:?}"),
         }
     }
