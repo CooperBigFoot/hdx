@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/describe.schema.json",
   "title": "HDX describe output",
-  "description": "The full, facts-only self-description the `describe` verb emits (spec §10, R4). Mirrors the describe-local DTO 1:1: exactly {manifest, basins, fields, grids, time_extents, delineations}, additionalProperties:false at every level. It reports FACTS ONLY — there is no `conformant` key, no §14 check-outcome list, anywhere in this shape (that verdict is `validate`, a later milestone, spec §10). The manifest sub-object is EXACTLY the six floor fields (spec §11): no transform/role/semantic/provenance/derivable field is permitted (additionalProperties:false catches a 7th). Every `fields` entry — including the companion-mask `{field}_was_filled` and the `{source}_{variable}` patterns — carries the SAME ordinary key set {name, quadrant, dtype, units, grid_label}; the schema gives those name patterns no special key (spec §2). Discovery gaps are reported as facts: a basin with no extent has `time_extent: null`, an absent outlines rollup yields an empty `delineations` array. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
+  "description": "The full, facts-only self-description the `describe` verb emits (spec §10, R4). Mirrors the describe-local DTO 1:1: exactly {manifest, basins, fields, grids, time_extents, delineations}, additionalProperties:false at every level. It reports FACTS ONLY — there is no `conformant` key, no §14 check-outcome list, anywhere in this shape (that verdict is `validate`, a later milestone, spec §10). The manifest sub-object is EXACTLY the six floor fields (spec §11): no transform/role/semantic/provenance/derivable field is permitted (additionalProperties:false catches a 7th). Every `fields` entry — including the companion-mask `{field}_was_filled` and the `{source}_{variable}` patterns — carries the SAME ordinary key set {name, quadrant, dtype, units, standard_name, grid_label}; the schema gives those name patterns no special key (spec §2). Discovery gaps are reported as facts: a basin with no extent has `time_extent: null`, an absent outlines rollup yields an empty `delineations` array. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -101,7 +101,7 @@
     },
     "field": {
       "title": "HDX field",
-      "description": "An ordinary field catalog entry — EXACTLY {name, quadrant, dtype, units, grid_label} (spec §2). additionalProperties:false forbids any name-pattern-derived key (no mask / companion / source / variable / belongs_to). `units` and `grid_label` are nullable (string | null): absent → JSON null. `grid_label` is present (non-null) iff the field is gridded.",
+      "description": "An ordinary field catalog entry — EXACTLY {name, quadrant, dtype, units, standard_name, grid_label} (spec §2). additionalProperties:false forbids any name-pattern-derived key (no mask / companion / source / variable / belongs_to). `units`, `standard_name`, and `grid_label` are nullable (string | null): absent → JSON null. `grid_label` is present (non-null) iff the field is gridded.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -109,6 +109,7 @@
         "quadrant",
         "dtype",
         "units",
+        "standard_name",
         "grid_label"
       ],
       "properties": {
@@ -133,6 +134,13 @@
         },
         "units": {
           "description": "The recorded units string, or null when absent (never invented).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "standard_name": {
+          "description": "The source variable's CF standard_name, or null when absent (never inferred).",
           "type": [
             "string",
             "null"

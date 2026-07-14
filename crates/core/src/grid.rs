@@ -326,6 +326,7 @@ mod tests {
             Quadrant::GriddedDynamic,
             Dtype::Bool,
             Units::none(),
+            None,
             Some(GridLabel::new("era5")),
         )
         .expect("gridded + Some(label) must construct");

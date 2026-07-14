@@ -116,9 +116,9 @@ SECOND_STATIC_LABELS: tuple[tuple[str, str, str], ...] = (
 # Two distinct gridded·dynamic labels (each a Zarr v3 store). Each carries its own
 # {source}_{variable} data field plus its ordinary {field}_was_filled companion
 # mask — so the catalog must union four dynamic fields across the two families.
-SECOND_DYNAMIC_LABELS: tuple[tuple[str, str, str], ...] = (
-    ("era5", "era5_precipitation_mm_d", "mm_d"),
-    ("merit", "merit_flow_accumulation_m", "m"),
+SECOND_DYNAMIC_LABELS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("era5", "era5_precipitation_mm_d", "mm_d", "precipitation_amount"),
+    ("merit", "merit_flow_accumulation_m", "m", None),
 )
 
 COVERAGE_POLYGON = (
@@ -451,6 +451,7 @@ def write_gridded_dynamic(
     times: list[dt.datetime],
     label: str = GRID_LABEL,
     units: str = "mm",
+    standard_name: str | None = "precipitation_amount",
 ) -> Path:
     """Write one basin's ``gridded_dynamic`` Zarr v3 store and return its path.
 
@@ -551,11 +552,10 @@ def write_gridded_dynamic(
         var.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
 
     # The {source}_{variable} data field — ordinary, no special handling (§2).
-    _write_var(
-        GRIDDED_DYNAMIC_FIELD,
-        precip,
-        {"units": units, "grid_mapping": "crs", "standard_name": "precipitation_amount"},
-    )
+    data_attrs: dict[str, object] = {"units": units, "grid_mapping": "crs"}
+    if standard_name is not None:
+        data_attrs["standard_name"] = standard_name
+    _write_var(GRIDDED_DYNAMIC_FIELD, precip, data_attrs)
     # The {field}_was_filled companion mask — an ordinary variable, no magic.
     _write_var(
         COMPANION_MASK_FIELD,
@@ -713,6 +713,7 @@ def write_gridded_dynamic_field(
     label: str,
     field_name: str,
     units: str,
+    standard_name: str | None,
 ) -> Path:
     """Write a ``gridded_dynamic`` Zarr v3 store with data-var ``field_name``.
 
@@ -799,11 +800,10 @@ def write_gridded_dynamic_field(
             var.attrs[key] = val
         var.attrs["_ARRAY_DIMENSIONS"] = ["time", "lat", "lon"]
 
-    _write_var(
-        field_name,
-        data,
-        {"units": units, "grid_mapping": "crs", "standard_name": "precipitation_amount"},
-    )
+    data_attrs: dict[str, object] = {"units": units, "grid_mapping": "crs"}
+    if standard_name is not None:
+        data_attrs["standard_name"] = standard_name
+    _write_var(field_name, data, data_attrs)
     _write_var(
         companion,
         was_filled,
@@ -854,10 +854,16 @@ def write_multi_family_grids_for_basin(
                 coverage if field_name.endswith("_coverage_frac") else None,
             )
         )
-    for label, field_name, units in SECOND_DYNAMIC_LABELS:
+    for label, field_name, units, standard_name in SECOND_DYNAMIC_LABELS:
         written.append(
             write_gridded_dynamic_field(
-                basin_dir_path, geom, times, label, field_name, units
+                basin_dir_path,
+                geom,
+                times,
+                label,
+                field_name,
+                units,
+                standard_name,
             )
         )
     return written

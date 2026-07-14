@@ -724,7 +724,7 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
                 observed_units == units,
                 f"{path}: units {observed_units!r} != {units!r}",
             )
-        for label, field_name, units in SECOND_DYNAMIC_LABELS:
+        for label, field_name, units, standard_name in SECOND_DYNAMIC_LABELS:
             store = zarr_path(bdir, label)
             _require(store.exists(), f"{store}: missing dynamic label {label!r} Zarr")
             group = zarr.open_group(str(store), mode="r")
@@ -743,11 +743,17 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
                 f"{store}: {field_name} units "
                 f"{group[field_name].attrs.get('units')!r} != {units!r}",
             )
+            _require(
+                group[field_name].attrs.get("standard_name") == standard_name,
+                f"{store}: {field_name} standard_name "
+                f"{group[field_name].attrs.get('standard_name')!r} "
+                f"!= {standard_name!r}",
+            )
         log.info(
             "multi-family labels OK basin=%s static=%s dynamic=%s",
             basin.basin_id,
             [lbl for lbl, _, _ in SECOND_STATIC_LABELS],
-            [lbl for lbl, _, _ in SECOND_DYNAMIC_LABELS],
+            [lbl for lbl, _, _, _ in SECOND_DYNAMIC_LABELS],
         )
 
 
