@@ -514,11 +514,12 @@ impl<'a> ManifestDto<'a> {
 }
 
 /// The serializable field shape — **exactly** `{name, quadrant, dtype, units,
-/// grid_label}` (spec §2).
+/// standard_name, grid_label}` (spec §2).
 ///
-/// Every field carries this same key set, regardless of name. `units` and `grid_label`
-/// are `string | null` (absent → JSON `null`). The quadrant is the stable explicit 2×2
-/// (`temporal` + `shape`), so a consumer reads both axes without re-deriving them.
+/// Every field carries this same key set, regardless of name. `units`, `standard_name`,
+/// and `grid_label` are `string | null` (absent → JSON `null`). The quadrant is the
+/// stable explicit 2×2 (`temporal` + `shape`), so a consumer reads both axes without
+/// re-deriving them.
 #[derive(Debug, Serialize)]
 struct FieldDto<'a> {
     /// Source: `Field::name` (the verbatim producer string).
@@ -529,6 +530,8 @@ struct FieldDto<'a> {
     dtype: &'a str,
     /// Source: `Field::units` (`string | null` — never invented).
     units: Option<&'a str>,
+    /// Source: the Zarr data variable's CF `standard_name`, or null when absent.
+    standard_name: Option<&'a str>,
     /// Source: `Field::grid_label` (`string | null`; present iff the field is gridded).
     grid_label: Option<&'a str>,
 }
@@ -541,6 +544,7 @@ impl<'a> FieldDto<'a> {
             quadrant: QuadrantDto::from_quadrant(field.quadrant()),
             dtype: field.dtype().as_str(),
             units: field.units().as_deref(),
+            standard_name: field.standard_name(),
             grid_label: field.grid_label().map(crate::newtypes::GridLabel::as_str),
         }
     }
@@ -933,16 +937,23 @@ mod tests {
             .and_then(Value::as_array)
             .expect("fields array present");
 
-        let expected: BTreeSet<String> = ["name", "quadrant", "dtype", "units", "grid_label"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let expected: BTreeSet<String> = [
+            "name",
+            "quadrant",
+            "dtype",
+            "units",
+            "standard_name",
+            "grid_label",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
         for field in fields {
             assert_eq!(
                 object_keys(field),
                 expected,
-                "field = exactly {{name, quadrant, dtype, units, grid_label}}"
+                "field = exactly {{name, quadrant, dtype, units, standard_name, grid_label}}"
             );
         }
     }
@@ -962,10 +973,17 @@ mod tests {
             .and_then(Value::as_array)
             .expect("fields array");
 
-        let ordinary_keys: BTreeSet<String> = ["name", "quadrant", "dtype", "units", "grid_label"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let ordinary_keys: BTreeSet<String> = [
+            "name",
+            "quadrant",
+            "dtype",
+            "units",
+            "standard_name",
+            "grid_label",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
         for target in ["era5_precipitation", "era5_precipitation_was_filled"] {
             let entry = fields
@@ -1464,10 +1482,17 @@ mod tests {
             .and_then(Value::as_array)
             .expect("golden fields array");
 
-        let ordinary_keys: BTreeSet<String> = ["name", "quadrant", "dtype", "units", "grid_label"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let ordinary_keys: BTreeSet<String> = [
+            "name",
+            "quadrant",
+            "dtype",
+            "units",
+            "standard_name",
+            "grid_label",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
         // Each of the forbidden, name-pattern-derived keys must be absent everywhere.
         let forbidden = ["mask", "companion", "source", "variable", "belongs_to"];
@@ -1628,6 +1653,26 @@ mod tests {
             &describe_json(&fixture).expect("describe_json succeeds on the two-family fixture"),
         )
         .expect("describe output is valid JSON");
+        let standard_name_for = |name: &str| {
+            produced["fields"]
+                .as_array()
+                .expect("fields array")
+                .iter()
+                .find(|field| field["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("field {name:?} present"))
+                .get("standard_name")
+                .unwrap_or_else(|| panic!("field {name:?} carries standard_name"))
+        };
+        assert_eq!(
+            standard_name_for("era5_precipitation_mm_d").as_str(),
+            Some("precipitation_amount"),
+            "ERA5 precipitation retains its CF standard_name"
+        );
+        assert_eq!(
+            standard_name_for("merit_flow_accumulation_m"),
+            &Value::Null,
+            "MERIT flow accumulation must not carry the precipitation_amount CF label"
+        );
         let golden = multi_describe_golden();
         assert_eq!(
             produced, golden,

@@ -390,6 +390,7 @@ fn catalog_fields(schema: &Schema, quadrant: Quadrant) -> Result<Vec<Field>, Cor
                 dtype,
                 Units::none(),
                 None,
+                None,
             )
         })
         .collect()

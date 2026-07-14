@@ -712,6 +712,7 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
                 Quadrant::GriddedStatic,
                 dtype,
                 Units::new(metadata.units),
+                None,
                 Some(grid_label.clone()),
             )
         })

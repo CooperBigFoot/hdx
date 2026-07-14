@@ -85,6 +85,8 @@ const COORD_LON: &str = "lon";
 
 /// The CF attribute on a data variable naming its `grid_mapping` target (spec §7.3).
 const GRID_MAPPING_ATTR: &str = "grid_mapping";
+/// The optional CF standard-name attribute carried by a data variable.
+const STANDARD_NAME_ATTR: &str = "standard_name";
 /// The CF attribute carrying a variable's units (spec §2).
 const UNITS_ATTR: &str = "units";
 
@@ -562,11 +564,13 @@ pub fn read_zarr_grid(
 
         let dtype = zarr_dtype(meta.data_type.name())?;
         let units = Units::new(string_attr(meta, UNITS_ATTR));
+        let standard_name = string_attr(meta, STANDARD_NAME_ATTR);
         let field = Field::new(
             FieldName::new(name.as_str()),
             Quadrant::GriddedDynamic,
             dtype,
             units,
+            standard_name,
             Some(grid_label.clone()),
         )?;
         fields.push(field);
