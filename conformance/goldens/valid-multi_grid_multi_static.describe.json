@@ -21,6 +21,7 @@
       },
       "dtype": "f64",
       "units": null,
+      "standard_name": null,
       "grid_label": null
     },
     {
@@ -31,6 +32,7 @@
       },
       "dtype": "f64",
       "units": null,
+      "standard_name": null,
       "grid_label": null
     },
     {
@@ -41,6 +43,7 @@
       },
       "dtype": "f32",
       "units": "m",
+      "standard_name": null,
       "grid_label": "dem"
     },
     {
@@ -51,6 +54,7 @@
       },
       "dtype": "f32",
       "units": "frac",
+      "standard_name": null,
       "grid_label": "era5"
     },
     {
@@ -61,6 +65,7 @@
       },
       "dtype": "f32",
       "units": "m",
+      "standard_name": null,
       "grid_label": "landcover"
     },
     {
@@ -71,6 +76,7 @@
       },
       "dtype": "f32",
       "units": "frac",
+      "standard_name": null,
       "grid_label": "merit"
     },
     {
@@ -81,6 +87,7 @@
       },
       "dtype": "f32",
       "units": "mm_d",
+      "standard_name": "precipitation_amount",
       "grid_label": "era5"
     },
     {
@@ -91,6 +98,7 @@
       },
       "dtype": "bool",
       "units": "1",
+      "standard_name": null,
       "grid_label": "era5"
     },
     {
@@ -101,6 +109,7 @@
       },
       "dtype": "f32",
       "units": "m",
+      "standard_name": null,
       "grid_label": "merit"
     },
     {
@@ -111,6 +120,7 @@
       },
       "dtype": "bool",
       "units": "1",
+      "standard_name": null,
       "grid_label": "merit"
     }
   ],

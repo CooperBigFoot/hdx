@@ -210,10 +210,10 @@ impl Units {
 
 /// A single HDX field — the unit of the contract (spec §2, architecture §3.3).
 ///
-/// A field is `name` + `quadrant` + `dtype` + `units` + (for gridded fields) a
-/// `grid_label`. Fields are private; access them via the getters. Construction
-/// goes through [`Field::new`], which enforces the structural invariant
-/// `grid_label.is_some()` ⇔ `Shape::Gridded`.
+/// A field is `name` + `quadrant` + `dtype` + `units` + optional source
+/// `standard_name` metadata + (for gridded fields) a `grid_label`. Fields are
+/// private; access them via the getters. Construction goes through [`Field::new`],
+/// which enforces the structural invariant `grid_label.is_some()` ⇔ `Shape::Gridded`.
 ///
 /// HDX is inert and agnostic (spec §1): a field carries none of transform, role,
 /// semantic type, or provenance.
@@ -223,6 +223,7 @@ pub struct Field {
     quadrant: Quadrant,
     dtype: Dtype,
     units: Units,
+    standard_name: Option<String>,
     grid_label: Option<GridLabel>,
 }
 
@@ -246,6 +247,7 @@ impl Field {
         quadrant: Quadrant,
         dtype: Dtype,
         units: Units,
+        standard_name: Option<String>,
         grid_label: Option<GridLabel>,
     ) -> Result<Self, CoreError> {
         match (quadrant.shape(), grid_label.is_some()) {
@@ -260,6 +262,7 @@ impl Field {
                     quadrant,
                     dtype,
                     units,
+                    standard_name,
                     grid_label,
                 })
             }
@@ -291,6 +294,10 @@ impl Field {
 
     pub fn units(&self) -> &Units {
         &self.units
+    }
+
+    pub fn standard_name(&self) -> Option<&str> {
+        self.standard_name.as_deref()
     }
 
     /// Borrows the field's grid label, present iff the field is gridded.
@@ -394,6 +401,7 @@ mod tests {
             Quadrant::GriddedDynamic,
             Dtype::F32,
             Units::new(Some("mm")),
+            None,
             Some(GridLabel::new("era5")),
         )
         .expect("gridded + Some(label) must construct");
@@ -408,6 +416,7 @@ mod tests {
             Quadrant::GriddedStatic,
             Dtype::F32,
             Units::new(Some("m")),
+            None,
             None,
         ) {
             Err(CoreError::MismatchedGridLabel {
@@ -430,6 +439,7 @@ mod tests {
             Quadrant::ScalarStatic,
             Dtype::F64,
             Units::new(Some("km2")),
+            None,
             Some(GridLabel::new("era5")),
         ) {
             Err(CoreError::MismatchedGridLabel {
@@ -452,6 +462,7 @@ mod tests {
             Quadrant::ScalarDynamic,
             Dtype::F64,
             Units::none(),
+            None,
             None,
         )
         .expect("scalar + None must construct");

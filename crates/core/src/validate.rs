@@ -1655,6 +1655,7 @@ mod tests {
             dtype,
             Units::none(),
             None,
+            None,
         )
         .expect("scalar field constructs")
     }
@@ -1666,6 +1667,7 @@ mod tests {
             Quadrant::GriddedDynamic,
             dtype,
             Units::none(),
+            None,
             Some(GridLabel::new(label)),
         )
         .expect("gridded field constructs")
