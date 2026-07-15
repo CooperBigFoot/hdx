@@ -20,6 +20,10 @@ The invalids are derived, each pinning exactly one spec check (spec §14):
   manifest-only rewrite (one file differs).
 * ``invalid/missing-root-rollup/`` — copy the baseline, then **delete** one root
   rollup (``outlines.geoparquet``). Pins **L1** (root rollups exist, §4).
+* ``invalid/grid-resolution-mismatch/`` — copy the baseline, then change only
+  basin 0003's logical ``/crs.grid_resolution`` declaration from
+  ``[0.25, -0.25]`` to ``[0.5, -0.25]`` in its standalone and consolidated Zarr
+  metadata. This is a Bucket-A reader error with no golden and pins **G3**.
 
 The **Bucket-B** parquet/layout negatives (MS8-S3) each copy the baseline, then
 apply one surgical mutation that yields a clean ``conformant:false`` report with
@@ -134,6 +138,19 @@ EMPTY_CADENCE: str = ""
 # could have declared by mistake.
 CRS_MISMATCH_VALUE: str = "EPSG:3857"
 
+# The sole logical attribute mutation for the G3 reader-level negative. Zarr v3
+# serializes the same attribute in the standalone array metadata and the root
+# inline consolidated metadata, so both physical copies must move together.
+GRID_RESOLUTION_BASELINE: list[float] = [0.25, -0.25]
+GRID_RESOLUTION_MISMATCH: list[float] = [0.5, -0.25]
+GRID_RESOLUTION_STORE: str = "basin=0003/gridded_dynamic/era5.zarr"
+GRID_RESOLUTION_METADATA_FILES: frozenset[str] = frozenset(
+    {
+        f"{GRID_RESOLUTION_STORE}/crs/zarr.json",
+        f"{GRID_RESOLUTION_STORE}/zarr.json",
+    }
+)
+
 # --- Bucket-B scalar/identity/homogeneity/time/layout mutation targets (MS8-S3) -
 
 # The single basin every Bucket-B parquet/layout mutation surgically targets. The
@@ -232,6 +249,9 @@ class Invalid(Enum):
     RAGGED_FIELD_SCHEMA = "ragged-field-schema"
     NON_MONOTONIC_TIME = "non-monotonic-time"
     MISSING_GRIDDED_DYNAMIC_SUBTREE = "missing-gridded-dynamic-subtree"
+    # Bucket-A G3 reader error: a well-formed signed declaration disagrees with
+    # the unchanged CF longitude witnesses. Discovery fails; there is no golden.
+    GRID_RESOLUTION_MISMATCH = "grid-resolution-mismatch"
     # MS8-S2 georef/grid-label negatives. Each is a clean ``conformant:false``
     # report with exactly one §14 check ``ran:fail`` (every other check
     # pass-or-skip), derived by exactly one surgical mutation off the baseline:
@@ -295,13 +315,17 @@ class Invalid(Enum):
             return "T1"
         if self is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
             return "L2"
+        if self is Invalid.GRID_RESOLUTION_MISMATCH:
+            return "G3"
         if self is Invalid.CRS_MISMATCH:
             return "M5"
         if self is Invalid.MISALIGNED_SHARED_LABEL:
             return "G2"
         if self is Invalid.DIVERGENT_GRID_LABEL_SET:
             return "H2"
-        return "M6"
+        if self is Invalid.IRREGULAR_TIME_AXIS:
+            return "M6"
+        raise AssertionError(f"unhandled invalid fixture: {self!r}")
 
 
 def invalid_root(repo_root: Path, invalid: Invalid) -> Path:
@@ -559,6 +583,28 @@ def _mutate_missing_gridded_dynamic_subtree(target_root: Path) -> None:
     shutil.rmtree(subtree)
 
 
+def _mutate_grid_resolution_mismatch(target_root: Path) -> None:
+    """Change only basin 0003's logical ``/crs.grid_resolution`` attribute (G3).
+
+    The well-formed, correctly signed x resolution becomes ``0.5`` while every
+    longitude center remains on the baseline ``0.25`` step. Both Zarr v3 metadata
+    serializations are updated so the standalone and consolidated views agree.
+    """
+    store = target_root / GRID_RESOLUTION_STORE
+    standalone_path = store / "crs" / "zarr.json"
+    root_path = store / "zarr.json"
+
+    standalone = json.loads(standalone_path.read_text(encoding="utf-8"))
+    standalone["attributes"]["grid_resolution"] = GRID_RESOLUTION_MISMATCH
+    standalone_path.write_text(json.dumps(standalone, indent=2) + "\n", encoding="utf-8")
+
+    root = json.loads(root_path.read_text(encoding="utf-8"))
+    root["consolidated_metadata"]["metadata"]["crs"]["attributes"][
+        "grid_resolution"
+    ] = GRID_RESOLUTION_MISMATCH
+    root_path.write_text(json.dumps(root, indent=2) + "\n", encoding="utf-8")
+
+
 # --- MS8-S2 georef / grid-label mutations (M5 / G2 / H2) ----------------------
 
 
@@ -723,8 +769,12 @@ def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Pa
         _mutate_misaligned_shared_label(target_root)
     elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
         _mutate_divergent_grid_label_set(target_root)
-    else:
+    elif invalid is Invalid.GRID_RESOLUTION_MISMATCH:
+        _mutate_grid_resolution_mismatch(target_root)
+    elif invalid is Invalid.IRREGULAR_TIME_AXIS:
         _mutate_irregular_time_axis(target_root)
+    else:
+        raise AssertionError(f"unhandled invalid fixture: {invalid!r}")
 
     log.info(
         "derived invalid=%s pins=%s root=%s",

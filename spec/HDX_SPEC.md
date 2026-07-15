@@ -241,6 +241,14 @@ value, which applies to every band; per-band nodata values are **NOT PERMITTED**
    (explicit `lat`/`lon` coordinate arrays + `grid_mapping`/CRS); GeoTIFF
    **MUST** carry standard georeferencing tags. Units ride in the CF `units`
    attribute / TIFF band metadata.
+   Every dynamic Zarr scalar `/crs` grid-mapping array **MUST** carry a required
+   `grid_resolution` attribute. Its JSON value **MUST** be an array of exactly
+   two float64 numbers in signed degrees, ordered `[x_res, y_res]`, where
+   `x_res > 0` advances eastward and `y_res < 0` advances southward under the
+   HDX north-west cell-edge convention. `/crs.grid_resolution` is the
+   authoritative resolution source; the explicit CF `lon` and `lat`
+   center-coordinate arrays are a conformance-verified witness to that
+   declaration while retaining all CF georeferencing requirements.
 4. **One dataset-wide CRS** (recommend **EPSG:4326**), declared in the manifest
    and carried in the files, so cells from different fields share one coordinate
    space even at different resolutions.
@@ -490,7 +498,9 @@ requirements.)
   those descriptions and is independent of physical TIFF sample order.
 - G2 Each artifact is named after its grid label; a shared label across the
   static/dynamic subtrees implies (and MUST exhibit) cell-for-cell alignment.
-- G3 Zarr is CF-georeferenced (explicit `lat`/`lon` + `grid_mapping`). Each COG
+- G3 Zarr is CF-georeferenced (explicit `lat`/`lon` + `grid_mapping`), and each
+  dynamic Zarr `/crs` carries the authoritative signed two-float64
+  `grid_resolution` declaration. Each COG
   carries standard georeferencing tags and satisfies the §4 multiband contract:
   `SamplesPerPixel >= 1`, physical samples `0..N-1`,
   `PlanarConfiguration = 2`, exact indexed GDAL descriptions, one dtype per

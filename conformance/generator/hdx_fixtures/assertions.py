@@ -32,6 +32,7 @@ from hdx_fixtures.grids import (
     GRID_LABEL,
     GRIDDED_DYNAMIC_FIELD,
     GRIDDED_STATIC_FIELD,
+    GridGeometry,
     SECOND_DYNAMIC_LABELS,
     SECOND_STATIC_LABELS,
     STACKED_STATIC_FIELDS,
@@ -47,6 +48,10 @@ from hdx_fixtures.mutate import (
     EMPTY_CADENCE,
     EXTRA_MANIFEST_FIELD,
     EXTRA_MANIFEST_FIELD_VALUE,
+    GRID_RESOLUTION_BASELINE,
+    GRID_RESOLUTION_METADATA_FILES,
+    GRID_RESOLUTION_MISMATCH,
+    GRID_RESOLUTION_STORE,
     H1_DIVERGENT_FIELD,
     I2_FOREIGN_BASIN_ID,
     IRREGULAR_TIME_DAY_OFFSETS,
@@ -89,6 +94,42 @@ def _read_table(path: Path) -> pa.Table:
     the self-assertions inspect the real on-disk schema (spec §3/§6).
     """
     return pq.read_table(path, partitioning=None)
+
+
+def _assert_grid_resolution(store: Path, geom: GridGeometry) -> None:
+    """Confirm the dynamic Zarr declares its signed resolution on ``/crs``."""
+    group = zarr.open_group(str(store), mode="r")
+    crs_attrs = dict(group["crs"].attrs)
+    _require(
+        "grid_resolution" in crs_attrs,
+        f"{store}: /crs missing required grid_resolution attribute",
+    )
+
+    authored = crs_attrs["grid_resolution"]
+    _require(
+        isinstance(authored, list) and len(authored) == 2,
+        f"{store}: /crs grid_resolution {authored!r} is not a two-element array",
+    )
+    resolution = np.asarray(authored, dtype="float64")
+    _require(
+        resolution.shape == (2,),
+        f"{store}: /crs grid_resolution shape {resolution.shape} != (2,)",
+    )
+    expected = np.asarray([float(geom.res), float(-geom.res)], dtype="float64")
+    _require(
+        np.array_equal(resolution, expected),
+        f"{store}: /crs grid_resolution {resolution.tolist()} "
+        f"!= source geometry {expected.tolist()}",
+    )
+    _require(
+        resolution[0] > 0.0 and resolution[1] < 0.0,
+        f"{store}: /crs grid_resolution {resolution.tolist()} must be "
+        "east-positive and south-negative",
+    )
+    _require(
+        "grid_resolution" not in group.attrs,
+        f"{store}: grid_resolution must be placed on /crs, not the root group",
+    )
 
 
 def assert_time_column_and_statistics(dataset_root: Path) -> None:
@@ -487,6 +528,7 @@ def assert_zarr_self_naming_and_cf_georef(dataset_root: Path) -> None:
     ``[T,Y,X]`` (spec §7.1); and the store is Zarr v3.
     """
     log = get_logger("assert.zarr")
+    geom = _basin_geometry()
     for basin in BASINS:
         store = zarr_path(basin_dir(dataset_root, basin.basin_id))
         group = zarr.open_group(str(store), mode="r")
@@ -500,6 +542,7 @@ def assert_zarr_self_naming_and_cf_georef(dataset_root: Path) -> None:
         for coord in ("time", "lat", "lon"):
             _require(coord in names, f"{store}: missing CF coordinate `{coord}` (G3)")
         _require("crs" in names, f"{store}: missing grid_mapping/CRS variable (G3)")
+        _assert_grid_resolution(store, geom)
 
         crs_attrs = dict(group["crs"].attrs)
         _require(
@@ -708,6 +751,7 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
     (the property the M1 describe golden proves complete).
     """
     log = get_logger("assert.multi")
+    geom = _basin_geometry()
     for basin in BASINS:
         bdir = basin_dir(dataset_root, basin.basin_id)
         for label, field_name, units in SECOND_STATIC_LABELS:
@@ -727,6 +771,7 @@ def assert_multi_family_labels_present(dataset_root: Path) -> None:
         for label, field_name, units, standard_name in SECOND_DYNAMIC_LABELS:
             store = zarr_path(bdir, label)
             _require(store.exists(), f"{store}: missing dynamic label {label!r} Zarr")
+            _assert_grid_resolution(store, geom)
             group = zarr.open_group(str(store), mode="r")
             names = set(group.array_keys())
             _require(
@@ -1361,6 +1406,11 @@ def assert_differs_in_exactly_one_way(
       path lies under it), adds nothing, and **no** shared file's bytes differ
       (pins **L2**).
 
+    * :attr:`Invalid.GRID_RESOLUTION_MISMATCH` — no files are added or removed;
+      only the standalone and inline-consolidated Zarr metadata serializations
+      differ, and both carry the same one-attribute change from ``[0.25, -0.25]``
+      to ``[0.5, -0.25]``. This is a Bucket-A **G3** reader error with no golden.
+
     The **MS8-S2** georef / grid-label negatives:
 
     * :attr:`Invalid.CRS_MISMATCH` — the trees have the **same file set**; exactly
@@ -1565,6 +1615,61 @@ def assert_differs_in_exactly_one_way(
             f"basin's gridded_dynamic subtree must leave the rest byte-identical "
             f"(LOW-2)",
         )
+    elif invalid is Invalid.GRID_RESOLUTION_MISMATCH:
+        _require(
+            not removed,
+            f"{invalid_root}: grid-resolution-mismatch removed files "
+            f"{sorted(removed)}; metadata mutation must preserve the file set",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            changed == set(GRID_RESOLUTION_METADATA_FILES),
+            f"{invalid_root}: changed files {sorted(changed)} != the two "
+            f"grid_resolution metadata serializations "
+            f"{sorted(GRID_RESOLUTION_METADATA_FILES)}",
+        )
+
+        standalone_rel = f"{GRID_RESOLUTION_STORE}/crs/zarr.json"
+        root_rel = f"{GRID_RESOLUTION_STORE}/zarr.json"
+        for rel, attr_path in [
+            (standalone_rel, ("attributes", "grid_resolution")),
+            (
+                root_rel,
+                (
+                    "consolidated_metadata",
+                    "metadata",
+                    "crs",
+                    "attributes",
+                    "grid_resolution",
+                ),
+            ),
+        ]:
+            base_json = json.loads((baseline_root / rel).read_text(encoding="utf-8"))
+            inv_json = json.loads((invalid_root / rel).read_text(encoding="utf-8"))
+
+            base_parent = base_json
+            inv_parent = inv_json
+            for key in attr_path[:-1]:
+                base_parent = base_parent[key]
+                inv_parent = inv_parent[key]
+            attr = attr_path[-1]
+            _require(
+                base_parent[attr] == GRID_RESOLUTION_BASELINE,
+                f"{baseline_root / rel}: baseline grid_resolution "
+                f"{base_parent[attr]!r} != {GRID_RESOLUTION_BASELINE!r}",
+            )
+            _require(
+                inv_parent[attr] == GRID_RESOLUTION_MISMATCH,
+                f"{invalid_root / rel}: mutated grid_resolution "
+                f"{inv_parent[attr]!r} != {GRID_RESOLUTION_MISMATCH!r}",
+            )
+            del base_parent[attr]
+            del inv_parent[attr]
+            _require(
+                base_json == inv_json,
+                f"{invalid_root / rel}: metadata differs beyond "
+                "attributes.grid_resolution",
+            )
     elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
         _assert_misaligned_shared_label(baseline_root, invalid_root, removed)
     elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
