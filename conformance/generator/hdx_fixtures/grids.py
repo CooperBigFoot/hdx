@@ -526,6 +526,7 @@ def write_gridded_dynamic(
     crs_var.attrs["grid_mapping_name"] = "latitude_longitude"
     crs_var.attrs["crs_wkt"] = RasterioCRS.from_epsg(EPSG_CODE).to_wkt()
     crs_var.attrs["spatial_ref"] = f"EPSG:{EPSG_CODE}"
+    crs_var.attrs["grid_resolution"] = [float(geom.res), float(-geom.res)]
 
     chunks = (min(ZARR_TIME_CHUNK, n_t) or 1, ZARR_Y_CHUNK, ZARR_X_CHUNK)
     # One shard spans the whole [T,Y,X] cube; many time-major chunks per shard
@@ -777,6 +778,7 @@ def write_gridded_dynamic_field(
     crs_var.attrs["grid_mapping_name"] = "latitude_longitude"
     crs_var.attrs["crs_wkt"] = RasterioCRS.from_epsg(EPSG_CODE).to_wkt()
     crs_var.attrs["spatial_ref"] = f"EPSG:{EPSG_CODE}"
+    crs_var.attrs["grid_resolution"] = [float(geom.res), float(-geom.res)]
 
     chunks = (min(ZARR_TIME_CHUNK, n_t) or 1, ZARR_Y_CHUNK, ZARR_X_CHUNK)
     shards = (n_t or 1, geom.height, geom.width)
