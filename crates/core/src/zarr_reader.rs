@@ -9,7 +9,8 @@
 //!    path (`consolidated_metadata.metadata`, `kind == "inline"`), which carries the
 //!    metadata of *every* member in one object; and
 //! 2. the **1-D `lat`/`lon`/`time` coordinate chunks** (`c/0`), a 1-D coordinate
-//!    read (architecture §1) used to derive the grid extent.
+//!    read (architecture §1) used for cell centers, dimensions, and witnesses to
+//!    the authoritative `/crs.grid_resolution` declaration.
 //!
 //! It **never** opens a `c/0/0/0` data chunk: the sharded data arrays
 //! (`era5_precipitation`, `era5_precipitation_was_filled`) are read for metadata
@@ -85,6 +86,12 @@ const COORD_LON: &str = "lon";
 
 /// The CF attribute on a data variable naming its `grid_mapping` target (spec §7.3).
 const GRID_MAPPING_ATTR: &str = "grid_mapping";
+/// The required signed `[x_res, y_res]` declaration on the grid-mapping array.
+const GRID_RESOLUTION_ATTR: &str = "grid_resolution";
+/// Absolute tolerance in signed degrees for coordinate-step witnesses.
+const GRID_RESOLUTION_ABS_TOL: f64 = 1.0e-12;
+/// Relative tolerance for coordinate-step witnesses.
+const GRID_RESOLUTION_REL_TOL: f64 = 1.0e-9;
 /// The optional CF standard-name attribute carried by a data variable.
 const STANDARD_NAME_ATTR: &str = "standard_name";
 /// The CF attribute carrying a variable's units (spec §2).
@@ -481,14 +488,83 @@ fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
     None
 }
 
+/// Parses the authoritative signed resolution from a grid-mapping target.
+fn declared_grid_resolution(
+    target: &ArrayMetadataV3,
+    artifact: &str,
+) -> Result<GridResolution, CoreError> {
+    let invalid = |detail: String| CoreError::ZarrRead {
+        artifact: artifact.to_string(),
+        detail: format!("grid_resolution {detail}"),
+    };
+    let value = target
+        .attributes
+        .get(GRID_RESOLUTION_ATTR)
+        .ok_or_else(|| invalid("attribute is missing from the grid_mapping target".to_string()))?;
+    let pair = value.as_array().ok_or_else(|| {
+        invalid("must be a JSON array of exactly two float64 numbers".to_string())
+    })?;
+    if pair.len() != 2 {
+        return Err(invalid(format!(
+            "must contain exactly two numbers, found {}",
+            pair.len()
+        )));
+    }
+    let x_res = pair[0]
+        .as_f64()
+        .ok_or_else(|| invalid("x_res must be a finite JSON number".to_string()))?;
+    let y_res = pair[1]
+        .as_f64()
+        .ok_or_else(|| invalid("y_res must be a finite JSON number".to_string()))?;
+    if !x_res.is_finite() || !y_res.is_finite() {
+        return Err(invalid(format!(
+            "values must be finite, found [{x_res}, {y_res}]"
+        )));
+    }
+    if x_res <= 0.0 || y_res >= 0.0 {
+        return Err(invalid(format!(
+            "must have x_res > 0 and y_res < 0, found [{x_res}, {y_res}]"
+        )));
+    }
+    Ok(GridResolution::new(x_res, y_res))
+}
+
+/// Returns whether an observed coordinate step agrees with its declaration.
+fn coordinate_step_agrees(observed: f64, declared: f64) -> bool {
+    (observed - declared).abs()
+        <= GRID_RESOLUTION_ABS_TOL.max(GRID_RESOLUTION_REL_TOL * observed.abs().max(declared.abs()))
+}
+
+/// Checks every adjacent coordinate step as a witness to one declared axis.
+fn check_coordinate_witnesses(
+    coordinates: &[f64],
+    axis: &str,
+    declared: f64,
+    artifact: &str,
+) -> Result<(), CoreError> {
+    for (index, pair) in coordinates.windows(2).enumerate() {
+        let observed = pair[1] - pair[0];
+        if !coordinate_step_agrees(observed, declared) {
+            return Err(CoreError::ZarrRead {
+                artifact: artifact.to_string(),
+                detail: format!(
+                    "{axis} coordinate step at pair {index} disagrees with grid_resolution: declared={declared}, observed={observed}, abs_tol={GRID_RESOLUTION_ABS_TOL:e} degrees, rel_tol={GRID_RESOLUTION_REL_TOL:e}"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reads a `gridded_dynamic/<label>.zarr` store's metadata into a [`ZarrGrid`]
 /// (spec §7/§8, architecture §1/§3.5).
 ///
 /// Learns the store from **one read** of the root `zarr.json`'s §8 inline
 /// consolidated-metadata map, classifies its arrays (coordinate vs data variable vs
-/// `grid_mapping` target), reads the 1-D `lat`/`lon` coordinate chunks to derive the
-/// center→edge [`GridExtent`], resolves the CRS from the data variables'
-/// `grid_mapping` target, and maps each data variable to an ordinary `GriddedDynamic`
+/// `grid_mapping` target), reads the authoritative signed resolution from that
+/// target, and reads the 1-D `lat`/`lon` coordinate chunks for centers, dimensions,
+/// and adjacent-step witnesses before building the center→edge [`GridExtent`]. It
+/// resolves the CRS from the same target and maps each data variable to an ordinary `GriddedDynamic`
 /// [`Field`]. The `time` coordinate's int64 day-counts are decoded (via
 /// [`read_coord_i64`]) and normalized to i64 micros ([`gridded_time_micros`](ZarrGrid::gridded_time_micros))
 /// — the comparable axis `validate` enforces; they are not used for the grid geometry.
@@ -504,6 +580,7 @@ fn resolve_crs(target: &ArrayMetadataV3) -> Option<Crs> {
 /// | the root `zarr.json` is absent / unreadable / not valid JSON, or carries no inline consolidated metadata | [`CoreError::ZarrRead`] |
 /// | a member's metadata cannot be parsed as a Zarr v3 array | [`CoreError::ZarrRead`] |
 /// | a required `lat` / `lon` / `time` coordinate array (or its `c/0` chunk) is absent | [`CoreError::MissingGriddedCoordinate`] |
+/// | `/crs.grid_resolution` is missing, malformed, non-finite, incorrectly signed, or disagrees with any adjacent coordinate step | [`CoreError::ZarrRead`] |
 /// | no data variable carries a resolvable `grid_mapping` target with a CRS | [`CoreError::MissingGridGeoref`] |
 /// | a data variable's `data_type` does not map to a supported [`Dtype`] | [`CoreError::UnknownDtype`] |
 #[instrument(skip(grid_label), fields(path = %path.as_ref().display()))]
@@ -578,23 +655,28 @@ pub fn read_zarr_grid(
 
     // Resolve the CRS by following the data var's grid_mapping target (G3). The
     // target array (`crs`, shape `[]`) is read ONLY now that a data var points at it.
-    let crs = match grid_mapping_target.as_deref() {
+    let (crs, resolution) = match grid_mapping_target.as_deref() {
         Some(target_name) => {
             let target = arrays
                 .iter()
                 .find(|(name, _)| name == target_name)
                 .map(|(_, meta)| meta);
-            match target.and_then(resolve_crs) {
-                Some(crs) => crs,
-                None => {
-                    return Err(CoreError::MissingGridGeoref {
-                        artifact: artifact.clone(),
-                        detail: format!(
-                            "grid_mapping target {target_name:?} has no spatial_ref/crs_wkt"
-                        ),
-                    });
-                }
-            }
+            let Some(target) = target else {
+                return Err(CoreError::MissingGridGeoref {
+                    artifact: artifact.clone(),
+                    detail: format!("grid_mapping target {target_name:?} is absent"),
+                });
+            };
+            let Some(crs) = resolve_crs(target) else {
+                return Err(CoreError::MissingGridGeoref {
+                    artifact: artifact.clone(),
+                    detail: format!(
+                        "grid_mapping target {target_name:?} has no spatial_ref/crs_wkt"
+                    ),
+                });
+            };
+            let resolution = declared_grid_resolution(target, &artifact)?;
+            (crs, resolution)
         }
         None => {
             return Err(CoreError::MissingGridGeoref {
@@ -612,20 +694,20 @@ pub fn read_zarr_grid(
     // (S5/S6) enforce. A 1-D c/0 read; never a c/0/0/0 data chunk.
     let gridded_time_micros =
         normalize_days_to_micros(&read_coord_i64(store, &artifact, COORD_TIME)?);
-    if lon.len() < 2 || lat.len() < 2 {
+    if lon.is_empty() || lat.is_empty() {
         return Err(CoreError::ZarrRead {
             artifact: artifact.clone(),
-            detail: "lat/lon coordinate arrays need at least two cells to derive a resolution"
+            detail: "lat/lon coordinate arrays must each contain at least one cell center"
                 .to_string(),
         });
     }
 
     let width = lon.len();
     let height = lat.len();
-    // Signed per-axis resolution from the first two centers (CF cell spacing).
-    let x_res = lon[1] - lon[0];
-    let y_res = lat[1] - lat[0];
-    let resolution = GridResolution::new(x_res, y_res);
+    let x_res = resolution.x_res();
+    let y_res = resolution.y_res();
+    check_coordinate_witnesses(&lon, COORD_LON, x_res, &artifact)?;
+    check_coordinate_witnesses(&lat, COORD_LAT, y_res, &artifact)?;
 
     // S1 center→edge: shift the first center out by half the *signed* resolution.
     let west = center_to_edge(lon[0], x_res);
@@ -702,6 +784,59 @@ mod tests {
                 std::fs::copy(&from, &to).expect("copy file");
             }
         }
+    }
+
+    /// Rewrites the copied store's root inline metadata through a JSON callback.
+    fn mutate_root_metadata(store: &Path, mutate: impl FnOnce(&mut serde_json::Value)) {
+        let root = store.join("zarr.json");
+        let text = std::fs::read_to_string(&root).expect("read root metadata");
+        let mut json: serde_json::Value = serde_json::from_str(&text).expect("parse root metadata");
+        mutate(&mut json);
+        std::fs::write(
+            &root,
+            serde_json::to_string(&json).expect("serialize root metadata"),
+        )
+        .expect("write root metadata");
+    }
+
+    /// Replaces the resolved `crs` entry's consolidated `grid_resolution` value.
+    fn set_declared_resolution(store: &Path, value: Option<serde_json::Value>) {
+        mutate_root_metadata(store, |json| {
+            let attributes = json["consolidated_metadata"]["metadata"]["crs"]["attributes"]
+                .as_object_mut()
+                .expect("crs attributes");
+            match value {
+                Some(value) => {
+                    attributes.insert("grid_resolution".to_string(), value);
+                }
+                None => {
+                    attributes.remove("grid_resolution");
+                }
+            }
+        });
+    }
+
+    /// Reduces one coordinate to a single center in both metadata views and chunk.
+    fn reduce_coordinate_to_one_center(store: &Path, coord: &str, zstd_chunk: &[u8]) {
+        mutate_root_metadata(store, |json| {
+            let meta = &mut json["consolidated_metadata"]["metadata"][coord];
+            meta["shape"] = serde_json::json!([1]);
+            meta["chunk_grid"]["configuration"]["chunk_shape"] = serde_json::json!([1]);
+        });
+
+        let standalone_path = store.join(coord).join("zarr.json");
+        let text = std::fs::read_to_string(&standalone_path).expect("read coordinate metadata");
+        let mut standalone: serde_json::Value =
+            serde_json::from_str(&text).expect("parse coordinate metadata");
+        standalone["shape"] = serde_json::json!([1]);
+        standalone["chunk_grid"]["configuration"]["chunk_shape"] = serde_json::json!([1]);
+        std::fs::write(
+            &standalone_path,
+            serde_json::to_string(&standalone).expect("serialize coordinate metadata"),
+        )
+        .expect("write coordinate metadata");
+        std::fs::write(store.join(coord).join("c").join("0"), zstd_chunk)
+            .expect("write one-center coordinate chunk");
     }
 
     // --- Raw centers + converted edges (the half-pixel fix made visible) --------
@@ -784,6 +919,116 @@ mod tests {
         assert_eq!(lat0, 49.875, "lat[0] center");
         assert_eq!(x_res, 0.25);
         assert_eq!(y_res, -0.25);
+    }
+
+    #[test]
+    fn missing_grid_resolution_fails_closed_in_reader() {
+        let temp = copy_store_to_temp(&fixture_store(), "no-resolution");
+        set_declared_resolution(&temp, None);
+
+        let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+        std::fs::remove_dir_all(&temp).ok();
+        match result {
+            Err(CoreError::ZarrRead { detail, .. }) => assert!(
+                detail.contains("grid_resolution"),
+                "diagnostic names grid_resolution: {detail}"
+            ),
+            other => panic!("expected missing grid_resolution ZarrRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_grid_resolution_declarations_fail_closed() {
+        for (tag, value) in [
+            ("string", serde_json::json!("0.25,-0.25")),
+            ("nonnumeric", serde_json::json!([0.25, "south"])),
+            ("short", serde_json::json!([0.25])),
+            ("zero-x", serde_json::json!([0.0, -0.25])),
+            ("negative-x", serde_json::json!([-0.25, -0.25])),
+            ("zero-y", serde_json::json!([0.25, 0.0])),
+            ("positive-y", serde_json::json!([0.25, 0.25])),
+        ] {
+            let temp = copy_store_to_temp(&fixture_store(), tag);
+            set_declared_resolution(&temp, Some(value));
+            let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+            std::fs::remove_dir_all(&temp).ok();
+            match result {
+                Err(CoreError::ZarrRead { detail, .. }) => assert!(
+                    detail.contains("grid_resolution"),
+                    "{tag} diagnostic names grid_resolution: {detail}"
+                ),
+                other => panic!("expected {tag} grid_resolution ZarrRead, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn coordinate_witness_outside_tolerance_fails_closed() {
+        let temp = copy_store_to_temp(&fixture_store(), "outside-tolerance");
+        set_declared_resolution(&temp, Some(serde_json::json!([0.250001, -0.25])));
+        let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+        std::fs::remove_dir_all(&temp).ok();
+        match result {
+            Err(CoreError::ZarrRead { detail, .. }) => {
+                assert!(detail.contains("lon"), "diagnostic names axis: {detail}");
+                assert!(
+                    detail.contains("0.250001"),
+                    "diagnostic names declaration: {detail}"
+                );
+                assert!(
+                    detail.contains("0.25"),
+                    "diagnostic names observed step: {detail}"
+                );
+                assert!(
+                    detail.contains("1e-12"),
+                    "diagnostic names abs tolerance: {detail}"
+                );
+                assert!(
+                    detail.contains("1e-9"),
+                    "diagnostic names rel tolerance: {detail}"
+                );
+            }
+            other => panic!("expected witness mismatch ZarrRead, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coordinate_witness_within_tolerance_is_accepted() {
+        let declared_x = 0.25 + 1.0e-13;
+        let temp = copy_store_to_temp(&fixture_store(), "within-tolerance");
+        set_declared_resolution(&temp, Some(serde_json::json!([declared_x, -0.25])));
+        let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+        std::fs::remove_dir_all(&temp).ok();
+        let grid = result.expect("sub-absolute-tolerance declaration must be accepted");
+        assert_eq!(grid.grid_info().resolution().x_res(), declared_x);
+    }
+
+    #[test]
+    fn length_one_longitude_uses_declared_resolution() {
+        // Deterministic zstd frame for little-endian f64 10.125.
+        const LON_CENTER_CHUNK: &[u8] =
+            &[40, 181, 47, 253, 32, 8, 65, 0, 0, 0, 0, 0, 0, 0, 64, 36, 64];
+        let temp = copy_store_to_temp(&fixture_store(), "one-lon");
+        reduce_coordinate_to_one_center(&temp, "lon", LON_CENTER_CHUNK);
+
+        let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+        std::fs::remove_dir_all(&temp).ok();
+        let grid = result.expect("a length-one axis has no adjacent witness and must read");
+        let info = grid.grid_info();
+        assert_eq!(info.width(), 1);
+        assert_eq!(info.height(), 8);
+        assert_eq!(
+            info.extent().west(),
+            10.0,
+            "first center shifted to west edge"
+        );
+        assert_eq!(
+            info.extent().north(),
+            50.0,
+            "first center shifted to north edge"
+        );
+        assert_eq!(info.resolution().x_res(), 0.25);
+        assert_eq!(info.resolution().y_res(), -0.25);
     }
 
     // --- G1 self-naming + CF units + G3 CRS -------------------------------------

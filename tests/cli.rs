@@ -234,6 +234,23 @@ fn validate_wrong_format_version_exits_two_no_report_on_stdout() {
     );
 }
 
+/// A dynamic-Zarr declaration/coordinate disagreement is a reader error, so
+/// `validate` exits 2 and emits no softened conformance report on stdout.
+#[test]
+fn validate_grid_resolution_mismatch_exits_two_no_report_on_stdout() {
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/grid-resolution-mismatch"),
+    ]);
+
+    assert_eq!(code, 2, "grid-resolution mismatch is a reader error");
+    assert!(
+        stdout.is_empty(),
+        "an exit-2 reader error emits no report JSON on stdout, got: {}",
+        String::from_utf8_lossy(&stdout)
+    );
+}
+
 /// `describe` of `invalid/wrong-format-version` → exit 2 (the §0 hard cut applies to
 /// `describe` too); no JSON on stdout.
 #[test]
