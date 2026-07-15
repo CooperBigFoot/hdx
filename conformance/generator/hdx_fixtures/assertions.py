@@ -48,6 +48,10 @@ from hdx_fixtures.mutate import (
     EMPTY_CADENCE,
     EXTRA_MANIFEST_FIELD,
     EXTRA_MANIFEST_FIELD_VALUE,
+    GRID_RESOLUTION_BASELINE,
+    GRID_RESOLUTION_METADATA_FILES,
+    GRID_RESOLUTION_MISMATCH,
+    GRID_RESOLUTION_STORE,
     H1_DIVERGENT_FIELD,
     I2_FOREIGN_BASIN_ID,
     IRREGULAR_TIME_DAY_OFFSETS,
@@ -1402,6 +1406,11 @@ def assert_differs_in_exactly_one_way(
       path lies under it), adds nothing, and **no** shared file's bytes differ
       (pins **L2**).
 
+    * :attr:`Invalid.GRID_RESOLUTION_MISMATCH` — no files are added or removed;
+      only the standalone and inline-consolidated Zarr metadata serializations
+      differ, and both carry the same one-attribute change from ``[0.25, -0.25]``
+      to ``[0.5, -0.25]``. This is a Bucket-A **G3** reader error with no golden.
+
     The **MS8-S2** georef / grid-label negatives:
 
     * :attr:`Invalid.CRS_MISMATCH` — the trees have the **same file set**; exactly
@@ -1606,6 +1615,61 @@ def assert_differs_in_exactly_one_way(
             f"basin's gridded_dynamic subtree must leave the rest byte-identical "
             f"(LOW-2)",
         )
+    elif invalid is Invalid.GRID_RESOLUTION_MISMATCH:
+        _require(
+            not removed,
+            f"{invalid_root}: grid-resolution-mismatch removed files "
+            f"{sorted(removed)}; metadata mutation must preserve the file set",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            changed == set(GRID_RESOLUTION_METADATA_FILES),
+            f"{invalid_root}: changed files {sorted(changed)} != the two "
+            f"grid_resolution metadata serializations "
+            f"{sorted(GRID_RESOLUTION_METADATA_FILES)}",
+        )
+
+        standalone_rel = f"{GRID_RESOLUTION_STORE}/crs/zarr.json"
+        root_rel = f"{GRID_RESOLUTION_STORE}/zarr.json"
+        for rel, attr_path in [
+            (standalone_rel, ("attributes", "grid_resolution")),
+            (
+                root_rel,
+                (
+                    "consolidated_metadata",
+                    "metadata",
+                    "crs",
+                    "attributes",
+                    "grid_resolution",
+                ),
+            ),
+        ]:
+            base_json = json.loads((baseline_root / rel).read_text(encoding="utf-8"))
+            inv_json = json.loads((invalid_root / rel).read_text(encoding="utf-8"))
+
+            base_parent = base_json
+            inv_parent = inv_json
+            for key in attr_path[:-1]:
+                base_parent = base_parent[key]
+                inv_parent = inv_parent[key]
+            attr = attr_path[-1]
+            _require(
+                base_parent[attr] == GRID_RESOLUTION_BASELINE,
+                f"{baseline_root / rel}: baseline grid_resolution "
+                f"{base_parent[attr]!r} != {GRID_RESOLUTION_BASELINE!r}",
+            )
+            _require(
+                inv_parent[attr] == GRID_RESOLUTION_MISMATCH,
+                f"{invalid_root / rel}: mutated grid_resolution "
+                f"{inv_parent[attr]!r} != {GRID_RESOLUTION_MISMATCH!r}",
+            )
+            del base_parent[attr]
+            del inv_parent[attr]
+            _require(
+                base_json == inv_json,
+                f"{invalid_root / rel}: metadata differs beyond "
+                "attributes.grid_resolution",
+            )
     elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
         _assert_misaligned_shared_label(baseline_root, invalid_root, removed)
     elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
