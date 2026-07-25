@@ -742,9 +742,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
+    use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
+    use arrow::datatypes::{DataType, Field as ArrowField, Schema, TimeUnit};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
     use serde_json::Value;
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
@@ -792,6 +797,99 @@ mod tests {
             .keys()
             .cloned()
             .collect()
+    }
+
+    fn scalar_data_field(name: &str, units: Option<&str>) -> ArrowField {
+        let field = ArrowField::new(name, DataType::Float64, true);
+        match units {
+            Some(value) => {
+                field.with_metadata(HashMap::from([("units".to_string(), value.to_string())]))
+            }
+            None => field,
+        }
+    }
+
+    fn write_scalar_units_dataset(root: &Path) {
+        let basin = root.join("basin=0001");
+        std::fs::create_dir_all(&basin).expect("create one-basin HDX fixture");
+        std::fs::write(
+            root.join("manifest.json"),
+            r#"{
+  "format_version": "0.2",
+  "name": "scalar-units-regression",
+  "created_at": "2026-07-22T00:00:00Z",
+  "producer_version": "orthographos-test",
+  "crs": "EPSG:4326",
+  "cadence": "daily"
+}"#,
+        )
+        .expect("write fixture manifest");
+
+        let schema = Arc::new(Schema::new(vec![
+            ArrowField::new("basin_id", DataType::Utf8, false),
+            ArrowField::new(
+                "time",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            scalar_data_field("declared_units", Some("mm/day")),
+            scalar_data_field("noncanonical_units", Some("  mm/day  ")),
+            scalar_data_field("absent_units", None),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["0001"])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    946_684_800_000_000_i64,
+                ])),
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Float64Array::from(vec![2.0])),
+                Arc::new(Float64Array::from(vec![3.0])),
+            ],
+        )
+        .expect("fixture record batch must build");
+        let file = std::fs::File::create(basin.join("scalar_dynamic.parquet"))
+            .expect("create scalar_dynamic parquet");
+        let mut writer =
+            ArrowWriter::try_new(file, schema, None).expect("fixture writer must construct");
+        writer
+            .write(&batch)
+            .expect("fixture parquet write must succeed");
+        writer.close().expect("fixture parquet close must succeed");
+    }
+
+    #[test]
+    fn scalar_dynamic_arrow_field_units_surface_verbatim_through_describe() {
+        let root = std::env::temp_dir().join(format!(
+            "hdx-describe-scalar-units-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        write_scalar_units_dataset(&root);
+
+        let result = describe(&root);
+        std::fs::remove_dir_all(&root).ok();
+        let description =
+            result.expect("fixture must reach the public describe result before assertions");
+        let observed: Vec<(&str, Option<&str>)> = description
+            .fields()
+            .iter()
+            .map(|field| (field.name().as_str(), field.units().as_deref()))
+            .collect();
+
+        assert_eq!(
+            observed,
+            vec![
+                ("declared_units", Some("mm/day")),
+                ("noncanonical_units", Some("  mm/day  ")),
+                ("absent_units", None),
+            ],
+            "scalar_dynamic Arrow field metadata must surface as opaque units"
+        );
     }
 
     #[test]
