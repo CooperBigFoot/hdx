@@ -826,11 +826,11 @@ pub(crate) mod test_support {
         let pixel_start = heap_start + heap_len;
 
         if let Some((_, TiffValue::Long(offsets))) = entries.iter_mut().find(|(tag, _)| *tag == 273)
+            && offsets.len() == sample_planes.len()
+            && offsets.len() > 1
         {
-            if offsets.len() == sample_planes.len() && offsets.len() > 1 {
-                for (index, offset) in offsets.iter_mut().enumerate() {
-                    *offset = (pixel_start + index * 4) as u32;
-                }
+            for (index, offset) in offsets.iter_mut().enumerate() {
+                *offset = (pixel_start + index * 4) as u32;
             }
         }
 

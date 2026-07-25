@@ -88,6 +88,8 @@ use crate::parquet_meta::read_parquet_meta;
 const BASIN_ID_COLUMN: &str = "basin_id";
 /// The name of the scalar `time` column (spec §6).
 const TIME_COLUMN: &str = "time";
+/// The exact Arrow field-metadata key carrying opaque producer-declared units.
+const UNITS_METADATA_KEY: &str = "units";
 
 /// A single timestamp on the scalar `time` axis, normalized to UTC (spec §6).
 ///
@@ -365,10 +367,10 @@ fn arrow_dtype(data_type: &DataType) -> Result<Dtype, CoreError> {
 /// Maps the arrow schema's data columns to an ordinary [`Field`] catalog.
 ///
 /// Every column except `basin_id` and `time` becomes one scalar [`Field`] with the
-/// supplied `quadrant`, its [`Dtype`] from [`arrow_dtype`], [`Units::none`] (parquet
-/// column metadata carries no units in the fixture — recorded as absent, never
-/// invented), and `grid_label: None` (scalar). Field names are taken **verbatim**
-/// from the schema — no name-pattern special-casing (spec §2).
+/// supplied `quadrant`, its [`Dtype`] from [`arrow_dtype`], units verbatim from the
+/// exact `"units"` Arrow field-metadata key (or absent when that key is absent), and
+/// `grid_label: None` (scalar). Field names are taken **verbatim** from the schema —
+/// no name-pattern special-casing (spec §2).
 ///
 /// # Errors
 ///
@@ -383,15 +385,12 @@ fn catalog_fields(schema: &Schema, quadrant: Quadrant) -> Result<Vec<Field>, Cor
         .filter(|f| f.name() != BASIN_ID_COLUMN && f.name() != TIME_COLUMN)
         .map(|f| {
             let dtype = arrow_dtype(f.data_type())?;
+            let units = match f.metadata().get(UNITS_METADATA_KEY) {
+                Some(value) => Units::new(Some(value.clone())),
+                None => Units::none(),
+            };
             // Scalar field: no grid label. `Field::new` enforces the invariant.
-            Field::new(
-                FieldName::new(f.name()),
-                quadrant,
-                dtype,
-                Units::none(),
-                None,
-                None,
-            )
+            Field::new(FieldName::new(f.name()), quadrant, dtype, units, None, None)
         })
         .collect()
 }
