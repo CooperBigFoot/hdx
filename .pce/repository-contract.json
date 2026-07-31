@@ -1,0 +1,28 @@
+{
+  "stated": {
+    "gates": {
+      "format": "cargo fmt --all --check",
+      "lint": "cargo clippy --workspace --all-targets",
+      "typecheck": "cargo check --workspace --all-targets",
+      "test": "cargo test --workspace",
+      "build": "cargo build --workspace"
+    },
+    "version_policy": "SERIALIZE_DISPATCHES",
+    "branches": {
+      "default": "main",
+      "milestone": "pce/{vision}/milestone-{milestone}",
+      "step": "pce/{vision}/m{milestone}-s{step}"
+    },
+    "pull_requests": {
+      "step_base": "MILESTONE",
+      "milestone_base": "DEFAULT",
+      "merge_method": "SQUASH"
+    },
+    "workflows": []
+  },
+  "appendable": {
+    "environment_hazards": [],
+    "gate_orderings": [],
+    "lockfile_rules": []
+  }
+}
