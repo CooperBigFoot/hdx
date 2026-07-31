@@ -223,7 +223,8 @@ Mapping of the spec §14 checklist to where it runs:
 - **Identity I1–I3** — `basin_id` column present, agrees with folder, unique.
 - **Homogeneity H1–H2** — one-basin schema vs every basin; identical grid-label
   set.
-- **Time T1–T2** — `time` column type/sort/non-null; intra-basin axis alignment
+- **Time T1–T3** — `time` column type/sort/non-null; intra-basin axis alignment;
+  pinned per-store gridded time encoding at required consolidated and present standalone sites
   (parquet `time` vs each Zarr `time` coord).
 - **Grids G1–G3** — one-artifact-one-grid; self-naming (no positional channel
   axis); grid-label naming + shared-label alignment; CF / GeoTIFF georef present.

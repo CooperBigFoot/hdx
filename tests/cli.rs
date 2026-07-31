@@ -227,6 +227,83 @@ fn validate_valid_minimal_exits_zero_conformant_true() {
     );
 }
 
+#[test]
+fn validate_unpinned_gridded_time_units_exits_one_and_names_units() {
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/unpinned-gridded-time-units"),
+    ]);
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(
+        (code, report.get("conformant").and_then(Value::as_bool)),
+        (1, Some(false)),
+        "unpinned gridded time units must be a non-conformant report: {report}"
+    );
+
+    let checks = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .expect("checks array");
+    let t3 = checks
+        .iter()
+        .find(|check| check.get("id").and_then(Value::as_str) == Some("T3"))
+        .expect("T3 present");
+    assert_eq!(
+        t3,
+        &serde_json::json!({
+            "id": "T3",
+            "status": "ran",
+            "result": "fail",
+            "depth": "metadata_deep",
+            "detail": "basin \"0003\" gridded_dynamic/era5.zarr standalone time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\" | basin \"0003\" gridded_dynamic/era5.zarr consolidated time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\""
+        })
+    );
+    let t2 = checks
+        .iter()
+        .find(|check| check.get("id").and_then(Value::as_str) == Some("T2"))
+        .expect("T2 present");
+    assert_eq!(t2.get("status").and_then(Value::as_str), Some("ran"));
+    assert_eq!(t2.get("result").and_then(Value::as_str), Some("pass"));
+}
+
+#[test]
+fn validate_divergent_standalone_time_units_exits_one_and_names_site() {
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/divergent-standalone-gridded-time-units"),
+    ]);
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(
+        (code, report.get("conformant").and_then(Value::as_bool)),
+        (1, Some(false)),
+        "a non-pinned standalone declaration must fail closed: {report}"
+    );
+    let detail = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|check| check.get("id").and_then(Value::as_str) == Some("T3"))
+        })
+        .and_then(|check| check.get("detail"))
+        .and_then(Value::as_str)
+        .expect("T3 failure detail");
+    assert!(
+        detail.contains("standalone time units"),
+        "site is named: {detail}"
+    );
+    assert!(
+        detail.contains("days since 1800-01-01"),
+        "value is named: {detail}"
+    );
+    assert!(
+        detail.contains("time units divergence")
+            && detail.contains("consolidated \"days since 1970-01-01\""),
+        "divergence and both sites are named: {detail}"
+    );
+}
+
 /// `validate` of `valid/geometry-less` → exit 0, stdout `"conformant": true` (0.2).
 ///
 /// The geometry-optional 0.2 fixture (scalar_static present, outlines absent) validates

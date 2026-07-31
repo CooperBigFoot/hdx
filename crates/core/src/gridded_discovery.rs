@@ -32,7 +32,7 @@
 //!   [`BasinGridded`] per basin: the grid labels observed in *each* subtree (the
 //!   **G2 precondition fact**), the static/dynamic [`GridInfo`]s, and the Zarr
 //!   consolidated-metadata path taken, normalized time axis, and verbatim per-store
-//!   time encoding declaration.
+//!   required consolidated and optional standalone time encoding declarations.
 //!
 //! ## The G2 alignment precondition is *observed*, never enforced (spec §8/§14 G2)
 //!
@@ -71,7 +71,7 @@
 //! | shared grid label ⇒ alignment | a label seen in *both* gridded subtrees signals cell-for-cell alignment (spec §8); the G2 precondition |
 //! | G2 precondition fact | the per-basin observed grid labels + coinciding extents G2 is enforced over |
 //! | Zarr path taken | which path the Zarr reader took (consolidated/live vs a skip), recorded for honest downstream reporting |
-//! | gridded time encoding | the verbatim CF `units` and `calendar` strings declared by one Zarr store |
+//! | gridded time encoding | the verbatim CF `units` and `calendar` strings at each Zarr declaration site |
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -121,8 +121,9 @@ impl StaticArtifact {
 ///
 /// Pairs the store's grid label (its file stem) with the per-store [`GridInfo`] and
 /// the [`ConsolidatedMetadataSource`] path the Zarr reader took (recorded for honest
-/// downstream reporting), normalized time axis, and verbatim store-declared time
-/// encoding. Inert/agnostic facts without calendar or epoch interpretation.
+/// downstream reporting), normalized time axis, the required consolidated time
+/// encoding, and the optional standalone declaration. Inert/agnostic facts without
+/// calendar or epoch interpretation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicArtifact {
     grid_label: GridLabel,
@@ -130,6 +131,7 @@ pub struct DynamicArtifact {
     consolidated_source: ConsolidatedMetadataSource,
     gridded_time_micros: Vec<i64>,
     gridded_time_encoding: GriddedTimeEncoding,
+    standalone_gridded_time_encoding: Option<GriddedTimeEncoding>,
 }
 
 impl DynamicArtifact {
@@ -156,9 +158,14 @@ impl DynamicArtifact {
         &self.gridded_time_micros
     }
 
-    /// Borrows the store's verbatim CF `time` encoding declaration.
+    /// Borrows the store's verbatim consolidated CF `time` encoding declaration.
     pub fn gridded_time_encoding(&self) -> &GriddedTimeEncoding {
         &self.gridded_time_encoding
+    }
+
+    /// Borrows the store's verbatim standalone CF `time` encoding when present.
+    pub fn standalone_gridded_time_encoding(&self) -> Option<&GriddedTimeEncoding> {
+        self.standalone_gridded_time_encoding.as_ref()
     }
 }
 
@@ -407,6 +414,7 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
                 consolidated_source: zarr.consolidated_source().clone(),
                 gridded_time_micros: zarr.gridded_time_micros().to_vec(),
                 gridded_time_encoding: zarr.gridded_time_encoding().clone(),
+                standalone_gridded_time_encoding: zarr.standalone_gridded_time_encoding().cloned(),
             });
         }
     }

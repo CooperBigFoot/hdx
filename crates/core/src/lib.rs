@@ -37,7 +37,8 @@
 //!   reader is layered on this metadata path.
 //! - [`zarr_reader`] — the Zarr v3 **metadata** reader: reads a
 //!   `gridded_dynamic/<label>.zarr` store via the §8 inline consolidated-metadata
-//!   path (one read of the root `zarr.json`), classifies its arrays, reads the 1-D
+//!   path (one read of the root `zarr.json`) plus optional standalone `time/zarr.json`,
+//!   classifies its arrays, reads the 1-D
 //!   `lat`/`lon`/`time` coordinate chunks, carries the `time` coordinate's verbatim
 //!   store-declared encoding, and builds a [`GridInfo`](grid::GridInfo) with the
 //!   center→edge conversion plus an ordinary `GriddedDynamic`
@@ -102,10 +103,14 @@
 //!   returned `Err`; a [`ValidateError`](error::ValidateError) is reserved for
 //!   **structural / entry** failures (an unreadable manifest, the §0 hard cut, an
 //!   undecodable present artifact) so the CLI can map the two to distinct exit codes.
-//!   The report lists all 20 §14 ids: the in-memory checks (M1–M4 via the entry gate;
-//!   H1, H2, I3, T1, G1) and the cross-file checks (L1, L2, I1, I2, M5, G2, G3) `ran`
-//!   (pass/fail), while the byte-deep / on-disk-shape-dependent legs (L3, M6 rule (b),
-//!   T2, Geo1-when-outlines-absent) are honest `Skipped`-with-reason. The report's
+//!   The report lists all 21 §14 ids: the in-memory checks (M1–M4 via the entry gate;
+//!   H1, H2, I3, T1, G1), cross-file checks (L1, L2, I1, I2, M5, G2, G3), and
+//!   byte-deep checks (L3, M6 rule (b), T2) run with pass/fail outcomes. T2 compares
+//!   the full scalar and gridded axes as normalized instants within each basin. T3 is
+//!   the metadata-deep per-store rule that requires the pinned gridded time encoding
+//!   at the required consolidated and each present standalone declaration site, and
+//!   rejects divergence between them;
+//!   Geo1 is honestly skipped when outlines are absent. The report's
 //!   **JSON wire shape** is pinned by a validate-local `#[derive(Serialize)]`
 //!   [`ValidationReportDto`](validate::ValidationReportDto) (the inert types stay
 //!   serde-free, mirroring `describe`), [`validate_json`](validate::validate_json), and

@@ -35,19 +35,14 @@
 //! in-memory without differently-shaped on-disk bytes: **H1, H2, I3, T1, G1**, plus the
 //! entry-gate **M1, M2, M3, M4** (folded into [`Manifest::from_json`]). The rest need the
 //! **full discovery layer assembled from on-disk bytes**: **L1, L2, L3, I1, I2, M5, M6,
-//! T2, G2, G3, Geo1**. Every §14 id ends up either `ran` (pass/fail) or **honestly
+//! T2, T3, G2, G3, Geo1**. Every §14 id ends up either `ran` (pass/fail) or **honestly
 //! `skipped` with a reason** under R3; the report states which ran (spec §14 note).
 //!
-//! A handful of legs genuinely need a byte-deep / on-disk-shape-dependent read, so they
-//! are honest R3 skips:
-//!
-//! - **M6 rule (b)** — per-basin axis *regularity* needs the full 1-D `time` array;
-//!   v0.1 discovery surfaces only a two-point `[start, end]` extent + sortedness, so the
-//!   regularity leg is [`DepthClass::ByteDeep`]-skipped (rule (a), cadence-non-empty,
-//!   runs and passes). See [`check_m6`] for the M6 rule.
-//! - **T2** — cross-artifact *full* time-axis identity between the scalar and gridded
-//!   dynamic axes needs both full 1-D axes; the cheap leg confirmable from metadata runs,
-//!   else the leg is an honest R3 skip.
+//! The full discovery model carries the realized layout and complete scalar/gridded 1-D
+//! time axes, so L3, M6 rule (b), and T2 run rather than defer. T3 checks every required
+//! consolidated time declaration and each optional standalone declaration, including
+//! agreement between them. Geo1 alone is skipped when
+//! outlines are optional and absent because there is then no geometry to inspect.
 //!
 //! No check decodes a gridded chunk or pixel raster: every check runs over the discovery
 //! layer + the 1-D index reads discovery already performs.
@@ -56,7 +51,7 @@
 //!
 //! | Term | Meaning |
 //! |---|---|
-//! | [`CheckId`] | one of the 20 §14 `MUST` ids, as a closed enum (never a string) |
+//! | [`CheckId`] | one of the 21 §14 `MUST` ids, as a closed enum (never a string) |
 //! | [`CheckStatus`] | whether a check `Ran` or was `Skipped` (an enum, never a bool) |
 //! | [`CheckResult`] | the verdict of a check that ran: `Pass` or `Fail` (enum, never a bool) |
 //! | [`DepthClass`] | the R3 enforcement-depth class: `MetadataDeep` vs `ByteDeep` (arch §7 R3) |
@@ -82,8 +77,9 @@ use crate::gridded_discovery::{BasinGridded, Discovery, discover};
 use crate::manifest::Manifest;
 use crate::newtypes::{BasinId, Cadence, Crs, GridLabel};
 use crate::scalar_reader::TimeColumn;
+use crate::zarr_reader::GriddedTimeEncoding;
 
-/// A single §14 `MUST` check id — the closed set of the 20 conformance checks (spec §14).
+/// A single §14 `MUST` check id — the closed set of the 21 conformance checks (spec §14).
 ///
 /// Ids are an enum (never strings) so a typo cannot mint a non-existent check and the
 /// report's id space is exhaustive. [`as_str`](CheckId::as_str) yields the stable spec id
@@ -122,6 +118,8 @@ pub enum CheckId {
     T1,
     /// Within each basin, scalar and gridded dynamic artifacts share the axis (§14 T2).
     T2,
+    /// Every gridded dynamic store declares the pinned time encoding (§14 T3).
+    T3,
     /// One artifact = one grid; fields self-name; no positional channel axis (§14 G1).
     G1,
     /// A shared grid label across subtrees implies cell-for-cell alignment (§14 G2).
@@ -152,6 +150,7 @@ impl CheckId {
             CheckId::H2 => "H2",
             CheckId::T1 => "T1",
             CheckId::T2 => "T2",
+            CheckId::T3 => "T3",
             CheckId::G1 => "G1",
             CheckId::G2 => "G2",
             CheckId::G3 => "G3",
@@ -160,10 +159,10 @@ impl CheckId {
     }
 }
 
-/// The full ordered list of the 20 §14 check ids, in spec order.
+/// The full ordered list of the 21 §14 check ids, in spec order.
 ///
 /// Used by the verb to enumerate every id in the report so its shape lists every §14 id.
-const ALL_CHECK_IDS: [CheckId; 20] = [
+const ALL_CHECK_IDS: [CheckId; 21] = [
     CheckId::M1,
     CheckId::M2,
     CheckId::M3,
@@ -180,6 +179,7 @@ const ALL_CHECK_IDS: [CheckId; 20] = [
     CheckId::H2,
     CheckId::T1,
     CheckId::T2,
+    CheckId::T3,
     CheckId::G1,
     CheckId::G2,
     CheckId::G3,
@@ -236,8 +236,8 @@ impl CheckResult {
 /// Records how deep into the bytes a check reached. Most checks are
 /// [`DepthClass::MetadataDeep`] — they run over the discovery layer + the 1-D index reads
 /// discovery already performs, never a gridded chunk or pixel raster. The
-/// [`DepthClass::ByteDeep`] class is reserved for the genuinely byte-level legs (e.g. the
-/// per-basin axis-regularity leg) that v0.1 honestly skips.
+/// [`DepthClass::ByteDeep`] class identifies the genuinely byte-level legs, such as the
+/// per-basin axis-regularity leg, that read full axes or realized values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepthClass {
     /// The check was decided from metadata + 1-D index reads only (no chunk/pixel read).
@@ -1221,6 +1221,87 @@ pub fn check_t2(discovery: &Discovery) -> CheckOutcome {
     CheckOutcome::ran_pass(CheckId::T2, DepthClass::ByteDeep)
 }
 
+const PINNED_GRIDDED_TIME_UNITS: &str = "days since 1970-01-01";
+const PINNED_GRIDDED_TIME_CALENDAR: &str = "proleptic_gregorian";
+
+fn append_t3_pin_violations(
+    violations: &mut Vec<String>,
+    basin_id: &str,
+    label: &str,
+    site: &str,
+    encoding: &GriddedTimeEncoding,
+) {
+    if encoding.units() != PINNED_GRIDDED_TIME_UNITS {
+        violations.push(format!(
+            "basin {basin_id:?} gridded_dynamic/{label}.zarr {site} time units {:?}; expected {:?}",
+            encoding.units(),
+            PINNED_GRIDDED_TIME_UNITS
+        ));
+    }
+    if encoding.calendar() != PINNED_GRIDDED_TIME_CALENDAR {
+        violations.push(format!(
+            "basin {basin_id:?} gridded_dynamic/{label}.zarr {site} time calendar {:?}; expected {:?}",
+            encoding.calendar(),
+            PINNED_GRIDDED_TIME_CALENDAR
+        ));
+    }
+}
+
+/// Checks T3 — every consolidated declaration is pinned and each present standalone
+/// declaration is pinned and agrees with it.
+#[instrument(skip(discovery))]
+pub fn check_t3(discovery: &Discovery) -> CheckOutcome {
+    let mut violations = Vec::new();
+
+    for basin in discovery.gridded().per_basin() {
+        let basin_id = basin.basin_id_folder().as_str();
+        for artifact in basin.dynamic_artifacts() {
+            let label = artifact.grid_label().as_str();
+            let consolidated = artifact.gridded_time_encoding();
+            if let Some(standalone) = artifact.standalone_gridded_time_encoding() {
+                append_t3_pin_violations(
+                    &mut violations,
+                    basin_id,
+                    label,
+                    "standalone",
+                    standalone,
+                );
+                if standalone.units() != consolidated.units() {
+                    violations.push(format!(
+                        "basin {basin_id:?} gridded_dynamic/{label}.zarr time units divergence: standalone {:?}; consolidated {:?}",
+                        standalone.units(),
+                        consolidated.units()
+                    ));
+                }
+                if standalone.calendar() != consolidated.calendar() {
+                    violations.push(format!(
+                        "basin {basin_id:?} gridded_dynamic/{label}.zarr time calendar divergence: standalone {:?}; consolidated {:?}",
+                        standalone.calendar(),
+                        consolidated.calendar()
+                    ));
+                }
+            }
+            append_t3_pin_violations(
+                &mut violations,
+                basin_id,
+                label,
+                "consolidated",
+                consolidated,
+            );
+        }
+    }
+
+    if violations.is_empty() {
+        CheckOutcome::ran_pass(CheckId::T3, DepthClass::MetadataDeep)
+    } else {
+        CheckOutcome::ran_fail(
+            CheckId::T3,
+            DepthClass::MetadataDeep,
+            violations.join(" | "),
+        )
+    }
+}
+
 /// Checks G2 — a grid label shared across the COG and Zarr subtrees implies cell-for-cell
 /// alignment (spec §8/§14 G2).
 ///
@@ -1348,10 +1429,10 @@ pub fn check_geo1(outlines: Option<&OutlinesInfo>) -> CheckOutcome {
 ///
 /// Runs the §0 entry gate first (read `manifest.json` → [`Manifest::from_json`] hard cut →
 /// [`discover`]), then runs the full §14 checklist over the assembled discovery model.
-/// The report lists all **20** §14 ids, each `ran` (pass/fail) or honestly `skipped` with
+/// The report lists all **21** §14 ids, each `ran` (pass/fail) or honestly `skipped` with
 /// a reason: M1–M4 via the entry gate; H1, H2, I3, T1, G1 in-memory; L1, L2, I1, I2, M5,
-/// G2, G3 cross-file; and the byte-deep / on-disk-shape-dependent legs (L3, M6 rule (b),
-/// T2, and Geo1 when outlines is absent) as honest R3 `Skipped`-with-reason.
+/// G2, G3 cross-file; T3 metadata-deep per store; and L3, M6 rule (b), and T2 byte-deep.
+/// Geo1 is honestly skipped when outlines are absent.
 ///
 /// `conformant` is "no check that ran failed" (a skip never flips it). A **violated
 /// `MUST`** is a recorded fail outcome, *never* a returned `Err`.
@@ -1440,13 +1521,14 @@ pub fn validate_json(path: impl AsRef<Path>) -> Result<String, ValidateError> {
 /// Assembles the report by running every §14 rule over the discovery model + manifest
 /// (spec §14).
 ///
-/// Lists all **20** §14 ids in spec order. M1–M4 are `ran:pass` (the entry gate already
+/// Lists all **21** §14 ids in spec order. M1–M4 are `ran:pass` (the entry gate already
 /// cleared them — a non-conformant manifest returns an `Err` before this runs). The
 /// remaining checks run their real rules over the assembled model: the in-memory checks
-/// (H1, H2, I3, T1, G1) and the cross-file checks (L1, L2, I1, I2, M5, G2, G3) `ran`
-/// (pass/fail), and the genuinely byte-deep / on-disk-shape-dependent legs (L3, M6 rule
-/// (b), T2, and Geo1 when outlines is absent) are honest R3 `Skipped`-with-reason. Pure:
-/// no IO (discovery already read every byte it will read).
+/// (H1, H2, I3, T1, G1), cross-file checks (L1, L2, I1, I2, M5, G2, G3), metadata-deep
+/// T3 over required consolidated and present standalone declaration sites, and byte-deep
+/// checks (L3, M6 rule (b), T2). Geo1 is
+/// honestly skipped when outlines
+/// are absent. Pure: no IO (discovery already read every byte it will read).
 fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport {
     // The in-memory checks, computed from the discovery accessors.
     let fields_by_basin = fields_by_basin(discovery);
@@ -1488,6 +1570,7 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     let m6_axes = per_basin_m6_axes(discovery);
     let m6 = check_m6(manifest.cadence(), &m6_axes);
     let t2 = check_t2(discovery);
+    let t3 = check_t3(discovery);
 
     let per_basin_gridded: Vec<&BasinGridded> = discovery.gridded().per_basin().iter().collect();
     let g2 = check_g2(&per_basin_gridded);
@@ -1519,6 +1602,7 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
             CheckId::M5 => m5.clone(),
             CheckId::M6 => m6.clone(),
             CheckId::T2 => t2.clone(),
+            CheckId::T3 => t3.clone(),
             CheckId::G2 => g2.clone(),
             CheckId::G3 => g3.clone(),
             CheckId::Geo1 => geo1.clone(),
@@ -1758,7 +1842,7 @@ mod tests {
     //
     // These exercise the committed conformance fixtures `invalid/extra-manifest-field/`
     // (M3: a 7th manifest field) and `invalid/empty-cadence/` (M4: an empty cadence),
-    // each one surgical mutation off the valid baseline. Their negative is an ENTRY-GATE
+    // each with a minimal generator-asserted diff from the valid baseline. Their negative is an ENTRY-GATE
     // `Err`, NOT a `conformant:false` report: `validate` reads `manifest.json` then
     // `Manifest::from_json` (the early `?`), whose M3/M4 boundary checks fire BEFORE
     // `discover` is ever called — so the verb returns `Err(ValidateError::Manifest(..))`
@@ -1933,14 +2017,13 @@ mod tests {
     // --- Report shape -----------------------------------------------------------------
 
     #[test]
-    fn report_lists_all_nineteen_ids_and_is_conformant_on_valid_fixture() {
+    fn report_lists_all_twenty_one_ids_and_is_conformant_on_valid_fixture() {
         let report = validate(conformance("valid/minimal")).expect("the valid fixture validates");
 
-        // All §14 ids are present, in spec order. The §14 checklist enumerates 20 ids
-        // (M1–M6, L1–L3, I1–I3, H1–H2, T1–T2, G1–G3, Geo1); the planning prose's "19" is
-        // an off-by-one — the closed `CheckId` enum is the authoritative count.
+        // All §14 ids are present, in spec order. The §14 checklist enumerates 21 ids
+        // (M1–M6, L1–L3, I1–I3, H1–H2, T1–T3, G1–G3, Geo1).
         let ids: Vec<CheckId> = report.checks().iter().map(|c| c.id()).collect();
-        assert_eq!(ids.len(), 20, "the report lists every §14 id");
+        assert_eq!(ids.len(), 21, "the report lists every §14 id");
         let expected = [
             CheckId::M1,
             CheckId::M2,
@@ -1958,6 +2041,7 @@ mod tests {
             CheckId::H2,
             CheckId::T1,
             CheckId::T2,
+            CheckId::T3,
             CheckId::G1,
             CheckId::G2,
             CheckId::G3,
@@ -2082,7 +2166,7 @@ mod tests {
         }
 
         // The report lists every §14 id (the full closed set).
-        assert_eq!(report.checks().len(), 20, "the report lists every §14 id");
+        assert_eq!(report.checks().len(), 21, "the report lists every §14 id");
     }
 
     // --- G2 positive path fired -------------------------------------------------------
@@ -2521,7 +2605,7 @@ mod tests {
             "I1 passes — scalar_static + scalar_dynamic basin_id legs hold; the outlines leg skips"
         );
 
-        // Every check is 20/20 (gridded quadrants present), so the dataset is conformant.
+        // Every check is 21/21 (gridded quadrants present), so the dataset is conformant.
         for check in report.checks() {
             assert_ne!(
                 check.result(),
@@ -2674,7 +2758,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(report.checks().len(), 20);
+        assert_eq!(report.checks().len(), 21);
     }
 
     /// Golden snapshot for the geometry-less (0.2) fixture's validate report. The
@@ -2738,11 +2822,11 @@ mod tests {
     }
 
     /// Report-states-which-ran (spec §14 note). The golden's `checks` array contains
-    /// **all 20** §14 ids; on the valid fixture **every** check now `status:"ran"` with
+    /// **all 21** §14 ids; on the valid fixture **every** check now `status:"ran"` with
     /// `result:"pass"` — the last v0.1 honest skips (M6 rule (b) regularity, L3
     /// absence-vs-NaN) now RUN byte-deep over the surfaced per-basin axis + realized columns
     /// (S6), joining T2 (S5). Top-level `conformant:true`. This pins, in the committed
-    /// artifact, that the report clearly reports which checks ran (20/20 on the valid fixture).
+    /// artifact, that the report clearly reports which checks ran (21/21 on the valid fixture).
     #[test]
     fn golden_clearly_reports_which_checks_ran_vs_skipped() {
         let golden = golden_value();
@@ -2751,14 +2835,14 @@ mod tests {
             .and_then(Value::as_array)
             .expect("golden checks array");
 
-        // All 20 §14 ids are present, in spec order.
+        // All 21 §14 ids are present, in spec order.
         let ids: Vec<&str> = checks
             .iter()
             .map(|c| c.get("id").and_then(Value::as_str).expect("check id"))
             .collect();
         let expected_ids = [
             "M1", "M2", "M3", "M4", "M5", "M6", "L1", "L2", "L3", "I1", "I2", "I3", "H1", "H2",
-            "T1", "T2", "G1", "G2", "G3", "Geo1",
+            "T1", "T2", "T3", "G1", "G2", "G3", "Geo1",
         ];
         assert_eq!(
             ids, expected_ids,
@@ -2766,13 +2850,13 @@ mod tests {
         );
 
         // Every check RAN and PASSED on the valid fixture — no v0.1 honest skips remain
-        // (M6 rule (b) + L3 now run byte-deep, S6; T2 ran since S5). 20/20 ran.
+        // (M6 rule (b) + L3 now run byte-deep, S6; T2 ran since S5). 21/21 ran.
         for check in checks {
             let id = check.get("id").and_then(Value::as_str).expect("id");
             let status = check.get("status").and_then(Value::as_str).expect("status");
             assert_eq!(
                 status, "ran",
-                "{id} ran on the valid fixture (20/20, no skips)"
+                "{id} ran on the valid fixture (21/21, no skips)"
             );
             assert_eq!(
                 check.get("result").and_then(Value::as_str),
@@ -2897,9 +2981,8 @@ mod tests {
 
     // --- One-violation invalids (I1/I2/I3/H1/T1/L2) -----------------------------------
     //
-    // Each fixture is one surgical mutation off the valid baseline (the generator's
-    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at generation
-    // time). Its negative is a CLEAN `conformant:false` report with exactly ONE §14 check
+    // Each fixture has a bounded, generator-asserted diff from the valid baseline. Its
+    // negative is a CLEAN `conformant:false` report with exactly ONE §14 check
     // `ran:fail` and every other check `pass`-or-`skip`. Each test pins the exact failing
     // id, runs the purity assertion (no second check trips), and snapshots the report
     // against the committed per-fixture golden under
@@ -3077,6 +3160,32 @@ mod tests {
     }
 
     #[test]
+    fn t3_unpinned_gridded_time_units_pins_exactly_t3() {
+        assert_pins_exactly("invalid/unpinned-gridded-time-units", CheckId::T3);
+    }
+
+    #[test]
+    fn t3_divergent_standalone_units_pins_exactly_t3() {
+        assert_pins_exactly(
+            "invalid/divergent-standalone-gridded-time-units",
+            CheckId::T3,
+        );
+    }
+
+    #[test]
+    fn t3_unpinned_calendar_pins_exactly_t3() {
+        assert_pins_exactly("invalid/unpinned-gridded-time-calendar", CheckId::T3);
+    }
+
+    #[test]
+    fn t3_aggregates_multiple_offending_stores() {
+        assert_pins_exactly(
+            "invalid/multi-store-unpinned-gridded-time-encodings",
+            CheckId::T3,
+        );
+    }
+
+    #[test]
     fn l2_missing_gridded_dynamic_pins_exactly_l2() {
         // One basin's gridded_dynamic/ subtree is deleted (spec §4 / L2).
         // declares_gridded_dynamic stays true dataset-wide, so that basin's empty
@@ -3088,9 +3197,8 @@ mod tests {
 
     // --- Georef / grid-label one-violation invalids (M5/G2/H2) ------------------------
     //
-    // Each is one surgical mutation off the valid baseline (the generator's
-    // `assert_differs_in_exactly_one_way` proves the one-mutation invariant at generation
-    // time) and produces a CLEAN `conformant:false` report with exactly ONE §14 check
+    // Each has a minimal, generator-asserted diff from the valid baseline and produces
+    // a CLEAN `conformant:false` report with exactly ONE §14 check
     // `ran:fail`. `assert_pins_exactly` re-checks purity + snapshots against the golden.
 
     #[test]
@@ -3302,6 +3410,21 @@ mod tests {
         ));
         copy_tree(&conformance("valid/minimal"), &dir);
         dir
+    }
+
+    #[test]
+    fn t3_absent_standalone_with_pinned_consolidated_passes() {
+        let dir = copy_valid_minimal_to_temp("t3-absent-standalone");
+        let standalone = dir.join("basin=0003/gridded_dynamic/era5.zarr/time/zarr.json");
+        std::fs::remove_file(&standalone).expect("remove optional standalone metadata");
+
+        let result = validate(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        let report = result.expect("valid consolidated metadata remains discoverable");
+        let t3 = report.find(CheckId::T3).expect("T3 outcome present");
+        assert_eq!(t3.status(), CheckStatus::Ran);
+        assert_eq!(t3.result(), Some(CheckResult::Pass));
+        assert!(report.conformant());
     }
 
     #[test]

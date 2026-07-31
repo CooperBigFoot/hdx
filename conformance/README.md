@@ -26,10 +26,14 @@ tool, **not** part of the shipped contract.
 > while preserving reproducibility.
 
 The fixture set covers the full **§14 matrix**: one valid four-quadrant
-baseline and the **13** fail-closed invalids (including the HDX-0.2 M6 rule-(b)
-negative `invalid/irregular-time-axis`) — one surgical mutation each, each pinning
-exactly one §14 check. The full classification of all 20 §14 ids lives in the
-[§14 check-id classification matrix](#14-check-id-classification-matrix).
+baseline and **18 generated invalid trees**, each derived from the baseline by an
+explicit mutation recipe. Most recipes target one logical mutation; the multi-store
+T3 aggregation fixture deliberately rewrites four attributes across two stores.
+Seventeen are enforceable report/entry-gate negatives with rows in the
+[fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid).
+The remaining tree, `invalid/grid-resolution-mismatch`, is a G3 discovery-error
+negative with no validation golden. The full classification of all 21 §14 ids
+lives in the [§14 check-id classification matrix](#14-check-id-classification-matrix).
 
 ## Regenerate
 
@@ -51,11 +55,12 @@ target**. One run:
 2. smoke-imports every pinned dependency (proving the pins resolve);
 3. emits the valid baseline `valid/minimal/` — the **scalar** half then the
    **gridded** half — and **derives every fixture the `mutate.Invalid` enum
-   declares** from it (the 13 fail-closed invalids under `invalid/<name>/`,
-   including the M6 rule-(b) negative `invalid/irregular-time-axis/` — one surgical
-   mutation each);
+   declares** from it (18 invalid trees under `invalid/<name>/`, including the
+   M6 rule-(b) negative `invalid/irregular-time-axis/`);
 4. runs **every** load-bearing self-assertion — including, per derived fixture,
-   the `assert_differs_in_exactly_one_way` one-mutation check — and **exits
+   `assert_matches_declared_mutation_recipe`, which proves the expected changed-file
+   set and replacement set for that variant (including all four replacements in the
+   multi-store fixture) — and **exits
    non-zero if any fails**, so a broken property aborts the whole regenerate and a
    non-conformant tree is never produced.
 
@@ -71,7 +76,7 @@ identical** tree, so a regenerate produces no spurious diff.
 ## Layout
 
 The `valid/`/`invalid/` trees are *generated* (git-ignored — see the tracking
-policy above). Each is one mutation (or zero, for the baseline) off a known-good
+policy above). Each follows a variant-specific mutation recipe applied to a known-good
 four-quadrant dataset. The committed golden snapshots live OUTSIDE those trees,
 under `conformance/goldens/`, so `regenerate.sh` never clobbers them.
 
@@ -101,19 +106,23 @@ conformance/
   invalid/basin-id-folder-mismatch/       # pins I2 — one surgical mutation off the baseline (git-ignored data)
   invalid/ragged-field-schema/            # pins H1 — one surgical mutation off the baseline (git-ignored data)
   invalid/non-monotonic-time/             # pins T1 — one surgical mutation off the baseline (git-ignored data)
+  invalid/unpinned-gridded-time-units/    # pins T3 — one store's units attribute in two metadata copies (git-ignored data)
+  invalid/divergent-standalone-gridded-time-units/ # pins T3 — standalone units only; consolidated stays pinned (git-ignored data)
+  invalid/unpinned-gridded-time-calendar/ # pins T3 — one store's calendar in both metadata copies (git-ignored data)
+  invalid/multi-store-unpinned-gridded-time-encodings/ # pins T3 — two offending stores aggregate (git-ignored data)
   invalid/crs-mismatch/                   # pins M5 — one surgical mutation off the baseline (git-ignored data)
   invalid/misaligned-shared-label/        # pins G2 — one surgical mutation off the baseline (git-ignored data)
   invalid/divergent-grid-label-set/       # pins H2 — one surgical mutation off the baseline (git-ignored data)
+  invalid/grid-resolution-mismatch/       # G3 discovery error; no validation golden (git-ignored data)
 ```
 
-> **The fixture set covers the full §14 matrix.** The 13 derived fixtures
-> above (all fail-closed invalids, including the HDX-0.2 M6 rule-(b) negative
-> `invalid/irregular-time-axis`) are exactly one per `mutate.Invalid` variant, and
-> exactly the rows in the
+> **The fixture set covers the full §14 matrix.** The 18 derived fixtures
+> above are exactly one per `mutate.Invalid` variant. Seventeen are the rows in the
 > [fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid)
-> and the [§14 classification matrix](#14-check-id-classification-matrix). A clean
-> `regenerate.sh` emits all of them; no fixture name elsewhere in this README is a
-> dangling reference.
+> and the [§14 classification matrix](#14-check-id-classification-matrix). The
+> remaining fixture, `grid-resolution-mismatch`, is a G3 discovery error with no
+> validation golden and therefore sits outside the 17-row pinned-check table. A clean
+> `regenerate.sh` emits all 18 trees.
 
 > **One valid-shaped fixture.** `valid/minimal/` is the four-quadrant baseline.
 > Every other derived fixture is a fail-closed negative under `invalid/`. Under
@@ -208,8 +217,8 @@ same golden-output discipline extends to the wider fixture family.
 > **The invalid family adds no field.** No invalid fixture introduces a new
 > domain field or mutates a manifest floor field, so this baseline
 > `goldens/valid-minimal.describe.json` is the **byte-unchanged** green floor every
-> invalid fixture is derived from (each invalid is one surgical mutation off this
-> baseline). The invalid family pins `validate` reports only; it touches no
+> invalid fixture is derived from (each variant has an exact generator-asserted diff
+> from this baseline). The invalid family pins `validate` reports only; it touches no
 > `describe` golden.
 
 ### `goldens/valid-minimal.validate.json` — the pinned `validate` report (R4)
@@ -231,14 +240,16 @@ and is pinned by Rust tests in `crates/core/src/validate.rs`:
 2. `validate` of the valid fixture, parsed to JSON, **equals** the golden — the snapshot.
 
 **It records which checks ran vs were skipped (spec §14 note).** The golden lists **all
-20** §14 ids; each carries its `status` (`ran` / `skipped`), its `result` (`pass` / `fail`,
+21** §14 ids; each carries its `status` (`ran` / `skipped`), its `result` (`pass` / `fail`,
 or `null` for a skip), its R3 `depth` (`metadata_deep` / `byte_deep`), and an opaque
-`detail`. On the valid fixture **all 20** checks `ran:pass` (20/20, no skips) under HDX
+`detail`. On the valid fixture **all 21** checks `ran:pass` (21/21, no skips) under HDX
 0.2 — the byte-deep legs now run over the surfaced full per-basin axis + realized columns:
 **T2** (cross-artifact full time-axis identity, both 1-D axes as i64 micros), **M6** rule
 (b) (per-basin axis regularity over the full 1-D `time` array), and **L3** (absence-is-NaN,
 not a missing file). `conformant` is `true`. This makes the §14-note requirement ("the
 validator MUST clearly report which checks ran") a **machine-readable, pinned artifact**.
+T3's `ran:pass` outcome seeds the pinned per-store gridded time declaration:
+`units = "days since 1970-01-01"` and `calendar = "proleptic_gregorian"`.
 
 **Versioned implicitly by `format_version` only.** Like the describe shape, the validate
 report carries no schema-version field; its only version is the manifest `format_version`
@@ -250,8 +261,8 @@ hand-edited: run `validate` over the fixture, pretty-print it
 (`ValidationReport::to_json_pretty`), and overwrite the matching golden under
 `conformance/goldens/` — `valid-minimal.validate.json` for the valid baseline, or
 `invalid-<fixture>.validate.json` for an invalid (the fixture path flattened with
-`/` → `-`). Do this **only** when the report shape legitimately changes (a
-`format_version` bump). A drift caught by the snapshot test that is **not** an
+`/` → `-`). Do this **only** when the report shape legitimately changes, such as
+an intentional closed-check-set change. A drift caught by the snapshot test that is **not** an
 intended shape change is a bug, not a golden-refresh. The same golden-output
 discipline extends to the wider invalid fixture family — the
 one-violation-per-check golden report matrix.
@@ -379,19 +390,21 @@ file is absent; nothing is added, and no remaining file's bytes differ.
 
 ## Fixture → one-pinned-check map (every committed/generated invalid)
 
-Each invalid is **derived programmatically** from the valid baseline via **exactly
-one surgical mutation** (the generator's
-`assert_differs_in_exactly_one_way` self-assertion proves the one-mutation
-invariant at generation time) and pins **exactly one** spec §14 check. The table
-lists **every** fixture a clean `regenerate.sh` emits beyond the valid baseline:
-the **13 enforceable negatives** (a clean `conformant:false` report — or, for
+Each invalid is **derived programmatically** from the valid baseline using a
+variant-specific mutation recipe and pins **exactly one** spec §14 check. The
+generator's `assert_matches_declared_mutation_recipe` self-assertion proves the exact
+expected file and value replacements for each variant; for the multi-store T3 fixture
+it proves four serialized attribute replacements across two stores and their
+standalone and consolidated metadata sites. The table
+lists the **17 enforceable negatives** emitted by a clean `regenerate.sh` (a
+clean `conformant:false` report — or, for
 M2/M3/M4, an entry-gate `Err` — with exactly one §14 check failing), including the
-HDX-0.2 M6 rule-(b) negative `invalid/irregular-time-axis`. Each row
-is the single fixture the generator's `Invalid` enum declares (one per
-`mutate.Invalid` variant); no row names a fixture that is not emitted, and every
-emitted fixture appears here.
+HDX-0.2 M6 rule-(b) negative `invalid/irregular-time-axis`. The generator emits
+one additional tree, `invalid/grid-resolution-mismatch`, whose malformed grid
+declaration raises a G3 discovery error before report assembly; it has no
+validation golden and is intentionally outside this pinned-check table.
 
-| Spec check (§14) | Fixture | Negative kind | The one mutation |
+| Spec check (§14) | Fixture | Negative kind | Mutation recipe |
 |---|---|---|---|
 | **M2** — `format_version == "0.1"`; any other value is rejected outright (hard cut). | `invalid/wrong-format-version/` | entry-gate `Err` | `manifest.json` `format_version`: `"0.1"` → `"0.2"` (all other fields unchanged). |
 | **M3** — exactly the six floor fields are present; no derivable field (§11). | `invalid/extra-manifest-field/` | entry-gate `Err` | Append a 7th derivable key `content_hash` after the six floor fields (their values byte-identical). |
@@ -402,16 +415,21 @@ emitted fixture appears here.
 | **I2** — in-file `basin_id` agrees with the `basin=<id>` folder (§3). | `invalid/basin-id-folder-mismatch/` | `conformant:false` | Rewrite one basin's in-file `basin_id` to a unique foreign value (`9999`) that disagrees with its `basin=<id>` folder. |
 | **H1** — every basin has the identical field schema (§5). | `invalid/ragged-field-schema/` | `conformant:false` | Rename one basin's `scalar_dynamic` data field `streamflow` → `flow` (dtype/quadrant/nullability kept; only the name diverges). |
 | **T1** — the scalar `time` column is named `time`, a timestamp, non-null, sorted ascending (§6.3). | `invalid/non-monotonic-time/` | `conformant:false` | Write one basin's `scalar_dynamic` `time` descending across row groups (`sorted_ascending` false). |
+| **T3** — every gridded Zarr `time` declaration site carries pinned units and calendar (§6.3). | `invalid/unpinned-gridded-time-units/` | `conformant:false` | In `basin=0003/gridded_dynamic/era5.zarr`, change only `time.attributes.units` from `"days since 1970-01-01"` to `"days since 1900-01-01"` in standalone `time/zarr.json` and root inline consolidated `zarr.json`; T3 names both sites. |
+| **T3** — present standalone declarations cannot hide behind consolidation. | `invalid/divergent-standalone-gridded-time-units/` | `conformant:false` | Change only standalone units to `"days since 1800-01-01"`; keep the consolidated copy pinned. T3 names both the non-pinned standalone attribute and its divergence from consolidation. An absent standalone member is legal when consolidation is present and pinned. |
+| **T3** — the pinned calendar leg is enforced. | `invalid/unpinned-gridded-time-calendar/` | `conformant:false` | Change calendar from `"proleptic_gregorian"` to `"julian"` at both declaration sites in one store. |
+| **T3** — violations aggregate across stores. | `invalid/multi-store-unpinned-gridded-time-encodings/` | `conformant:false` | Change basin `0001` units and basin `0002` calendar at both sites; one T3 detail names all four site violations in deterministic order. |
 | **M5** — the manifest `crs` matches every georeferenced file's recorded CRS (§7/§11). | `invalid/crs-mismatch/` | `conformant:false` | `manifest.json` `crs`: `"EPSG:4326"` → `"EPSG:3857"` (the files keep `EPSG:4326`; all other floor fields unchanged). |
 | **G2** — a grid label shared across the COG and Zarr subtrees implies cell-for-cell alignment (§8). | `invalid/misaligned-shared-label/` | `conformant:false` | Re-emit one basin's `gridded_static/era5.tif` under the **same** `era5` label at a half-cell-shifted geometry (`west` `10.0` → `10.5`); its Zarr stays at the baseline geometry, so the shared label no longer coincides. |
 | **H2** — the grid-label set is identical across basins (§8). | `invalid/divergent-grid-label-set/` | `conformant:false` | Re-emit one basin's COG **and** Zarr under a divergent `era5b` label (`era5.*` → `era5b.*`); that basin's label set becomes `{era5b}` while every other basin's is `{era5}`. |
 | **M6** — each basin's realized `time` axis is strictly increasing with a uniform interior step (rule (b), §6.2/§6.4). | `invalid/irregular-time-axis/` | `conformant:false` | Rewrite one basin's `scalar_dynamic` `time` to an irregular but strictly-ascending, non-null axis (days `[0,1,3,7]` — gaps 1,2,4) **and** its matching Zarr `time` to the identical axis; rule (b) runs over the full axis and fails the non-constant interior step. See [the M6 subsection](#the-m6-rule-b-negative-invalid-irregular-time-axis-hdx-02). |
 
-> **The one-invalid-per-check family is exhaustive.** It spans the entry-gate
+> **The generated negative family is exhaustive.** It spans the entry-gate
 > M2/M3/M4, the I1/I2/H1/T1/L2 parquet/layout negatives, the M5/G2/H2
-> georef/grid-label negatives, and the M6 rule-(b) regularity negative. **The 13
-> rows above are exactly the fixtures a clean `regenerate.sh` emits** (one per
-> `mutate.Invalid` variant). The full §14 classification matrix — every check id
+> georef/grid-label negatives, four complementary T3 time-encoding negatives, and the M6 rule-(b)
+> regularity negative. **The 17 rows above are the report/entry-gate negatives.**
+> A clean `regenerate.sh` emits those plus the G3 discovery-error tree
+> `grid-resolution-mismatch`, for 18 invalid trees total. The full §14 classification matrix — every check id
 > placed in exactly one of three buckets — is the [next section](#14-check-id-classification-matrix).
 > Every invalid is added the same way: add a mutation to the generator and
 > regenerate (never hand-edit a tree).
@@ -420,20 +438,20 @@ emitted fixture appears here.
 
 ## §14 check-id classification matrix
 
-The §14 `MUST` checklist has **20** ids (M1–M6, L1–L3, I1–I3, H1–H2, T1–T2,
+The §14 `MUST` checklist has **21** ids (M1–M6, L1–L3, I1–I3, H1–H2, T1–T3,
 G1–G3, Geo1). Every id falls into **exactly one** of three buckets, determined by
 what [`crates/core/src/validate.rs`](../crates/core/src/validate.rs) `build_report`
 actually does on the fixture set. **This matrix was confirmed by reading
 `crates/core/src/validate.rs`** (the `build_report` function and each `check_*`
 rule); the two buckets below are, respectively, the `ran:fail`-on-its-negative
 set and the `ran:pass`-with-no-isolable-on-disk-negative set. Under HDX 0.2 there
-are **no** R3 skips left — all 20 checks RUN (T2, M6 rule (b), and L3 read the
+are **no** R3 skips left — all 21 checks RUN (T2, M6 rule (b), and L3 read the
 surfaced full per-basin axis + realized columns).
 
-### (a) Enforced, with an on-disk negative — 13 ids
+### (a) Enforced, with an on-disk negative — 14 ids
 
 These checks **run** on every fixture and `ran:fail` on a dedicated on-disk
-negative that is one surgical mutation off the baseline (the
+negative derived from the baseline by an exact generator-asserted recipe (the
 [fixture map above](#fixture--one-pinned-check-map-every-committedgenerated-invalid)).
 M2/M3/M4 fail at the §0 **entry gate** (an `Err` from `Manifest::from_json` before
 `discover` runs); the rest are a clean `conformant:false` report with that single
@@ -452,6 +470,7 @@ check `ran:fail`.
 | **H1** | identical field schema across basins | `invalid/ragged-field-schema/` | `check_h1` |
 | **H2** | identical grid-label set across basins | `invalid/divergent-grid-label-set/` | `check_h2` |
 | **T1** | `time` named/typed/non-null/sorted | `invalid/non-monotonic-time/` | `check_t1` |
+| **T3** | every gridded store has a pinned consolidated time pair; each present standalone pair is pinned and agrees | four T3 fixtures cover units, calendar, standalone divergence, and aggregation; an absent-standalone Rust regression pins the legal omission | `check_t3` |
 | **G2** | shared grid label ⇒ cell-for-cell alignment | `invalid/misaligned-shared-label/` | `check_g2` |
 | **M6** | rule (b): per-basin axis strictly-increasing + interior-regular | `invalid/irregular-time-axis/` | `check_m6` |
 
@@ -474,12 +493,12 @@ on-disk bytes).
 | **L3** | The builder structurally NaN-fills an absent field's column over the full per-basin axis, so it cannot emit a basin that declares a `scalar_dynamic` yet materializes zero time rows — the absence-is-NaN-not-a-missing-file negative. `check_l3` runs byte-deep (each declared basin must materialize real time rows) and passes on every committed fixture; its fail-path is exercised by the in-memory/zero-row falsifiable form. | `check_l3` runs+passes on the valid fixture; the byte-deep absence-vs-NaN leg is `low3_*` reader-side coverage + the `check_l3` zero-row fail path |
 | **T2** | The builder force-aligns every basin's gridded `time` axis onto the scalar axis, so it structurally cannot emit a scalar-vs-gridded mismatch — the negative needs a deliberate **on-disk corruption** of an otherwise-conformant fixture, not a builder output. `check_t2` runs byte-deep (full i64-micros axis identity) and passes on the valid fixture. | `check_t2_runs_and_fails_on_corrupted_scalar_time_column` (the on-disk corruptor) + `check_t2_runs_and_passes_on_builder_axes` |
 
-> **Bucket arithmetic (the closed 20).** (a) 13 + (b) 7 = **20** — every §14 id
-> placed in exactly one bucket, and **all 20 RUN** under HDX 0.2 (no R3 skips
+> **Bucket arithmetic (the closed 21).** (a) 14 + (b) 7 = **21** — every §14 id
+> placed in exactly one bucket, and **all 21 RUN** under HDX 0.2 (no R3 skips
 > remain). The classification is the human-readable twin of the pinned golden test
 > `golden_clearly_reports_which_checks_ran_vs_skipped` in
 > [`crates/core/src/validate.rs`](../crates/core/src/validate.rs), which asserts
-> every id `ran:pass` on the valid fixture (20/20).
+> every id `ran:pass` on the valid fixture (21/21).
 
 ### Confirmed against `validate.rs build_report`
 
@@ -488,23 +507,21 @@ The matrix matches what
 actually runs vs skips — **confirmed by reading the source**:
 
 - **`ran:pass` set on the valid fixture** — M1–M4 (entry-gate convention,
-  `ran_pass` arm), M5, L1, L2, I1, I2, I3, H1, H2, T1, G1, G2, G3, Geo1 (each from
+  `ran_pass` arm), M5, M6, L1, L2, L3, I1, I2, I3, H1, H2, T1, T2, T3, G1,
+  G2, G3, Geo1 (each from
   its `check_*` rule returning `ran_pass`). This is the bucket-(a) checks (which
   pass on the *valid* fixture) plus the bucket-(b) checks (which pass *and have no
   isolable negative*).
-- **`ran:fail`-on-its-mutation set** — exactly the **12** bucket-(a) ids, each on
-  its dedicated negative (the M2/M3/M4 trio as an entry-gate `Err`, the other nine
+- **`ran:fail`-on-its-mutation set** — exactly the **14** bucket-(a) ids, each on
+  its dedicated negative (the M2/M3/M4 trio as an entry-gate `Err`, the other eleven
   as a `conformant:false` report). Each is pinned by an `assert_pins_exactly` (or
   entry-gate `Err`) regression test naming the single failing id.
-- **the three honest skips** — exactly **M6** (`check_m6` rule (b)), **L3**
-  (`check_l3`), **T2** (`check_t2`), each `Skipped` / `ByteDeep` / non-empty
-  reason. No other id is ever `Skipped` on the valid fixture (Geo1 *only* skips
-  when outlines is *absent* — the L1-fail case — which is bucket (b), not a v0.1
-  honest-skip leg).
+- **skips on the valid fixture** — none. Geo1 skips only when outlines are absent
+  under the geometry-optional 0.2 contract; T3 still runs and passes vacuously
+  when no gridded dynamic stores are discovered.
 
-So the bucket-(a) negatives, the bucket-(b) pass-with-no-isolable-negative checks,
-and the bucket-(c) skips together account for `build_report`'s every outcome on
-every fixture in this suite.
+So the bucket-(a) negatives and bucket-(b) pass-with-no-isolable-negative checks
+account for the closed 21-id `build_report` sequence.
 
 ---
 
@@ -528,6 +545,7 @@ read "seeds the precondition for", never "enforces".
 | **H2** | the grid-label set (`{era5}`) is identical across basins | grids |
 | **T1** | the scalar `time` column is named `time`, full timestamp, non-nullable, sorted ascending | scalar |
 | **T2** | within each basin the `scalar_dynamic` and Zarr `gridded_dynamic` share the identical time axis; gaps NaN-filled | scalar + grids |
+| **T3** | every discovered gridded Zarr `time` declares `units = "days since 1970-01-01"` and `calendar = "proleptic_gregorian"` | grids |
 | **G1** | one artifact = one grid; fields self-name (COG band description / CF variable = field name); no positional channel axis | grids |
 | **G2** | a shared grid label across the static/dynamic subtrees that **does** exhibit cell-for-cell alignment | grids |
 | **G3** | Zarr CF georef (explicit `lat`/`lon` + `grid_mapping`); COG standard georeferencing tags | grids |
@@ -569,21 +587,20 @@ This closes the "generator masquerading as a writer" risk explicitly.
 
 ### Rule 2 — Derived, not hand-authored (HARD RULE)
 
-Every invalid fixture **MUST** be
-generated **programmatically from the single valid baseline via exactly one
-surgical mutation each**. The generator builds the valid baseline once, then
-derives each invalid by applying one targeted mutation (e.g. overwrite
-`manifest.json`'s `format_version`; delete one root rollup).
+Every invalid fixture **MUST** be generated **programmatically from the single
+valid baseline via an explicit, minimal mutation recipe**. The generator builds
+the valid baseline once, then derives each invalid by applying its recipe (e.g.
+overwrite `manifest.json`'s `format_version`; delete one root rollup; or, for the
+multi-store aggregation regression, rewrite four declarations across two stores).
 
 > **A contributor MUST NOT hand-edit a fixture tree.** To add or change an
 > invalid fixture, add a mutation to the generator and **regenerate**.
 
-This keeps every fixture exactly one mutation off a known-good baseline, so
-"differs in exactly one way" is true by construction and the whole suite is
-maintainable as one generator rather than N hand-built trees. A generation-time
-self-assertion (`assertions.assert_differs_in_exactly_one_way`) confirms each
-invalid differs from the baseline in exactly the one intended way, aborting the
-regenerate otherwise.
+This keeps every fixture as a precisely bounded diff from a known-good baseline
+and the whole suite maintainable as one generator rather than N hand-built trees.
+A generation-time self-assertion (`assertions.assert_matches_declared_mutation_recipe`)
+confirms the exact changed-file and replacement set declared for each variant,
+aborting regeneration on any additional or missing change.
 
 ### Rule 3 — Rust-side confirmation hand-off
 

@@ -1,11 +1,12 @@
 """Derive the minimal invalid fixtures from the valid baseline (MS2-S4 / MS8-S2).
 
 LOW-2 (hard rule, see ``conformance/README.md`` Rule 2): every invalid fixture
-is produced **programmatically from the single valid baseline via exactly one
-surgical mutation each**. Fixture trees are NEVER hand-edited. This module is the
-derivation layer: it copies the complete valid baseline tree, then applies one —
-and only one — targeted mutation, so each invalid is exactly one mutation off a
-known-good baseline.
+is produced **programmatically from the single valid baseline via an explicit,
+minimal mutation recipe**. Fixture trees are NEVER hand-edited. This module is the
+derivation layer: it copies the complete valid baseline tree, then applies the
+variant's bounded recipe. Most variants encode one logical mutation; the
+multi-store T3 aggregation variant deliberately rewrites four attributes across
+two stores.
 
 The invalids are derived, each pinning exactly one spec check (spec §14):
 
@@ -25,9 +26,11 @@ The invalids are derived, each pinning exactly one spec check (spec §14):
   ``[0.25, -0.25]`` to ``[0.5, -0.25]`` in its standalone and consolidated Zarr
   metadata. This is a Bucket-A reader error with no golden and pins **G3**.
 
-The **Bucket-B** parquet/layout negatives (MS8-S3) each copy the baseline, then
-apply one surgical mutation that yields a clean ``conformant:false`` report with
-exactly one §14 check ``ran:fail`` (every other check passes or honestly skips):
+The report-producing negatives below each copy the baseline, then apply an explicit,
+bounded recipe that yields a clean ``conformant:false`` report with exactly one §14
+check ``ran:fail`` (every other check passes or honestly skips). Most recipes are one
+logical mutation; the multi-store T3 recipe performs four serialized attribute
+replacements across two stores:
 
 * ``invalid/missing-basin-id-column/`` — drop ``basin_id`` from one basin's
   ``scalar_dynamic.parquet``. Pins **I1** (``basin_id`` present, §3).
@@ -37,6 +40,16 @@ exactly one §14 check ``ran:fail`` (every other check passes or honestly skips)
   field ``streamflow`` → ``flow``. Pins **H1** (homogeneous schema, §5).
 * ``invalid/non-monotonic-time/`` — write one basin's ``scalar_dynamic`` ``time``
   descending. Pins **T1** (``time`` sorted, §6.3).
+* ``invalid/unpinned-gridded-time-units/`` — change one store's declared
+  ``time.attributes.units`` in its standalone and inline consolidated metadata.
+  Pins **T3** (the pinned gridded time encoding, §6.3).
+* ``invalid/divergent-standalone-gridded-time-units/`` — change only standalone
+  units while leaving consolidation pinned. Pins **T3** and proves no declaration
+  site is hidden behind the consolidated copy.
+* ``invalid/unpinned-gridded-time-calendar/`` — change one store's calendar in
+  both metadata copies. Pins the **T3** calendar leg.
+* ``invalid/multi-store-unpinned-gridded-time-encodings/`` — change units on one
+  store and calendar on another, in both metadata copies. Pins **T3** aggregation.
 * ``invalid/missing-gridded-dynamic-subtree/`` — delete one basin's
   ``gridded_dynamic/`` subtree. Pins **L2** (per-basin artifacts, §4).
 
@@ -74,9 +87,9 @@ on an empty cadence, but the M4 entry gate rejects an empty cadence *first*, so
 **M4**, not M6 — rule (a)'s fail leg is dead code on the validate path.
 
 After each derivation the invalid-side self-assertion
-(:func:`hdx_fixtures.assertions.assert_differs_in_exactly_one_way`) confirms the
-tree differs from the baseline in **exactly the one intended way**, enforcing the
-one-mutation invariant at generation time.
+(:func:`hdx_fixtures.assertions.assert_matches_declared_mutation_recipe`) confirms the
+tree differs from the baseline by exactly the variant's declared changed-file and
+replacement set, enforcing the bounded-mutation invariant at generation time.
 
 This module emits no contract logic and is dev-only — like the rest of the
 harness it merely emits bytes a reader will later read (spec §10 / architecture
@@ -149,6 +162,26 @@ GRID_RESOLUTION_METADATA_FILES: frozenset[str] = frozenset(
         f"{GRID_RESOLUTION_STORE}/crs/zarr.json",
         f"{GRID_RESOLUTION_STORE}/zarr.json",
     }
+)
+
+# The sole logical attribute mutation for the T3 negative. Zarr v3 serializes
+# the time attributes in standalone array metadata and root inline consolidated
+# metadata, so both physical copies must move together.
+GRIDDED_TIME_ENCODING_STORE: str = "basin=0003/gridded_dynamic/era5.zarr"
+GRIDDED_TIME_ENCODING_METADATA_FILES: frozenset[str] = frozenset(
+    {
+        f"{GRIDDED_TIME_ENCODING_STORE}/time/zarr.json",
+        f"{GRIDDED_TIME_ENCODING_STORE}/zarr.json",
+    }
+)
+GRIDDED_TIME_UNITS_BASELINE: str = "days since 1970-01-01"
+GRIDDED_TIME_UNITS_UNPINNED: str = "days since 1900-01-01"
+GRIDDED_TIME_UNITS_DIVERGENT: str = "days since 1800-01-01"
+GRIDDED_TIME_CALENDAR_BASELINE: str = "proleptic_gregorian"
+GRIDDED_TIME_CALENDAR_UNPINNED: str = "julian"
+MULTI_STORE_TIME_ENCODING_MUTATIONS: tuple[tuple[str, str, str], ...] = (
+    ("basin=0001/gridded_dynamic/era5.zarr", "units", GRIDDED_TIME_UNITS_UNPINNED),
+    ("basin=0002/gridded_dynamic/era5.zarr", "calendar", GRIDDED_TIME_CALENDAR_UNPINNED),
 )
 
 # --- Bucket-B scalar/identity/homogeneity/time/layout mutation targets (MS8-S3) -
@@ -248,6 +281,14 @@ class Invalid(Enum):
     BASIN_ID_FOLDER_MISMATCH = "basin-id-folder-mismatch"
     RAGGED_FIELD_SCHEMA = "ragged-field-schema"
     NON_MONOTONIC_TIME = "non-monotonic-time"
+    UNPINNED_GRIDDED_TIME_UNITS = "unpinned-gridded-time-units"
+    DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS = (
+        "divergent-standalone-gridded-time-units"
+    )
+    UNPINNED_GRIDDED_TIME_CALENDAR = "unpinned-gridded-time-calendar"
+    MULTI_STORE_UNPINNED_GRIDDED_TIME_ENCODINGS = (
+        "multi-store-unpinned-gridded-time-encodings"
+    )
     MISSING_GRIDDED_DYNAMIC_SUBTREE = "missing-gridded-dynamic-subtree"
     # Bucket-A G3 reader error: a well-formed signed declaration disagrees with
     # the unchanged CF longitude witnesses. Discovery fails; there is no golden.
@@ -313,6 +354,13 @@ class Invalid(Enum):
             return "H1"
         if self is Invalid.NON_MONOTONIC_TIME:
             return "T1"
+        if self in {
+            Invalid.UNPINNED_GRIDDED_TIME_UNITS,
+            Invalid.DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS,
+            Invalid.UNPINNED_GRIDDED_TIME_CALENDAR,
+            Invalid.MULTI_STORE_UNPINNED_GRIDDED_TIME_ENCODINGS,
+        }:
+            return "T3"
         if self is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
             return "L2"
         if self is Invalid.GRID_RESOLUTION_MISMATCH:
@@ -628,7 +676,7 @@ def _mutate_crs_mismatch(target_root: Path) -> None:
     of the manifest's — feasible, but multi-byte and per-format (rewrite the COG
     GeoTIFF CRS tags AND the Zarr CF ``crs`` variable AND the geoparquet CRS) and
     touches several files; the manifest-only rewrite is the surgical single-file
-    change that keeps "differs in exactly one way" trivially true.
+    change whose exact single-file diff is straightforward to self-assert.
     """
     manifest_path = target_root / "manifest.json"
     obj = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -734,12 +782,92 @@ def _mutate_irregular_time_axis(target_root: Path) -> None:
     reemit_basin_zarr_with_times(target_root, _MUTATED_BASIN_SPEC, irregular)
 
 
-def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Path:
-    """Derive one invalid tree from the baseline via exactly one mutation.
+def _rewrite_json_attribute(path: Path, attr_path: tuple[str, ...], value: str) -> None:
+    """Rewrite one JSON attribute while preserving the source newline convention."""
+    original = path.read_text(encoding="utf-8")
+    document = json.loads(original)
+    parent = document
+    for key in attr_path[:-1]:
+        parent = parent[key]
+    parent[attr_path[-1]] = value
+    suffix = "\n" if original.endswith("\n") else ""
+    path.write_text(json.dumps(document, indent=2) + suffix, encoding="utf-8")
 
-    Copies the complete valid baseline, then dispatches the single mutation for
-    ``invalid`` (LOW-2). Returns the derived tree root. The caller runs the
-    "differs in exactly one way" self-assertion afterwards.
+
+def _mutate_time_encoding_site(
+    target_root: Path,
+    store: str,
+    attribute: str,
+    value: str,
+    *,
+    standalone: bool = True,
+    consolidated: bool = True,
+) -> None:
+    """Change one time attribute at the selected Zarr v3 declaration sites."""
+    if standalone:
+        _rewrite_json_attribute(
+            target_root / store / "time" / "zarr.json",
+            ("attributes", attribute),
+            value,
+        )
+    if consolidated:
+        _rewrite_json_attribute(
+            target_root / store / "zarr.json",
+            (
+                "consolidated_metadata",
+                "metadata",
+                "time",
+                "attributes",
+                attribute,
+            ),
+            value,
+        )
+
+
+def _mutate_unpinned_gridded_time_units(target_root: Path) -> None:
+    """Change one store's units in both Zarr v3 declaration sites."""
+    _mutate_time_encoding_site(
+        target_root,
+        GRIDDED_TIME_ENCODING_STORE,
+        "units",
+        GRIDDED_TIME_UNITS_UNPINNED,
+    )
+
+
+def _mutate_divergent_standalone_gridded_time_units(target_root: Path) -> None:
+    """Change only a standalone units declaration, leaving consolidation pinned."""
+    _mutate_time_encoding_site(
+        target_root,
+        GRIDDED_TIME_ENCODING_STORE,
+        "units",
+        GRIDDED_TIME_UNITS_DIVERGENT,
+        consolidated=False,
+    )
+
+
+def _mutate_unpinned_gridded_time_calendar(target_root: Path) -> None:
+    """Change one store's calendar in both Zarr v3 declaration sites."""
+    _mutate_time_encoding_site(
+        target_root,
+        GRIDDED_TIME_ENCODING_STORE,
+        "calendar",
+        GRIDDED_TIME_CALENDAR_UNPINNED,
+    )
+
+
+def _mutate_multi_store_time_encodings(target_root: Path) -> None:
+    """Change different time attributes on two stores at both declaration sites."""
+    for store, attribute, value in MULTI_STORE_TIME_ENCODING_MUTATIONS:
+        _mutate_time_encoding_site(target_root, store, attribute, value)
+
+
+def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Path:
+    """Derive one invalid tree by applying its declared bounded mutation recipe.
+
+    Copies the complete valid baseline, then dispatches the recipe for ``invalid``
+    (LOW-2). Most recipes encode one logical mutation; the multi-store T3 recipe
+    rewrites four attributes across two stores. Returns the derived tree root. The
+    caller verifies the exact expected file-set and byte changes afterwards.
     """
     log = get_logger("mutate")
     target_root = invalid_root(repo_root, invalid)
@@ -761,6 +889,14 @@ def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Pa
         _mutate_ragged_field_schema(target_root)
     elif invalid is Invalid.NON_MONOTONIC_TIME:
         _mutate_non_monotonic_time(target_root)
+    elif invalid is Invalid.UNPINNED_GRIDDED_TIME_UNITS:
+        _mutate_unpinned_gridded_time_units(target_root)
+    elif invalid is Invalid.DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS:
+        _mutate_divergent_standalone_gridded_time_units(target_root)
+    elif invalid is Invalid.UNPINNED_GRIDDED_TIME_CALENDAR:
+        _mutate_unpinned_gridded_time_calendar(target_root)
+    elif invalid is Invalid.MULTI_STORE_UNPINNED_GRIDDED_TIME_ENCODINGS:
+        _mutate_multi_store_time_encodings(target_root)
     elif invalid is Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE:
         _mutate_missing_gridded_dynamic_subtree(target_root)
     elif invalid is Invalid.CRS_MISMATCH:

@@ -1808,9 +1808,9 @@ mod tests {
 
         // CORROBORATING positive (NOT the M1 proof): validate over the fixture is
         // conformant, no check ran:fail, and every Skipped check carries a reason —
-        // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050),
-        // explicitly NOT all-RAN (L3/M6(b)/T2/Geo1 are honestly Skipped-with-reason on
-        // a conformant 0.2 fixture; here this fixture happens to run them all). The
+        // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050).
+        // This fixture runs all 21 checks; the loop still verifies that any future
+        // legitimate skip carries a reason. The
         // catalog is consumed only by order-insensitive G1, so a missing field cannot
         // trip validate — confirming validate is field-catalog-insensitive.
         let report = crate::validate::validate(&fixture)

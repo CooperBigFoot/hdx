@@ -737,6 +737,9 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     const TYPE_ASCII: u16 = 2;
     pub(crate) const TYPE_SHORT: u16 = 3;
@@ -782,17 +785,33 @@ pub(crate) mod test_support {
 
     pub(crate) type TiffEntry = (u16, TiffValue);
 
-    pub(crate) fn write_temp(tag: &str, bytes: &[u8]) -> PathBuf {
+    fn write_temp_at(tag: &str, bytes: &[u8], nanos: u128) -> PathBuf {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "hdx-cog-{tag}-{}-{}.tif",
+            "hdx-cog-{tag}-{}-{nanos}-{sequence}.tif",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
         ));
         std::fs::write(&path, bytes).expect("write temp tif");
         path
+    }
+
+    pub(crate) fn write_temp(tag: &str, bytes: &[u8]) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        write_temp_at(tag, bytes, nanos)
+    }
+
+    #[test]
+    fn temp_tiff_paths_remain_unique_when_timestamps_collide() {
+        let first = write_temp_at("same-tag", b"first", 42);
+        let second = write_temp_at("same-tag", b"second", 42);
+
+        std::fs::remove_file(&first).ok();
+        std::fs::remove_file(&second).ok();
+
+        assert_ne!(first, second, "same-tag writes must not share a temp path");
     }
 
     pub(crate) fn build_tiff(entries: &[(u16, u16, u32, u32)]) -> Vec<u8> {

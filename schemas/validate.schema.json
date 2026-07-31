@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hydrology-dataset-exchange.org/schemas/v0.1/validate.schema.json",
   "title": "HDX validate report",
-  "description": "The full validation report the `validate` verb emits (spec §10/§14, R4): the §14 MUST checklist executed over the discovery layer. Mirrors the validate-local DTO 1:1: exactly {checks, conformant}, additionalProperties:false at every level. `checks` lists EVERY §14 check id (the closed set of 20: M1–M6, L1–L3, I1–I3, H1–H2, T1–T2, G1–G3, Geo1), each recording whether it `ran` or was `skipped` (the §14-note requirement: the validator MUST CLEARLY REPORT WHICH CHECKS RAN). A check that ran carries a `pass`/`fail` result; a skipped check carries `result: null` and a non-null `detail` reason (an honest R3 deferral, never a silent pass). `conformant` is the overall verdict — true iff no check that RAN failed (fail-closed; a skip never flips it, spec §14). A violated MUST is carried here as a `result: fail` outcome with `conformant: false`, NEVER as a raised error. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
+  "description": "The full validation report the `validate` verb emits (spec §10/§14, R4): the §14 MUST checklist executed over the discovery layer. Mirrors the validate-local DTO 1:1: exactly {checks, conformant}, additionalProperties:false at every level. `checks` lists EVERY §14 check id (the closed set of 21: M1–M6, L1–L3, I1–I3, H1–H2, T1–T3, G1–G3, Geo1), each recording whether it `ran` or was `skipped` (the §14-note requirement: the validator MUST CLEARLY REPORT WHICH CHECKS RAN). A check that ran carries a `pass`/`fail` result; a skipped check carries `result: null` and a non-null `detail` reason (an honest R3 deferral, never a silent pass). `conformant` is the overall verdict — true iff no check that RAN failed (fail-closed; a skip never flips it, spec §14). A violated MUST is carried here as a `result: fail` outcome with `conformant: false`, NEVER as a raised error. This shape is versioned IMPLICITLY by the manifest `format_version` ONLY (the spec §0 hard cut) — there is no separate schema-version field; a shape change requires a `format_version` bump.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -37,7 +37,7 @@
       ],
       "properties": {
         "id": {
-          "description": "The stable spec check id (the closed set of the 20 §14 MUST ids).",
+          "description": "The stable spec check id (the closed set of the 21 §14 MUST ids).",
           "type": "string",
           "enum": [
             "M1",
@@ -56,6 +56,7 @@
             "H2",
             "T1",
             "T2",
+            "T3",
             "G1",
             "G2",
             "G3",

@@ -113,6 +113,13 @@
       "detail": null
     },
     {
+      "id": "T3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
       "id": "G1",
       "status": "ran",
       "result": "pass",

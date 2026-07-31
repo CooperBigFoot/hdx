@@ -1,8 +1,8 @@
-"""Build the valid baseline + derive the two invalids, then self-assert (MS2-S4).
+"""Build the valid baselines, derive every declared invalid, then self-assert.
 
 This is the generation entry point ``regenerate.sh`` calls. It emits the one
-valid dataset into ``conformance/valid/minimal/`` in two halves, then derives the
-two minimal invalids from that baseline, running the load-bearing self-assertions
+valid dataset into ``conformance/valid/minimal/`` in two halves, then derives all
+variants in :class:`~hdx_fixtures.mutate.Invalid`, running load-bearing self-assertions
 after each step and aborting on any failure:
 
 * the **scalar/geometry** half (MS2-S2) on the mature parquet/geoparquet path —
@@ -19,16 +19,16 @@ after each step and aborting on any failure:
   MS8-S3 Bucket-B parquet/layout negatives (I1/I2/H1/T1/L2); and the MS8-S2
   georef/grid-label negatives ``invalid/crs-mismatch/`` (M5),
   ``invalid/misaligned-shared-label/`` (G2), ``invalid/divergent-grid-label-set/``
-  (H2) — each copied from the baseline and changed by exactly one surgical
-  mutation (LOW-2), confirmed by
+  (H2), plus the T3 time-encoding negatives — each copied from the baseline and
+  changed according to its explicit bounded recipe (LOW-2), confirmed by
   :func:`hdx_fixtures.assertions.run_invalid_assertions`. Iterating the
   :class:`~hdx_fixtures.mutate.Invalid` enum, this loop derives every invalid the
   enum declares, so widening the enum (as MS8-S2 did) needs no change here.
 
 The gridded half is emitted **after** the scalar half so the Zarr time axis can
 align to the already-written scalar ``time`` (T2); the invalids are derived
-**after** the full four-quadrant baseline exists (LOW-2: one mutation off a
-complete, known-good tree).
+**after** the full four-quadrant baseline exists (LOW-2: a declared bounded
+recipe applied to a complete, known-good tree).
 """
 
 import argparse
@@ -238,10 +238,10 @@ def derive_invalids(dataset_root: Path) -> None:
     location — every variant is a fail-closed invalid under HDX 0.2, under
     ``<repo>/conformance/invalid/<name>/`` (the former still-conformant
     :attr:`~hdx_fixtures.mutate.Invalid.IRREGULAR_TIME_AXIS` case is now a fail-closed
-    M6 rule-(b) negative). For every
-    :class:`Invalid`, the baseline is copied and exactly one surgical mutation is
-    applied, then the "differs in exactly one way" self-assertion runs (aborting on
-    failure) before the next fixture. The loop iterates the :class:`Invalid` enum,
+    M6 rule-(b) negative). For every :class:`Invalid`, the baseline is copied and
+    its declared bounded mutation recipe is applied, then the recipe self-assertion
+    verifies the exact expected file-set and byte changes (aborting on failure)
+    before the next fixture. The loop iterates the :class:`Invalid` enum,
     so a widened enum (MS8-S2/S3 added variants) needs no edit.
     """
     log = get_logger("build")
