@@ -38,10 +38,12 @@
 //! - [`zarr_reader`] — the Zarr v3 **metadata** reader: reads a
 //!   `gridded_dynamic/<label>.zarr` store via the §8 inline consolidated-metadata
 //!   path (one read of the root `zarr.json`), classifies its arrays, reads the 1-D
-//!   `lat`/`lon`/`time` coordinate chunks, and builds a [`GridInfo`](grid::GridInfo)
-//!   with the center→edge conversion plus an ordinary `GriddedDynamic`
+//!   `lat`/`lon`/`time` coordinate chunks, carries the `time` coordinate's verbatim
+//!   store-declared encoding, and builds a [`GridInfo`](grid::GridInfo) with the
+//!   center→edge conversion plus an ordinary `GriddedDynamic`
 //!   [`Field`](field::Field) per data variable. Metadata + 1-D coordinate reads only
-//!   — never a `c/0/0/0` data chunk.
+//!   — never a `c/0/0/0` data chunk. Mapping: `read_zarr_grid : consolidated Zarr
+//!   metadata × coordinate chunks × GridLabel → ZarrGrid`.
 //! - [`cog_reader`] — the COG / GeoTIFF **metadata** reader: reads a
 //!   `gridded_static/<label>.tif` artifact **tags only** — the band description
 //!   (= field name) + units from tag 42112 `GDAL_METADATA`, and the standard GeoTIFF
@@ -64,7 +66,9 @@
 //!   tree, read every present COG / Zarr artifact + the outlines schema, and return
 //!   the per-grid geometries + the gridded field catalog + the delineation labels +
 //!   the per-basin observed grid labels (the §14 G2 precondition fact) + the Zarr
-//!   path. The [`Discovery`](gridded_discovery::Discovery) struct **pairs** this with
+//!   path + normalized time axis + verbatim time encoding. Mapping:
+//!   `discover_gridded : HDX layout → per-store geometry × fields × time axis × time
+//!   encoding`. The [`Discovery`](gridded_discovery::Discovery) struct **pairs** this with
 //!   the [`ScalarDiscovery`](discovery::ScalarDiscovery) half without reshaping
 //!   either, so both verbs consume one model;
 //!   [`discover`](gridded_discovery::discover) builds both halves in one call. Records
@@ -74,7 +78,8 @@
 //!   and the boundary verb [`describe`](describe::describe) /
 //!   [`describe_json`](describe::describe_json) itself. The DTO owns the JSON shape in
 //!   one place so the inert domain types stay free of `serde::Serialize`; the pure
-//!   mapping `Discovery + Manifest → Description → DTO` reports **facts only — no
+//!   mapping `Description::from_discovery : Manifest × Discovery → Description`
+//!   carries the normalized gridded axes with their store declarations and reports **facts only — no
 //!   conformance verdict**. The verb's entry order is **load-bearing** (spec §0): it
 //!   (1) reads `manifest.json`, (2) hard-cuts `format_version` via
 //!   [`Manifest::from_json`](manifest::Manifest::from_json) — returning on an unknown

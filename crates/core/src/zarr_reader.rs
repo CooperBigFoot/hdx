@@ -36,6 +36,8 @@
 //! with the pure-Rust `ruzstd` decoder. **No GDAL, no async, no cloud, no chunk-IO
 //! crate.**
 //!
+//! `read_zarr_grid : consolidated Zarr metadata × coordinate chunks × GridLabel → ZarrGrid`.
+//!
 //! ## Array classification
 //!
 //! - A **coordinate array** is one named `time`/`lat`/`lon` that self-references its
@@ -63,6 +65,7 @@
 //! | data variable | a gridded·dynamic array with `grid_mapping` + 3-D `[time, lat, lon]` dims |
 //! | grid_mapping target | the `crs` array a data var's `grid_mapping` attribute names |
 //! | center→edge | the half-pixel conversion from CF cell centers to the cell-edge extent |
+//! | gridded time encoding | the verbatim CF `units` and `calendar` strings declared by a store's `time` coordinate |
 
 use std::io::Read;
 use std::path::Path;
@@ -96,14 +99,15 @@ const GRID_RESOLUTION_REL_TOL: f64 = 1.0e-9;
 const STANDARD_NAME_ATTR: &str = "standard_name";
 /// The CF attribute carrying a variable's units (spec §2).
 const UNITS_ATTR: &str = "units";
+/// The CF attribute carrying a time coordinate's calendar declaration.
+const CALENDAR_ATTR: &str = "calendar";
 
 /// The number of microseconds in one whole day (`86_400_000_000`).
 ///
-/// The gridded·dynamic Zarr `time` coordinate is stored as int64 **days** (units
-/// `days since 1970-01-01`); the scalar/reduced axis HDX compares against is i64
-/// **microseconds** since the unix epoch. This is the exact, integral day→micros
-/// scale ([`normalize_days_to_micros`]) — it mirrors the producer's own conversion
-/// (orthographos `axis.rs` / `exec.rs`) so the two axes are bit-comparable.
+/// The gridded·dynamic Zarr `time` coordinate is decoded as int64 **days** and the
+/// scalar/reduced axis HDX compares against is i64 **microseconds**. This is the
+/// existing integral day→micros scale ([`normalize_days_to_micros`]); the store's
+/// verbatim declaration is carried separately in [`GriddedTimeEncoding`].
 pub(crate) const MICROS_PER_DAY: i64 = 86_400_000_000;
 
 /// Which path the reader used to learn the store (spec §8).
@@ -131,6 +135,28 @@ pub enum ConsolidatedMetadataSource {
     },
 }
 
+/// Carries one Zarr `time` coordinate's verbatim CF encoding declaration.
+///
+/// `GriddedTimeEncoding = CF units string × CF calendar string`. This inert
+/// descriptor records the store declaration without interpreting or accepting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GriddedTimeEncoding {
+    units: String,
+    calendar: String,
+}
+
+impl GriddedTimeEncoding {
+    /// Borrows the declared CF units string.
+    pub fn units(&self) -> &str {
+        &self.units
+    }
+
+    /// Borrows the declared CF calendar string.
+    pub fn calendar(&self) -> &str {
+        &self.calendar
+    }
+}
+
 /// The discovered facts of one `gridded_dynamic/<label>.zarr` store (spec §7/§8).
 ///
 /// Holds the gridded·dynamic [`Field`] catalog (one ordinary field per data
@@ -139,13 +165,15 @@ pub enum ConsolidatedMetadataSource {
 /// the reader used. It records facts; it enforces nothing.
 ///
 /// Inert / agnostic (spec §1): a field list, a grid geometry, a CRS string, and the
-/// path taken — no transform/role/semantic/provenance.
+/// path taken, normalized time axis, and verbatim time encoding declaration — no
+/// transform/role/semantic interpretation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZarrGrid {
     grid_info: GridInfo,
     fields: Vec<Field>,
     consolidated_source: ConsolidatedMetadataSource,
     gridded_time_micros: Vec<i64>,
+    gridded_time_encoding: GriddedTimeEncoding,
 }
 
 impl ZarrGrid {
@@ -164,17 +192,20 @@ impl ZarrGrid {
         &self.consolidated_source
     }
 
-    /// Borrows the store's `time` coordinate as i64 **microseconds** since the unix
-    /// epoch (spec §6.2/§6.3).
+    /// Borrows the store's normalized `time` coordinate as i64 microseconds.
     ///
-    /// The Zarr `time` coordinate is stored as int64 **days** (`days since
-    /// 1970-01-01`); this is that array decoded via [`read_coord_i64`] and normalized
-    /// through [`normalize_days_to_micros`] — the SAME i64-micros representation the
+    /// The Zarr `time` coordinate is decoded as int64 **days** and normalized through
+    /// [`normalize_days_to_micros`] — the SAME i64-micros representation the
     /// scalar/reduced axis HDX compares against (so `check_t2`/`check_m6(b)` compare
     /// the two axes bit-for-bit on one representation). An inert fact: discovery
     /// surfaces the axis; it renders no verdict.
     pub fn gridded_time_micros(&self) -> &[i64] {
         &self.gridded_time_micros
+    }
+
+    /// Borrows the `time` coordinate's verbatim store-declared CF encoding.
+    pub fn gridded_time_encoding(&self) -> &GriddedTimeEncoding {
+        &self.gridded_time_encoding
     }
 }
 
@@ -234,6 +265,17 @@ fn string_attr(meta: &ArrayMetadataV3, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+fn required_string_attr(
+    meta: &ArrayMetadataV3,
+    key: &str,
+    artifact: &str,
+) -> Result<String, CoreError> {
+    string_attr(meta, key).ok_or_else(|| CoreError::ZarrRead {
+        artifact: artifact.to_string(),
+        detail: format!("time coordinate attribute {key:?} is missing or is not a string"),
+    })
 }
 
 /// Returns `true` iff this array self-references the single dimension `name` —
@@ -324,8 +366,8 @@ fn read_coord_f64(store: &Path, artifact: &str, coord: &str) -> Result<Vec<f64>,
 /// (architecture §1), never a `c/0/0/0` data chunk. The fixture stores the chunk
 /// `bytes` (little-endian) + `zstd`-framed, so it is zstd-decoded with the same
 /// pure-Rust `ruzstd` decoder [`read_coord_f64`] uses, then read as **8-byte
-/// little-endian `i64`** — the correct decode for the int64 `time` coordinate (units
-/// `days since 1970-01-01`), which the f64 leg would misread. No second store opener
+/// little-endian `i64`** — the correct decode for the int64 `time` coordinate, which
+/// the f64 leg would misread. No second store opener
 /// and no `zarrs`/`ndarray` dependency: only the shared raw-chunk infra.
 ///
 /// The returned values are the **raw day-counts** stored on disk; the day→microsecond
@@ -567,7 +609,9 @@ fn check_coordinate_witnesses(
 /// resolves the CRS from the same target and maps each data variable to an ordinary `GriddedDynamic`
 /// [`Field`]. The `time` coordinate's int64 day-counts are decoded (via
 /// [`read_coord_i64`]) and normalized to i64 micros ([`gridded_time_micros`](ZarrGrid::gridded_time_micros))
-/// — the comparable axis `validate` enforces; they are not used for the grid geometry.
+/// — the comparable axis `validate` enforces. Its verbatim CF `units` and `calendar`
+/// declaration is read from the same consolidated member metadata into
+/// [`GriddedTimeEncoding`]; the declaration is not interpreted during normalization.
 /// **No `c/0/0/0` data chunk is ever read.**
 ///
 /// `grid_label` is the label of the store (e.g. `era5`), supplied by the caller from
@@ -618,6 +662,19 @@ pub fn read_zarr_grid(
             });
         }
     }
+
+    let time_metadata = arrays
+        .iter()
+        .find(|(name, meta)| name == COORD_TIME && self_references_dimension(meta, COORD_TIME))
+        .map(|(_, meta)| meta)
+        .ok_or_else(|| CoreError::MissingGriddedCoordinate {
+            artifact: artifact.clone(),
+            coordinate: COORD_TIME.to_string(),
+        })?;
+    let gridded_time_encoding = GriddedTimeEncoding {
+        units: required_string_attr(time_metadata, UNITS_ATTR, &artifact)?,
+        calendar: required_string_attr(time_metadata, CALENDAR_ATTR, &artifact)?,
+    };
 
     // Data variables: arrays carrying a `grid_mapping` attribute and 3-D
     // `[time, lat, lon]` dims. The `grid_mapping` target (the `crs` array) is
@@ -730,6 +787,7 @@ pub fn read_zarr_grid(
         fields,
         consolidated_source,
         gridded_time_micros,
+        gridded_time_encoding,
     })
 }
 
@@ -846,6 +904,15 @@ mod tests {
         let grid = read_zarr_grid(fixture_store(), GridLabel::new("era5"))
             .expect("fixture store must read via the consolidated path");
 
+        assert_eq!(
+            grid.gridded_time_encoding().units(),
+            "days since 1970-01-01"
+        );
+        assert_eq!(
+            grid.gridded_time_encoding().calendar(),
+            "proleptic_gregorian"
+        );
+
         match grid.consolidated_source() {
             ConsolidatedMetadataSource::Consolidated { members } => {
                 // All six members enumerated from the single inline read.
@@ -868,6 +935,33 @@ mod tests {
                 panic!("expected the live consolidated path, got R3 skip: {reason}")
             }
         }
+    }
+
+    #[test]
+    fn copied_store_retains_opaque_time_encoding_without_changing_day_scaling() {
+        let baseline = read_zarr_grid(fixture_store(), GridLabel::new("era5"))
+            .expect("baseline fixture must read");
+        let temp = copy_store_to_temp(&fixture_store(), "time-encoding");
+        mutate_root_metadata(&temp, |json| {
+            let attributes = json["consolidated_metadata"]["metadata"]["time"]["attributes"]
+                .as_object_mut()
+                .expect("time attributes");
+            attributes.insert(
+                "units".to_string(),
+                serde_json::json!("days since 1900-01-01"),
+            );
+            attributes.insert("calendar".to_string(), serde_json::json!("gregorian"));
+        });
+
+        let result = read_zarr_grid(&temp, GridLabel::new("era5"));
+        std::fs::remove_dir_all(&temp).ok();
+        let grid = result.expect("mutated declaration remains readable");
+        assert_eq!(
+            grid.gridded_time_encoding().units(),
+            "days since 1900-01-01"
+        );
+        assert_eq!(grid.gridded_time_encoding().calendar(), "gregorian");
+        assert_eq!(grid.gridded_time_micros(), baseline.gridded_time_micros());
     }
 
     #[test]
