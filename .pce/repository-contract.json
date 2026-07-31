@@ -21,8 +21,14 @@
     "workflows": []
   },
   "appendable": {
-    "environment_hazards": [],
+    "environment_hazards": [
+      "A fresh worktree is NOT test-ready: conformance/valid/** and conformance/invalid/** are gitignored (.gitignore:33-34). Run conformance/generator/regenerate.sh in the worktree before `cargo test --workspace`, or 11 CLI tests fail with status 101.",
+      "codex exec sandbox: an executor running -C <worktree> needs <repo>/.git/worktrees/<node-id> as an EXPLICIT writable root; the parent <repo>/.git alone is not sufficient for index.lock.",
+      "codex exec sandbox denies `sysctl kern.clockrate`, so `/usr/bin/time -l` emits no `maximum resident set size` line. Measure peak RSS in-process via getrusage(RUSAGE_SELF) instead."
+    ],
     "gate_orderings": [],
-    "lockfile_rules": []
+    "lockfile_rules": [
+      "A version bump MUST refresh Cargo.lock in the same commit (run cargo after bump-version.sh and stage both), or every worktree cut afterwards starts dirty."
+    ]
   }
 }
