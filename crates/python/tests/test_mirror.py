@@ -96,8 +96,9 @@ def test_validate_geometry_less_is_conformant_under_0_2() -> None:
     assert set(result.keys()) == VALIDATE_TOP_KEYS
     assert result["conformant"] is True
     checks = {c["id"]: c for c in result["checks"]}
-    assert len(checks) == 20, "all 20 §14 ids are reported"
+    assert len(checks) == 21, "all 21 §14 ids are reported"
     assert checks["L1"]["status"] == "ran" and checks["L1"]["result"] == "pass"
+    assert checks["T3"]["status"] == "ran" and checks["T3"]["result"] == "pass"
     assert checks["Geo1"]["status"] == "skipped", "Geo1 skips when outlines is absent (0.2)"
 
 

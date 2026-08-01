@@ -17,8 +17,8 @@
 //! 4. [`Description::from_discovery`] — the pure assembler.
 //!
 //! [`describe_json`] is the same verb plus serialization to the stable R4 JSON string.
-//! The pure mapping the [`Description`] type owns is `Discovery + Manifest → Description
-//! → DTO`.
+//! The pure mapping is `Description::from_discovery : Manifest × Discovery → Description`;
+//! serialization then projects that value into the DTO.
 //!
 //! ## The R4 mini-contract (why a describe-local DTO)
 //!
@@ -67,6 +67,7 @@
 //! |---|---|
 //! | [`Description`] | the full self-description `describe` emits — manifest + discovered facts, no verdict |
 //! | [`BasinTimeExtent`] | a per-basin ragged time-extent entry: a [`BasinId`] paired with `Option<TimeExtent>` (`None` = a recorded gap, spec §6.1) |
+//! | [`GriddedTimeEncoding`] | the verbatim CF `units` and `calendar` declaration carried with a basin's normalized gridded axis |
 //! | DTO layer | the describe-local `#[derive(Serialize)]` types that own the JSON wire shape (R4); the domain types stay free of `serde::Serialize` |
 //! | R4 mini-contract | the `Description` JSON shape as a downstream contract, versioned implicitly by `format_version` only |
 
@@ -86,68 +87,53 @@ use crate::gridded_discovery::{Discovery, discover};
 use crate::manifest::Manifest;
 use crate::newtypes::BasinId;
 use crate::scalar_reader::{TimeExtent, TimeExtentSource};
-
-/// The CF `units` the gridded·dynamic Zarr `time` coordinate is encoded under (spec
-/// §6.3): the producer always writes the axis as int64 **days** since the unix epoch.
-///
-/// The discovery layer decodes those day-counts and normalizes them to i64 microseconds
-/// (the comparable representation), but the surfaced [`GriddedTimeAxis::units`] records the
-/// source CF provenance so the describe output names the on-disk encoding. A fixed constant
-/// (not read per-store): the producer's CF encoding is invariant across the gridded·dynamic
-/// stores HDX reads.
-const GRIDDED_TIME_UNITS: &str = "days since 1970-01-01";
-
-/// The CF `calendar` the gridded·dynamic Zarr `time` coordinate is encoded under (spec
-/// §6.3): the producer always writes `proleptic_gregorian`. A fixed constant, like
-/// [`GRIDDED_TIME_UNITS`] — the producer's CF calendar is invariant.
-const GRIDDED_TIME_CALENDAR: &str = "proleptic_gregorian";
+use crate::zarr_reader::GriddedTimeEncoding;
 
 /// A basin's gridded `time` coordinate as the comparable i64-micros axis (spec
 /// §6.2/§6.3) — the **additive** gridded extension of [`BasinTimeExtent`].
 ///
 /// Carries the full per-basin gridded axis (the `gridded_dynamic` Zarr `time`
 /// coordinate decoded as int64 day-counts then normalized to i64 **microseconds**
-/// since the unix epoch, via the discovery layer) plus its CF provenance (`units` /
-/// `calendar`). Present **only** for a basin bearing `gridded_dynamic` geometry; a
+/// by the existing raw-day multiplication, via the discovery layer) plus its verbatim
+/// CF declaration (`units` / `calendar`). Present **only** for a basin bearing `gridded_dynamic` geometry; a
 /// pure-scalar basin carries `None` (the additive discipline — the existing
 /// `{start, end}` scalar extent is untouched). An inert fact, never a verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GriddedTimeAxis {
     micros: Vec<i64>,
-    units: &'static str,
-    calendar: &'static str,
+    encoding: GriddedTimeEncoding,
 }
 
 impl GriddedTimeAxis {
-    /// Builds a gridded `time` axis from the discovery layer's per-basin i64-micros array
-    /// (spec §6.2/§6.3), tagging it with the producer's fixed CF provenance.
+    /// Builds a gridded `time` axis and its store-declared encoding together.
     ///
     /// The `micros` are the `gridded_dynamic` Zarr `time` coordinate decoded as int64
-    /// day-counts then normalized to i64 microseconds since the unix epoch (the comparable
-    /// representation `validate`'s T2 / M6(b) checks consume). The CF `units` / `calendar`
-    /// are the producer's invariant encoding ([`GRIDDED_TIME_UNITS`] /
-    /// [`GRIDDED_TIME_CALENDAR`]).
-    fn from_micros(micros: Vec<i64>) -> Self {
-        Self {
-            micros,
-            units: GRIDDED_TIME_UNITS,
-            calendar: GRIDDED_TIME_CALENDAR,
-        }
+    /// day-counts then normalized by the existing raw-day-to-microsecond multiplication
+    /// (the comparable representation `validate`'s T2 / M6(b) checks consume). The encoding is the
+    /// verbatim declaration from the same representative Zarr store and is not
+    /// interpreted during normalization.
+    fn new(micros: Vec<i64>, encoding: GriddedTimeEncoding) -> Self {
+        Self { micros, encoding }
     }
 
-    /// Borrows the gridded `time` axis as i64 microseconds since the unix epoch.
+    /// Borrows the gridded `time` axis after raw-day-to-microsecond normalization.
     pub fn micros(&self) -> &[i64] {
         &self.micros
     }
 
     /// Returns the CF `units` string the gridded axis is encoded under (spec §6.3).
-    pub fn units(&self) -> &'static str {
-        self.units
+    pub fn units(&self) -> &str {
+        self.encoding.units()
     }
 
     /// Returns the CF `calendar` string the gridded axis is encoded under (spec §6.3).
-    pub fn calendar(&self) -> &'static str {
-        self.calendar
+    pub fn calendar(&self) -> &str {
+        self.encoding.calendar()
+    }
+
+    /// Borrows the named store-declared encoding as one descriptor.
+    pub fn encoding(&self) -> &GriddedTimeEncoding {
+        &self.encoding
     }
 }
 
@@ -240,14 +226,18 @@ impl Description {
         // geometry, `None` for a pure-scalar basin (the additive discipline — the scalar
         // `{start, end}` extent is unchanged either way). Indexed by folder id so the two
         // halves are tied on identity, not positional order.
-        let gridded_axis_by_basin: std::collections::BTreeMap<&str, &[i64]> = discovery
+        let gridded_axis_by_basin: std::collections::BTreeMap<
+            &str,
+            (&[i64], &GriddedTimeEncoding),
+        > = discovery
             .gridded()
             .per_basin()
             .iter()
             .filter_map(|basin| {
                 basin
                     .gridded_time_axis()
-                    .map(|axis| (basin.basin_id_folder().as_str(), axis))
+                    .zip(basin.gridded_time_encoding())
+                    .map(|axis_and_encoding| (basin.basin_id_folder().as_str(), axis_and_encoding))
             })
             .collect();
         let time_extents: Vec<BasinTimeExtent> = discovery
@@ -257,7 +247,9 @@ impl Description {
             .map(|basin| {
                 let gridded_time_axis = gridded_axis_by_basin
                     .get(basin.basin_id_folder().as_str())
-                    .map(|axis| GriddedTimeAxis::from_micros(axis.to_vec()));
+                    .map(|(axis, encoding)| {
+                        GriddedTimeAxis::new(axis.to_vec(), (*encoding).clone())
+                    });
                 BasinTimeExtent {
                     basin_id: basin.basin_id_folder().clone(),
                     time_extent: basin.time_extent(),
@@ -679,7 +671,7 @@ impl<'a> BasinTimeExtentDto<'a> {
 /// (spec §6.2/§6.3). Additive: present only for a `gridded_dynamic`-bearing basin.
 #[derive(Debug, Serialize)]
 struct GriddedTimeAxisDto<'a> {
-    /// Source: `GriddedTimeAxis::micros` (i64 microseconds since the unix epoch).
+    /// Source: `GriddedTimeAxis::micros` (raw days normalized to i64 microseconds).
     micros: &'a [i64],
     /// Source: `GriddedTimeAxis::units` (the CF `units` string).
     units: &'a str,
@@ -1461,7 +1453,7 @@ mod tests {
             let axis = entry
                 .get("gridded_time_axis")
                 .unwrap_or_else(|| panic!("basin {id}: gridded_time_axis present (gridded basin)"));
-            // CF provenance is the producer's invariant encoding.
+            // CF provenance is declared by each generated baseline store.
             assert_eq!(
                 axis.get("units").and_then(Value::as_str),
                 Some("days since 1970-01-01"),
@@ -1816,9 +1808,9 @@ mod tests {
 
         // CORROBORATING positive (NOT the M1 proof): validate over the fixture is
         // conformant, no check ran:fail, and every Skipped check carries a reason —
-        // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050),
-        // explicitly NOT all-RAN (L3/M6(b)/T2/Geo1 are honestly Skipped-with-reason on
-        // a conformant 0.2 fixture; here this fixture happens to run them all). The
+        // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050).
+        // This fixture runs all 21 checks; the loop still verifies that any future
+        // legitimate skip carries a reason. The
         // catalog is consumed only by order-insensitive G1, so a missing field cannot
         // trip validate — confirming validate is field-catalog-insensitive.
         let report = crate::validate::validate(&fixture)

@@ -11,6 +11,8 @@
 //! **pairs** the two halves without reshaping either, so `describe` and `validate`
 //! consume **one** model.
 //!
+//! `discover_gridded : HDX layout → per-store geometry × fields × time axis × time encoding`.
+//!
 //! It walks the basin-first hive and, for each basin with a present `gridded_static`
 //! / `gridded_dynamic` subtree, enumerates the `<label>.tif` / `<label>.zarr`
 //! artifacts (the grid label is the artifact file stem — HDX names nothing from the
@@ -29,7 +31,8 @@
 //! - the per-basin observed facts ([`GriddedDiscovery::per_basin`]) — one
 //!   [`BasinGridded`] per basin: the grid labels observed in *each* subtree (the
 //!   **G2 precondition fact**), the static/dynamic [`GridInfo`]s, and the Zarr
-//!   consolidated-metadata path taken.
+//!   consolidated-metadata path taken, normalized time axis, and verbatim per-store
+//!   required consolidated and optional standalone time encoding declarations.
 //!
 //! ## The G2 alignment precondition is *observed*, never enforced (spec §8/§14 G2)
 //!
@@ -55,8 +58,9 @@
 //!
 //! Every field here is a structural fact: a [`GridInfo`], an ordinary
 //! [`Field`](crate::field::Field), a [`GridLabel`], a [`DelineationLabel`], or the
-//! recorded Zarr path ([`ConsolidatedMetadataSource`]). There is **no** transform,
-//! role, semantic type, or provenance, and **no** manifest-floor field — the
+//! recorded Zarr path ([`ConsolidatedMetadataSource`]), normalized time axis, or
+//! verbatim time declaration ([`GriddedTimeEncoding`]). There is **no** transform,
+//! role, semantic type, and **no** manifest-floor field — the
 //! six-field [`Manifest`](crate::manifest::Manifest) is untouched.
 //!
 //! ## Glossary
@@ -67,6 +71,7 @@
 //! | shared grid label ⇒ alignment | a label seen in *both* gridded subtrees signals cell-for-cell alignment (spec §8); the G2 precondition |
 //! | G2 precondition fact | the per-basin observed grid labels + coinciding extents G2 is enforced over |
 //! | Zarr path taken | which path the Zarr reader took (consolidated/live vs a skip), recorded for honest downstream reporting |
+//! | gridded time encoding | the verbatim CF `units` and `calendar` strings at each Zarr declaration site |
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -81,7 +86,9 @@ use crate::geoparquet_reader::{OutlinesInfo, read_outlines};
 use crate::grid::GridInfo;
 use crate::layout::{BasinDir, LayoutModel, walk_layout};
 use crate::newtypes::{BasinId, DelineationLabel, GridLabel};
-use crate::zarr_reader::{ConsolidatedMetadataSource, ZarrGrid, read_zarr_grid};
+use crate::zarr_reader::{
+    ConsolidatedMetadataSource, GriddedTimeEncoding, ZarrGrid, read_zarr_grid,
+};
 
 /// The file extension of a `gridded_static` COG artifact (`<label>.tif`).
 const COG_EXTENSION: &str = "tif";
@@ -114,13 +121,17 @@ impl StaticArtifact {
 ///
 /// Pairs the store's grid label (its file stem) with the per-store [`GridInfo`] and
 /// the [`ConsolidatedMetadataSource`] path the Zarr reader took (recorded for honest
-/// downstream reporting). Inert/agnostic: geometry + a label + the path taken.
+/// downstream reporting), normalized time axis, the required consolidated time
+/// encoding, and the optional standalone declaration. Inert/agnostic facts without
+/// calendar or epoch interpretation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicArtifact {
     grid_label: GridLabel,
     grid_info: GridInfo,
     consolidated_source: ConsolidatedMetadataSource,
     gridded_time_micros: Vec<i64>,
+    gridded_time_encoding: GriddedTimeEncoding,
+    standalone_gridded_time_encoding: Option<GriddedTimeEncoding>,
 }
 
 impl DynamicArtifact {
@@ -139,12 +150,22 @@ impl DynamicArtifact {
         &self.consolidated_source
     }
 
-    /// Borrows the store's `time` coordinate as i64 **microseconds** since the unix
-    /// epoch (spec §6.2/§6.3) — the Zarr int64 day-counts decoded + normalized by the
+    /// Borrows the store's normalized `time` coordinate as i64 microseconds (spec
+    /// §6.2/§6.3) — the Zarr int64 day-counts decoded + normalized by the
     /// reader ([`ZarrGrid::gridded_time_micros`]). The comparable 1-D axis `validate`
     /// hands to the T2 / M6(b) checks; discovery records it as a fact, no verdict.
     pub fn gridded_time_axis(&self) -> &[i64] {
         &self.gridded_time_micros
+    }
+
+    /// Borrows the store's verbatim consolidated CF `time` encoding declaration.
+    pub fn gridded_time_encoding(&self) -> &GriddedTimeEncoding {
+        &self.gridded_time_encoding
+    }
+
+    /// Borrows the store's verbatim standalone CF `time` encoding when present.
+    pub fn standalone_gridded_time_encoding(&self) -> Option<&GriddedTimeEncoding> {
+        self.standalone_gridded_time_encoding.as_ref()
     }
 }
 
@@ -203,8 +224,8 @@ impl BasinGridded {
             .collect()
     }
 
-    /// Borrows this basin's gridded `time` axis as i64 **microseconds** since the unix
-    /// epoch (the first `gridded_dynamic` artifact's [`DynamicArtifact::gridded_time_axis`]),
+    /// Borrows this basin's normalized gridded `time` axis as i64 microseconds (the
+    /// first `gridded_dynamic` artifact's [`DynamicArtifact::gridded_time_axis`]),
     /// or `None` for a basin with no `gridded_dynamic` subtree (gaps-as-facts).
     ///
     /// Spec §8: a basin's `gridded_dynamic` artifacts share one `time` axis (the
@@ -216,6 +237,15 @@ impl BasinGridded {
         self.dynamic_artifacts
             .first()
             .map(DynamicArtifact::gridded_time_axis)
+    }
+
+    /// Borrows the representative store-declared `time` encoding for this basin.
+    ///
+    /// The encoding and axis both come from the same first [`DynamicArtifact`].
+    pub fn gridded_time_encoding(&self) -> Option<&GriddedTimeEncoding> {
+        self.dynamic_artifacts
+            .first()
+            .map(DynamicArtifact::gridded_time_encoding)
     }
 }
 
@@ -383,6 +413,8 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
                 grid_info: zarr.grid_info().clone(),
                 consolidated_source: zarr.consolidated_source().clone(),
                 gridded_time_micros: zarr.gridded_time_micros().to_vec(),
+                gridded_time_encoding: zarr.gridded_time_encoding().clone(),
+                standalone_gridded_time_encoding: zarr.standalone_gridded_time_encoding().cloned(),
             });
         }
     }
@@ -718,6 +750,73 @@ mod tests {
         ));
         copy_dir_all(&conformance("valid/minimal"), &dst);
         dst
+    }
+
+    fn copy_fixture_rel_to_temp(rel: &str, tag: &str) -> PathBuf {
+        let dst = std::env::temp_dir().join(format!(
+            "hdx-gridded-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        copy_dir_all(&conformance(rel), &dst);
+        dst
+    }
+
+    fn set_consolidated_time_encoding(store: &Path, units: &str, calendar: &str) {
+        let root_path = store.join("zarr.json");
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&root_path).expect("read copied root metadata"))
+                .expect("parse copied root metadata");
+        let attributes = root["consolidated_metadata"]["metadata"]["time"]["attributes"]
+            .as_object_mut()
+            .expect("inline consolidated time attributes");
+        attributes.insert("units".to_string(), serde_json::json!(units));
+        attributes.insert("calendar".to_string(), serde_json::json!(calendar));
+        std::fs::write(
+            root_path,
+            serde_json::to_vec(&root).expect("serialize copied root metadata"),
+        )
+        .expect("write copied root metadata");
+    }
+
+    #[test]
+    fn dynamic_artifacts_retain_each_store_declared_time_encoding() {
+        let temp =
+            copy_fixture_rel_to_temp("valid/multi_grid_multi_static", "declared-time-encoding");
+        for basin_id in ["0001", "0002", "0003"] {
+            for label in ["era5", "merit"] {
+                set_consolidated_time_encoding(
+                    &temp.join(format!("basin={basin_id}/gridded_dynamic/{label}.zarr")),
+                    "days since 1900-01-01",
+                    "gregorian",
+                );
+            }
+        }
+
+        let result = discover(&temp);
+        std::fs::remove_dir_all(&temp).ok();
+        let discovery = result.expect("copied fixture must discover");
+        assert_eq!(discovery.gridded().per_basin().len(), 3);
+        for basin in discovery.gridded().per_basin() {
+            assert_eq!(basin.dynamic_artifacts().len(), 2);
+            for artifact in basin.dynamic_artifacts() {
+                assert_eq!(
+                    artifact.gridded_time_encoding().units(),
+                    "days since 1900-01-01"
+                );
+                assert_eq!(artifact.gridded_time_encoding().calendar(), "gregorian");
+            }
+            assert_eq!(
+                basin.gridded_time_encoding(),
+                basin
+                    .dynamic_artifacts()
+                    .first()
+                    .map(|artifact| artifact.gridded_time_encoding())
+            );
+        }
     }
 
     // --- G2 precondition observed ------------------------------------------------

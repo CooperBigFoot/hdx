@@ -14,8 +14,10 @@
 //!   / `schemas/validate.schema.json` (R4), proving the CLI is a faithful,
 //!   non-reshaping surface over the MS5/MS6 wire shape and never re-derives it.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonschema::Validator;
 use serde_json::Value;
@@ -23,6 +25,49 @@ use serde_json::Value;
 /// Resolve a fixture dir relative to the bin crate root (the workspace root).
 fn fixture(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create copied fixture directory");
+    for entry in fs::read_dir(src).expect("read fixture directory") {
+        let entry = entry.expect("read fixture entry");
+        let file_type = entry.file_type().expect("read fixture entry type");
+        let destination = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).expect("copy fixture file");
+        }
+    }
+}
+
+fn copy_fixture_to_temp(rel: &str, tag: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after unix epoch")
+        .as_nanos();
+    let destination =
+        std::env::temp_dir().join(format!("hdx-cli-{tag}-{}-{unique}", std::process::id()));
+    copy_dir_all(&fixture(rel), &destination);
+    destination
+}
+
+fn set_consolidated_time_encoding(store: &Path, units: &str, calendar: &str) {
+    let root_metadata = store.join("zarr.json");
+    let mut root: Value =
+        serde_json::from_slice(&fs::read(&root_metadata).expect("read copied root zarr metadata"))
+            .expect("parse copied root zarr metadata");
+    let attributes = root
+        .pointer_mut("/consolidated_metadata/metadata/time/attributes")
+        .and_then(Value::as_object_mut)
+        .expect("inline consolidated time attributes");
+    attributes.insert("units".to_string(), Value::String(units.to_string()));
+    attributes.insert("calendar".to_string(), Value::String(calendar.to_string()));
+    fs::write(
+        root_metadata,
+        serde_json::to_vec(&root).expect("serialize copied root zarr metadata"),
+    )
+    .expect("write copied root zarr metadata");
 }
 
 /// Run the built `hdx` bin with the given args and return captured stdout bytes,
@@ -74,6 +119,63 @@ fn describe_emits_json_object_to_stdout() {
 }
 
 #[test]
+fn describe_surfaces_each_store_declared_gridded_time_encoding() {
+    let root = copy_fixture_to_temp(
+        "conformance/valid/multi_grid_multi_static",
+        "declared-time-encoding",
+    );
+    for basin_id in ["0001", "0002", "0003"] {
+        for label in ["era5", "merit"] {
+            set_consolidated_time_encoding(
+                &root.join(format!("basin={basin_id}/gridded_dynamic/{label}.zarr")),
+                "days since 1900-01-01",
+                "gregorian",
+            );
+        }
+    }
+
+    let root_arg = root
+        .to_str()
+        .expect("temporary fixture path is valid UTF-8");
+    let (code, stdout) = run_hdx_full(&["describe", root_arg]);
+    fs::remove_dir_all(&root).expect("remove copied fixture");
+
+    assert_eq!(code, 0, "describe of the copied fixture must exit 0");
+    let value: Value = serde_json::from_slice(&stdout).expect("describe stdout is valid JSON");
+    let extents = value
+        .get("time_extents")
+        .and_then(Value::as_array)
+        .expect("time_extents array");
+    assert_eq!(extents.len(), 3, "one time extent per basin");
+
+    for (entry, expected_basin_id) in extents.iter().zip(["0001", "0002", "0003"]) {
+        assert_eq!(
+            entry.get("basin_id").and_then(Value::as_str),
+            Some(expected_basin_id)
+        );
+        let axis = entry
+            .get("gridded_time_axis")
+            .expect("gridded basin carries its time axis");
+        assert_eq!(
+            axis.get("units").and_then(Value::as_str),
+            Some("days since 1900-01-01")
+        );
+        assert_eq!(
+            axis.get("calendar").and_then(Value::as_str),
+            Some("gregorian")
+        );
+        let micros = axis
+            .get("micros")
+            .and_then(Value::as_array)
+            .expect("gridded micros array");
+        assert!(!micros.is_empty(), "gridded micros array is non-empty");
+        if expected_basin_id == "0001" {
+            assert_eq!(micros[0].as_i64(), Some(946_684_800_000_000));
+        }
+    }
+}
+
+#[test]
 fn validate_emits_report_object_with_conformant_key() {
     let path = fixture("conformance/valid/minimal");
     let stdout = run_hdx(&[
@@ -122,6 +224,83 @@ fn validate_valid_minimal_exits_zero_conformant_true() {
         value.get("conformant").and_then(Value::as_bool),
         Some(true),
         "the conformant fixture reports conformant: true"
+    );
+}
+
+#[test]
+fn validate_unpinned_gridded_time_units_exits_one_and_names_units() {
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/unpinned-gridded-time-units"),
+    ]);
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(
+        (code, report.get("conformant").and_then(Value::as_bool)),
+        (1, Some(false)),
+        "unpinned gridded time units must be a non-conformant report: {report}"
+    );
+
+    let checks = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .expect("checks array");
+    let t3 = checks
+        .iter()
+        .find(|check| check.get("id").and_then(Value::as_str) == Some("T3"))
+        .expect("T3 present");
+    assert_eq!(
+        t3,
+        &serde_json::json!({
+            "id": "T3",
+            "status": "ran",
+            "result": "fail",
+            "depth": "metadata_deep",
+            "detail": "basin \"0003\" gridded_dynamic/era5.zarr standalone time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\" | basin \"0003\" gridded_dynamic/era5.zarr consolidated time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\""
+        })
+    );
+    let t2 = checks
+        .iter()
+        .find(|check| check.get("id").and_then(Value::as_str) == Some("T2"))
+        .expect("T2 present");
+    assert_eq!(t2.get("status").and_then(Value::as_str), Some("ran"));
+    assert_eq!(t2.get("result").and_then(Value::as_str), Some("pass"));
+}
+
+#[test]
+fn validate_divergent_standalone_time_units_exits_one_and_names_site() {
+    let (code, stdout) = run_hdx_full(&[
+        "validate",
+        &fixture_arg("conformance/invalid/divergent-standalone-gridded-time-units"),
+    ]);
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(
+        (code, report.get("conformant").and_then(Value::as_bool)),
+        (1, Some(false)),
+        "a non-pinned standalone declaration must fail closed: {report}"
+    );
+    let detail = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|check| check.get("id").and_then(Value::as_str) == Some("T3"))
+        })
+        .and_then(|check| check.get("detail"))
+        .and_then(Value::as_str)
+        .expect("T3 failure detail");
+    assert!(
+        detail.contains("standalone time units"),
+        "site is named: {detail}"
+    );
+    assert!(
+        detail.contains("days since 1800-01-01"),
+        "value is named: {detail}"
+    );
+    assert!(
+        detail.contains("time units divergence")
+            && detail.contains("consolidated \"days since 1970-01-01\""),
+        "divergence and both sites are named: {detail}"
     );
 }
 

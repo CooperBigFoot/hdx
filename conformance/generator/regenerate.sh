@@ -3,17 +3,17 @@
 # regenerate.sh — HDX conformance fixture generator entry point (dev-only).
 #
 # THE single end-to-end, BYTE-DETERMINISTIC regenerate target (MS2-S5). One run
-# rebuilds ALL THREE fixture trees and runs EVERY load-bearing self-assertion,
+# rebuilds every declared fixture tree and runs EVERY load-bearing self-assertion,
 # ABORTING with a non-zero exit on any failure (milestones.md MS2 exit criterion):
 #   * SCALAR half (S2): manifest.json, scalar_static.parquet, per-basin
 #     scalar_dynamic.parquet, outlines.geoparquet  -> run_scalar_assertions().
 #   * GRIDDED half (S3): per basin gridded_static/<label>.tif (multiband COG) +
 #     gridded_dynamic/<label>.zarr (Zarr v3, sharded + consolidated), sharing one
 #     aligned grid label, Zarr time == scalar time  -> run_gridded_assertions().
-#   * INVALIDS (S4): conformance/invalid/wrong-format-version/ (pins M2) and
-#     conformance/invalid/missing-root-rollup/ (pins L1), each copied from the
-#     baseline and changed by EXACTLY ONE surgical mutation (LOW-2), confirmed by
-#     the "differs in exactly one way" self-assertion  -> run_invalid_assertions().
+#   * INVALIDS (S4+): every hdx_fixtures.mutate.Invalid variant, copied from the
+#     baseline and changed by its explicit bounded mutation recipe (LOW-2), then
+#     checked for its exact expected file-set and byte replacements by
+#     run_invalid_assertions().
 #
 # It idempotently creates the pinned venv, installs the exact-version dependency
 # closure, and smoke-imports every pinned dep (proving the pins resolve) before
@@ -107,8 +107,8 @@ cd "${SCRIPT_DIR}"
 # build.py writes the scalar half (manifest.json + scalar_static.parquet +
 # per-basin scalar_dynamic.parquet + outlines.geoparquet) then the gridded half
 # (per-basin gridded_static COG + gridded_dynamic Zarr) into
-# conformance/valid/minimal/, then DERIVES both invalids under
-# conformance/invalid/ via one surgical mutation each, running
+# conformance/valid/minimal/, then DERIVES every declared invalid under
+# conformance/invalid/ via its bounded mutation recipe, running
 # run_scalar_assertions(), run_gridded_assertions() and run_invalid_assertions();
 # any AssertionFailed aborts with a non-zero exit. `exec` makes that exit status
 # THIS script's exit status, so a broken property aborts the whole regenerate.

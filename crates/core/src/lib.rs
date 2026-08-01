@@ -37,11 +37,14 @@
 //!   reader is layered on this metadata path.
 //! - [`zarr_reader`] — the Zarr v3 **metadata** reader: reads a
 //!   `gridded_dynamic/<label>.zarr` store via the §8 inline consolidated-metadata
-//!   path (one read of the root `zarr.json`), classifies its arrays, reads the 1-D
-//!   `lat`/`lon`/`time` coordinate chunks, and builds a [`GridInfo`](grid::GridInfo)
-//!   with the center→edge conversion plus an ordinary `GriddedDynamic`
+//!   path (one read of the root `zarr.json`) plus optional standalone `time/zarr.json`,
+//!   classifies its arrays, reads the 1-D
+//!   `lat`/`lon`/`time` coordinate chunks, carries the `time` coordinate's verbatim
+//!   store-declared encoding, and builds a [`GridInfo`](grid::GridInfo) with the
+//!   center→edge conversion plus an ordinary `GriddedDynamic`
 //!   [`Field`](field::Field) per data variable. Metadata + 1-D coordinate reads only
-//!   — never a `c/0/0/0` data chunk.
+//!   — never a `c/0/0/0` data chunk. Mapping: `read_zarr_grid : consolidated Zarr
+//!   metadata × coordinate chunks × GridLabel → ZarrGrid`.
 //! - [`cog_reader`] — the COG / GeoTIFF **metadata** reader: reads a
 //!   `gridded_static/<label>.tif` artifact **tags only** — the band description
 //!   (= field name) + units from tag 42112 `GDAL_METADATA`, and the standard GeoTIFF
@@ -64,7 +67,9 @@
 //!   tree, read every present COG / Zarr artifact + the outlines schema, and return
 //!   the per-grid geometries + the gridded field catalog + the delineation labels +
 //!   the per-basin observed grid labels (the §14 G2 precondition fact) + the Zarr
-//!   path. The [`Discovery`](gridded_discovery::Discovery) struct **pairs** this with
+//!   path + normalized time axis + verbatim time encoding. Mapping:
+//!   `discover_gridded : HDX layout → per-store geometry × fields × time axis × time
+//!   encoding`. The [`Discovery`](gridded_discovery::Discovery) struct **pairs** this with
 //!   the [`ScalarDiscovery`](discovery::ScalarDiscovery) half without reshaping
 //!   either, so both verbs consume one model;
 //!   [`discover`](gridded_discovery::discover) builds both halves in one call. Records
@@ -74,7 +79,8 @@
 //!   and the boundary verb [`describe`](describe::describe) /
 //!   [`describe_json`](describe::describe_json) itself. The DTO owns the JSON shape in
 //!   one place so the inert domain types stay free of `serde::Serialize`; the pure
-//!   mapping `Discovery + Manifest → Description → DTO` reports **facts only — no
+//!   mapping `Description::from_discovery : Manifest × Discovery → Description`
+//!   carries the normalized gridded axes with their store declarations and reports **facts only — no
 //!   conformance verdict**. The verb's entry order is **load-bearing** (spec §0): it
 //!   (1) reads `manifest.json`, (2) hard-cuts `format_version` via
 //!   [`Manifest::from_json`](manifest::Manifest::from_json) — returning on an unknown
@@ -97,10 +103,14 @@
 //!   returned `Err`; a [`ValidateError`](error::ValidateError) is reserved for
 //!   **structural / entry** failures (an unreadable manifest, the §0 hard cut, an
 //!   undecodable present artifact) so the CLI can map the two to distinct exit codes.
-//!   The report lists all 20 §14 ids: the in-memory checks (M1–M4 via the entry gate;
-//!   H1, H2, I3, T1, G1) and the cross-file checks (L1, L2, I1, I2, M5, G2, G3) `ran`
-//!   (pass/fail), while the byte-deep / on-disk-shape-dependent legs (L3, M6 rule (b),
-//!   T2, Geo1-when-outlines-absent) are honest `Skipped`-with-reason. The report's
+//!   The report lists all 21 §14 ids: the in-memory checks (M1–M4 via the entry gate;
+//!   H1, H2, I3, T1, G1), cross-file checks (L1, L2, I1, I2, M5, G2, G3), and
+//!   byte-deep checks (L3, M6 rule (b), T2) run with pass/fail outcomes. T2 compares
+//!   the full scalar and gridded axes as normalized instants within each basin. T3 is
+//!   the metadata-deep per-store rule that requires the pinned gridded time encoding
+//!   at the required consolidated and each present standalone declaration site, and
+//!   rejects divergence between them;
+//!   Geo1 is honestly skipped when outlines are absent. The report's
 //!   **JSON wire shape** is pinned by a validate-local `#[derive(Serialize)]`
 //!   [`ValidationReportDto`](validate::ValidationReportDto) (the inert types stay
 //!   serde-free, mirroring `describe`), [`validate_json`](validate::validate_json), and
