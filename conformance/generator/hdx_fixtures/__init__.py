@@ -1,7 +1,8 @@
 """HDX conformance fixture generator (dev-only harness).
 
-This package builds the on-disk conformance fixtures (one valid + two minimal
-invalid datasets) that the Rust ``hdx-core`` readers and verbs are tested
+This package builds the on-disk conformance fixtures (the valid baselines and
+the invalid trees declared by :class:`hdx_fixtures.mutate.Invalid`) used to test
+the Rust ``hdx-core`` readers and verbs
 against. See ``conformance/README.md`` for the three load-bearing rules.
 
 THREE LOAD-BEARING RULES (full text in conformance/README.md):
@@ -13,9 +14,10 @@ THREE LOAD-BEARING RULES (full text in conformance/README.md):
    defines or executes any contract logic.
 
 2. LOW-2 — derived, not hand-authored. Every invalid fixture is produced
-   programmatically from the single valid baseline via exactly one surgical
-   mutation. Fixture trees are NEVER hand-edited; a contributor adds a mutation
-   here and regenerates.
+   programmatically from the single valid baseline via an explicit, bounded
+   mutation recipe. Most recipes are a single logical mutation; the multi-store
+   T3 recipe rewrites four attributes across two stores. Fixture trees are NEVER
+   hand-edited; a contributor adds a recipe here and regenerates.
 
 3. MED-5 — Rust-side confirmation hand-off. Two engineered properties (parquet
    ``time`` row-group statistics; Zarr v3 consolidated metadata) are asserted

@@ -52,10 +52,17 @@ from hdx_fixtures.mutate import (
     GRID_RESOLUTION_METADATA_FILES,
     GRID_RESOLUTION_MISMATCH,
     GRID_RESOLUTION_STORE,
+    GRIDDED_TIME_CALENDAR_BASELINE,
+    GRIDDED_TIME_CALENDAR_UNPINNED,
+    GRIDDED_TIME_ENCODING_STORE,
+    GRIDDED_TIME_UNITS_BASELINE,
+    GRIDDED_TIME_UNITS_DIVERGENT,
+    GRIDDED_TIME_UNITS_UNPINNED,
     H1_DIVERGENT_FIELD,
     I2_FOREIGN_BASIN_ID,
     IRREGULAR_TIME_DAY_OFFSETS,
     MISSING_ROOT_ROLLUP,
+    MULTI_STORE_TIME_ENCODING_MUTATIONS,
     WRONG_FORMAT_VERSION,
     Invalid,
     _MUTATED_BASIN,
@@ -1043,7 +1050,7 @@ def run_scalar_assertions(dataset_root: Path) -> None:
     log.info("all scalar self-assertions passed")
 
 
-# --- invalid-side self-assertion (LOW-2: differs in exactly one way) ----------
+# --- invalid-side mutation-recipe self-assertion (LOW-2) ---------------------
 
 
 def _relative_files(tree_root: Path) -> set[str]:
@@ -1055,7 +1062,7 @@ def _relative_files(tree_root: Path) -> set[str]:
 
     The trees no longer contain goldens (they are committed under
     ``conformance/goldens/``, outside the gitignored fixture trees), so the
-    "differs in exactly one way" diff is purely about dataset bytes.
+    mutation-recipe diff is purely about dataset bytes.
     """
     return {
         p.relative_to(tree_root).as_posix()
@@ -1354,13 +1361,14 @@ def _assert_irregular_time_axis(
     )
 
 
-def assert_differs_in_exactly_one_way(
+def assert_matches_declared_mutation_recipe(
     baseline_root: Path, invalid_root: Path, invalid: Invalid
 ) -> None:
-    """Confirm ``invalid_root`` is exactly one surgical mutation off the baseline.
+    """Confirm ``invalid_root`` has exactly its variant's declared baseline diff.
 
-    Enforces the LOW-2 one-mutation invariant at generation time via a recursive
-    tree diff against the valid baseline (spec §10 / R2; see
+    Enforces the LOW-2 bounded-mutation invariant at generation time via a recursive
+    tree diff and variant-specific replacement checks against the valid baseline
+    (spec §10 / R2; see
     ``conformance/README.md`` Rule 2):
 
     * :attr:`Invalid.WRONG_FORMAT_VERSION` — the trees have the **same file set**;
@@ -1401,6 +1409,19 @@ def assert_differs_in_exactly_one_way(
       basin's ``scalar_dynamic.parquet``) differs; its ``time`` column is
       descending (the first value exceeds the last), the only divergence (pins
       **T1**).
+    * :attr:`Invalid.UNPINNED_GRIDDED_TIME_UNITS` — no files are added or removed;
+      only one store's standalone and inline-consolidated ``time`` metadata
+      serializations differ, and both carry only the units change from
+      ``days since 1970-01-01`` to ``days since 1900-01-01`` (pins **T3**).
+    * :attr:`Invalid.DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS` — only one store's
+      standalone ``time`` metadata changes; its consolidated copy stays pinned
+      (pins **T3** and proves standalone declarations are checked).
+    * :attr:`Invalid.UNPINNED_GRIDDED_TIME_CALENDAR` — one store's standalone and
+      consolidated calendars both change from ``proleptic_gregorian`` to ``julian``
+      (pins **T3**'s calendar leg).
+    * :attr:`Invalid.MULTI_STORE_UNPINNED_GRIDDED_TIME_ENCODINGS` — two stores are
+      mutated at both declaration sites, one in units and one in calendar (pins
+      **T3** and proves multi-store aggregation).
     * :attr:`Invalid.MISSING_GRIDDED_DYNAMIC_SUBTREE` — the invalid tree is missing
       **exactly** the mutated basin's ``gridded_dynamic/`` subtree (every removed
       path lies under it), adds nothing, and **no** shared file's bytes differ
@@ -1445,15 +1466,15 @@ def assert_differs_in_exactly_one_way(
 
     added = inv_files - base_files
     removed = base_files - inv_files
-    # Every invalid except divergent-grid-label-set adds NO file (its one mutation
-    # is a rewrite or a deletion). divergent-grid-label-set RElabels one basin's
+    # Every invalid except divergent-grid-label-set adds NO file (its recipe is a
+    # rewrite or a deletion). divergent-grid-label-set RElabels one basin's
     # COG+Zarr (era5.* → era5b.*), so it legitimately both adds and removes files
     # under exactly that basin — its branch checks the add/remove shape itself.
     if invalid is not Invalid.DIVERGENT_GRID_LABEL_SET:
         _require(
             not added,
             f"{invalid_root}: invalid adds files not in baseline {sorted(added)} "
-            f"(LOW-2: one surgical mutation only)",
+            f"(LOW-2: declared mutation recipe adds no files)",
         )
 
     # The four manifest-mutation invalids share the same shape invariant: the file
@@ -1670,6 +1691,65 @@ def assert_differs_in_exactly_one_way(
                 f"{invalid_root / rel}: metadata differs beyond "
                 "attributes.grid_resolution",
             )
+    elif invalid in {
+        Invalid.UNPINNED_GRIDDED_TIME_UNITS,
+        Invalid.DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS,
+        Invalid.UNPINNED_GRIDDED_TIME_CALENDAR,
+        Invalid.MULTI_STORE_UNPINNED_GRIDDED_TIME_ENCODINGS,
+    }:
+        _require(
+            not added and not removed,
+            f"{invalid_root}: time-encoding mutation changed the file set; "
+            f"added={sorted(added)} removed={sorted(removed)}",
+        )
+        standalone_suffix = "time/zarr.json"
+        consolidated_suffix = "zarr.json"
+        if invalid is Invalid.UNPINNED_GRIDDED_TIME_UNITS:
+            mutations = [
+                (GRIDDED_TIME_ENCODING_STORE, standalone_suffix, "units", GRIDDED_TIME_UNITS_BASELINE, GRIDDED_TIME_UNITS_UNPINNED),
+                (GRIDDED_TIME_ENCODING_STORE, consolidated_suffix, "units", GRIDDED_TIME_UNITS_BASELINE, GRIDDED_TIME_UNITS_UNPINNED),
+            ]
+        elif invalid is Invalid.DIVERGENT_STANDALONE_GRIDDED_TIME_UNITS:
+            mutations = [
+                (GRIDDED_TIME_ENCODING_STORE, standalone_suffix, "units", GRIDDED_TIME_UNITS_BASELINE, GRIDDED_TIME_UNITS_DIVERGENT),
+            ]
+        elif invalid is Invalid.UNPINNED_GRIDDED_TIME_CALENDAR:
+            mutations = [
+                (GRIDDED_TIME_ENCODING_STORE, standalone_suffix, "calendar", GRIDDED_TIME_CALENDAR_BASELINE, GRIDDED_TIME_CALENDAR_UNPINNED),
+                (GRIDDED_TIME_ENCODING_STORE, consolidated_suffix, "calendar", GRIDDED_TIME_CALENDAR_BASELINE, GRIDDED_TIME_CALENDAR_UNPINNED),
+            ]
+        else:
+            mutations = [
+                (store, suffix, attribute,
+                 GRIDDED_TIME_UNITS_BASELINE if attribute == "units" else GRIDDED_TIME_CALENDAR_BASELINE,
+                 value)
+                for store, attribute, value in MULTI_STORE_TIME_ENCODING_MUTATIONS
+                for suffix in (standalone_suffix, consolidated_suffix)
+            ]
+
+        expected_files = {f"{store}/{suffix}" for store, suffix, _, _, _ in mutations}
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            changed == expected_files,
+            f"{invalid_root}: changed files {sorted(changed)} != expected time "
+            f"metadata serializations {sorted(expected_files)}",
+        )
+        for store, suffix, attribute, baseline, mutated in mutations:
+            rel = f"{store}/{suffix}"
+            base_bytes = (baseline_root / rel).read_bytes()
+            inv_bytes = (invalid_root / rel).read_bytes()
+            needle = json.dumps(baseline).encode("utf-8")
+            replacement = json.dumps(mutated).encode("utf-8")
+            _require(
+                base_bytes.count(needle) == 1,
+                f"{baseline_root / rel}: expected exactly one serialized {attribute} "
+                f"value {baseline!r}",
+            )
+            _require(
+                inv_bytes == base_bytes.replace(needle, replacement, 1),
+                f"{invalid_root / rel}: bytes differ beyond the intended "
+                f"attributes.{attribute} replacement (including newline state)",
+            )
     elif invalid is Invalid.MISALIGNED_SHARED_LABEL:
         _assert_misaligned_shared_label(baseline_root, invalid_root, removed)
     elif invalid is Invalid.DIVERGENT_GRID_LABEL_SET:
@@ -1688,7 +1768,7 @@ def assert_differs_in_exactly_one_way(
         _assert_one_parquet_mutation(invalid_root, invalid, changed)
 
     log.info(
-        "invalid OK name=%s pins=%s added=%d removed=%d (one surgical mutation)",
+        "invalid OK name=%s pins=%s added=%d removed=%d (declared mutation recipe)",
         invalid.value,
         invalid.pinned_check,
         len(added),
@@ -1702,9 +1782,9 @@ def run_invalid_assertions(baseline_root: Path, invalid_root: Path, invalid: Inv
     Invoked by ``regenerate.sh`` (via :mod:`hdx_fixtures.build`) after each
     invalid is derived (MS2-S4). Any :class:`AssertionFailed` propagates so
     generation aborts with a non-zero exit (the assertion is load-bearing): an
-    invalid that differs from the baseline in more than the one intended way is
-    never committed.
+    invalid that does not match its exact declared file-set and byte-replacement
+    recipe is never committed.
     """
     log = get_logger("assert")
-    assert_differs_in_exactly_one_way(baseline_root, invalid_root, invalid)
+    assert_matches_declared_mutation_recipe(baseline_root, invalid_root, invalid)
     log.info("invalid self-assertion passed for %s", invalid.value)

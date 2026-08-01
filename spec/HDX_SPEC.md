@@ -213,7 +213,14 @@ value, which applies to every band; per-band nodata values are **NOT PERMITTED**
 3. **A proper temporal type** — parquet `Date32`/`Timestamp`, Zarr CF
    integer-since-epoch — **MUST** be used. The caravan `String "YYYY-MM-DD"`
    hack is **forbidden**.
-4. The dataset-wide **cadence/calendar** (e.g. `daily, proleptic_gregorian`) is
+4. Every gridded Zarr `time` coordinate **MUST** use signed/integer day counts
+   and declare exactly `units = "days since 1970-01-01"` and
+   `calendar = "proleptic_gregorian"`. Another epoch or calendar is
+   non-conformant. The §8 inline consolidated declaration is required. A
+   standalone `<store>/time/zarr.json` declaration is optional; when present,
+   it **MUST** carry the same pinned pair and **MUST** agree with the consolidated
+   declaration. HDX does not perform arbitrary CF calendar arithmetic.
+5. The dataset-wide **cadence/calendar** (e.g. `daily, proleptic_gregorian`) is
    a declared manifest convention (§11).
 
 **Scalar parquet time column (resolved open question 1):**
@@ -491,6 +498,10 @@ requirements.)
   sorted ascending.
 - T2 Within each basin, `scalar_dynamic` and all `gridded_dynamic` artifacts
   share the identical time axis (§6.2); gaps are NaN-filled.
+- T3 Every gridded Zarr `time` coordinate's required inline consolidated
+  declaration carries exactly `units = "days since 1970-01-01"` and
+  `calendar = "proleptic_gregorian"`; an optional standalone declaration, when
+  present, carries the same pair and does not diverge from consolidation.
 
 **Grids / artifacts**
 - G1 One artifact = one grid; fields self-name (CF variable / indexed COG sample

@@ -3,12 +3,16 @@
 //!
 //! This module reads the *shape* of a per-basin Zarr v3 store into typed facts —
 //! the gridded·dynamic field catalog plus a [`GridInfo`] — **never** its scientific
-//! grid values. It reads exactly two tiers (architecture §1):
+//! grid values. It reads two required tiers and one optional declaration site
+//! (architecture §1):
 //!
 //! 1. the store's **root `zarr.json`**, once, via the §8 **consolidated-metadata**
 //!    path (`consolidated_metadata.metadata`, `kind == "inline"`), which carries the
 //!    metadata of *every* member in one object; and
-//! 2. the **1-D `lat`/`lon`/`time` coordinate chunks** (`c/0`), a 1-D coordinate
+//! 2. the standalone **`time/zarr.json`** declaration when present, so validation
+//!    can account for both physical metadata sites rather than trusting consolidation
+//!    alone; and
+//! 3. the **1-D `lat`/`lon`/`time` coordinate chunks** (`c/0`), a 1-D coordinate
 //!    read (architecture §1) used for cell centers, dimensions, and witnesses to
 //!    the authoritative `/crs.grid_resolution` declaration.
 //!
@@ -36,7 +40,7 @@
 //! with the pure-Rust `ruzstd` decoder. **No GDAL, no async, no cloud, no chunk-IO
 //! crate.**
 //!
-//! `read_zarr_grid : consolidated Zarr metadata × coordinate chunks × GridLabel → ZarrGrid`.
+//! `read_zarr_grid : consolidated + optional standalone time metadata × coordinate chunks × GridLabel → ZarrGrid`.
 //!
 //! ## Array classification
 //!
@@ -65,8 +69,9 @@
 //! | data variable | a gridded·dynamic array with `grid_mapping` + 3-D `[time, lat, lon]` dims |
 //! | grid_mapping target | the `crs` array a data var's `grid_mapping` attribute names |
 //! | center→edge | the half-pixel conversion from CF cell centers to the cell-edge extent |
-//! | gridded time encoding | the verbatim CF `units` and `calendar` strings declared by a store's `time` coordinate |
+//! | gridded time encoding | the verbatim CF `units` and `calendar` strings at the required consolidated and optional standalone declaration sites |
 
+use std::fs;
 use std::io::Read;
 use std::path::Path;
 
@@ -174,6 +179,7 @@ pub struct ZarrGrid {
     consolidated_source: ConsolidatedMetadataSource,
     gridded_time_micros: Vec<i64>,
     gridded_time_encoding: GriddedTimeEncoding,
+    standalone_gridded_time_encoding: Option<GriddedTimeEncoding>,
 }
 
 impl ZarrGrid {
@@ -203,9 +209,14 @@ impl ZarrGrid {
         &self.gridded_time_micros
     }
 
-    /// Borrows the `time` coordinate's verbatim store-declared CF encoding.
+    /// Borrows the `time` coordinate's verbatim consolidated CF encoding.
     pub fn gridded_time_encoding(&self) -> &GriddedTimeEncoding {
         &self.gridded_time_encoding
+    }
+
+    /// Borrows the `time` coordinate's verbatim standalone CF encoding when present.
+    pub fn standalone_gridded_time_encoding(&self) -> Option<&GriddedTimeEncoding> {
+        self.standalone_gridded_time_encoding.as_ref()
     }
 }
 
@@ -512,6 +523,38 @@ fn read_consolidated_map(
     }
 }
 
+fn read_standalone_time_encoding(
+    store: &Path,
+    artifact: &str,
+) -> Result<Option<GriddedTimeEncoding>, CoreError> {
+    let path = store.join(COORD_TIME).join("zarr.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CoreError::ZarrRead {
+                artifact: artifact.to_string(),
+                detail: format!(
+                    "cannot read standalone time metadata {}: {error}",
+                    path.display()
+                ),
+            });
+        }
+    };
+    let metadata: ArrayMetadataV3 =
+        serde_json::from_slice(&bytes).map_err(|error| CoreError::ZarrRead {
+            artifact: artifact.to_string(),
+            detail: format!(
+                "standalone time metadata {} is not valid Zarr v3 array metadata: {error}",
+                path.display()
+            ),
+        })?;
+    Ok(Some(GriddedTimeEncoding {
+        units: required_string_attr(&metadata, UNITS_ATTR, artifact)?,
+        calendar: required_string_attr(&metadata, CALENDAR_ATTR, artifact)?,
+    }))
+}
+
 /// Resolves the CRS of a `grid_mapping` target array as a comparable `EPSG:<code>`
 /// string when an EPSG id resolves, else the raw CRS string verbatim.
 ///
@@ -610,8 +653,10 @@ fn check_coordinate_witnesses(
 /// [`Field`]. The `time` coordinate's int64 day-counts are decoded (via
 /// [`read_coord_i64`]) and normalized to i64 micros ([`gridded_time_micros`](ZarrGrid::gridded_time_micros))
 /// — the comparable axis `validate` enforces. Its verbatim CF `units` and `calendar`
-/// declaration is read from the same consolidated member metadata into
-/// [`GriddedTimeEncoding`]; the declaration is not interpreted during normalization.
+/// declarations are read from the required consolidated member and, when present,
+/// standalone `time/zarr.json` metadata into [`GriddedTimeEncoding`] values; neither
+/// declaration is interpreted during normalization. An absent standalone member is
+/// legal because the inline consolidated declaration is authoritative and complete.
 /// **No `c/0/0/0` data chunk is ever read.**
 ///
 /// `grid_label` is the label of the store (e.g. `era5`), supplied by the caller from
@@ -621,7 +666,7 @@ fn check_coordinate_witnesses(
 ///
 /// | Condition | Error |
 /// |---|---|
-/// | the root `zarr.json` is absent / unreadable / not valid JSON, or carries no inline consolidated metadata | [`CoreError::ZarrRead`] |
+/// | the root `zarr.json` is absent / unreadable / not valid JSON, the root carries no inline consolidated metadata, or a present standalone `time/zarr.json` is unreadable / invalid | [`CoreError::ZarrRead`] |
 /// | a member's metadata cannot be parsed as a Zarr v3 array | [`CoreError::ZarrRead`] |
 /// | a required `lat` / `lon` / `time` coordinate array (or its `c/0` chunk) is absent | [`CoreError::MissingGriddedCoordinate`] |
 /// | `/crs.grid_resolution` is missing, malformed, non-finite, incorrectly signed, or disagrees with any adjacent coordinate step | [`CoreError::ZarrRead`] |
@@ -675,6 +720,7 @@ pub fn read_zarr_grid(
         units: required_string_attr(time_metadata, UNITS_ATTR, &artifact)?,
         calendar: required_string_attr(time_metadata, CALENDAR_ATTR, &artifact)?,
     };
+    let standalone_gridded_time_encoding = read_standalone_time_encoding(store, &artifact)?;
 
     // Data variables: arrays carrying a `grid_mapping` attribute and 3-D
     // `[time, lat, lon]` dims. The `grid_mapping` target (the `crs` array) is
@@ -788,6 +834,7 @@ pub fn read_zarr_grid(
         consolidated_source,
         gridded_time_micros,
         gridded_time_encoding,
+        standalone_gridded_time_encoding,
     })
 }
 

@@ -52,9 +52,9 @@
     {
       "id": "L2",
       "status": "ran",
-      "result": "fail",
+      "result": "pass",
       "depth": "metadata_deep",
-      "detail": "basin \"0003\" declares gridded·dynamic fields but exposes no gridded_dynamic artifact"
+      "detail": null
     },
     {
       "id": "L3",
@@ -115,9 +115,9 @@
     {
       "id": "T3",
       "status": "ran",
-      "result": "pass",
+      "result": "fail",
       "depth": "metadata_deep",
-      "detail": null
+      "detail": "basin \"0001\" gridded_dynamic/era5.zarr standalone time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\" | basin \"0001\" gridded_dynamic/era5.zarr consolidated time units \"days since 1900-01-01\"; expected \"days since 1970-01-01\" | basin \"0002\" gridded_dynamic/era5.zarr standalone time calendar \"julian\"; expected \"proleptic_gregorian\" | basin \"0002\" gridded_dynamic/era5.zarr consolidated time calendar \"julian\"; expected \"proleptic_gregorian\""
     },
     {
       "id": "G1",

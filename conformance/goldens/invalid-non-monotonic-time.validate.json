@@ -113,6 +113,13 @@
       "detail": "basin \"0003\": the scalar_dynamic time axis and the gridded_dynamic time axis are not identical (spec §6.2 T2) — both normalized to i64 microseconds, scalar has 4 step(s), gridded has 4 step(s)"
     },
     {
+      "id": "T3",
+      "status": "ran",
+      "result": "pass",
+      "depth": "metadata_deep",
+      "detail": null
+    },
+    {
       "id": "G1",
       "status": "ran",
       "result": "pass",
