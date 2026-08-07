@@ -73,11 +73,9 @@ hdx/                              # repo root (= the "hdx/" in doc paths)
 - **Nothing** in this repo implements `regrid`/`clip`/`reduce` or the blessed
   reduction. If a plan proposes them, it is out of scope — reject.
 
-**Version/commit discipline (CLAUDE.md / AGENTS.md, non-negotiable):** every
-commit runs `./scripts/bump-version.sh patch`, stages `Cargo.toml`, commits with
-a conventional message, then `git tag v<version>`. `tracing` only — never
-`println!` (the CLI emits JSON via `serde_json` to stdout, which is *output*, not
-logging; diagnostics go through `tracing` to stderr). Edition 2024.
+**Logging/edition discipline:** `tracing` only — never `println!` (the CLI emits
+JSON via `serde_json` to stdout, which is *output*, not logging; diagnostics go
+through `tracing` to stderr). Edition 2024.
 
 ---
 
