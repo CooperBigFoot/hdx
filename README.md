@@ -123,7 +123,6 @@ crates/python/run_python_tests.sh                    # maturin build + pytest ov
 Project conventions (see [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)):
 
 - **Edition 2024.** Workspace root is the `hdx` binary; `crates/*` are members.
-- **Mandatory per-commit version bump + tag.** Every commit runs `./scripts/bump-version.sh patch`, stages `Cargo.toml`, commits with a conventional message, then `git tag v<version>`. Use `minor`/`major` only when explicitly requested.
 - **Logging via `tracing` only** — never `println!` for diagnostics. The CLI emits JSON to stdout (output); diagnostics go to stderr.
 - **Library code** (`crates/`) uses `thiserror` and never `.unwrap()`/`.expect()`; **application glue** (`src/`) uses `anyhow` with `.context()`.
 - **Parse, don't validate**; enums over booleans; newtypes for confusion-prone values. Invalid states are unrepresentable downstream of the boundary.
