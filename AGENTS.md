@@ -2,36 +2,7 @@
 
 ## Project Overview
 
-DESCRIBE THE PROJECT BRIEFLY
-
-## Version Bumping (mandatory)
-
-**Every commit MUST include a patch version bump.** No exceptions.
-
-Before committing, follow this exact sequence:
-
-1. `./scripts/bump-version.sh patch` — modifies `Cargo.toml` version field
-2. Stage `Cargo.toml` alongside code changes
-3. Commit with a conventional commit message
-4. `git tag v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')` — tag the commit
-
-**Rules:**
-
-- **Patch bumps**: Automatic with every commit. Claude MUST do this.
-- **Minor/major bumps**: Only when the user explicitly requests. Use `./scripts/bump-version.sh minor` or `./scripts/bump-version.sh major`.
-- **Never let tooling create its own commit or tag.** Fold version changes into the real commit.
-- **Always tag** after every commit.
-
-> **Note:** `cargo bump` does not support Cargo workspaces (it panics). Use `./scripts/bump-version.sh` instead — it edits `Cargo.toml` directly.
-
-### Quick Reference
-
-| Command | Effect |
-|---|---|
-| `./scripts/bump-version.sh patch` | `0.1.0` → `0.1.1` |
-| `./scripts/bump-version.sh minor` | `0.1.1` → `0.2.0` |
-| `./scripts/bump-version.sh major` | `0.2.0` → `1.0.0` |
-| `grep '^version' Cargo.toml` | Show current version |
+hdx
 
 ## Rust Coding Conventions
 
@@ -213,3 +184,12 @@ Good candidates for typestate: delineation pipeline stages, raster processing ch
 - **Math-friendly names are allowed** in algorithm code (e.g., `dx`, `dy`, `acc`, `phi`), but add a glossary in the module doc.
 - **No `use super::*`** — explicit imports only.
 - **Group imports**: std → external crates → crate-internal, separated by blank lines.
+
+<!-- BEGIN SYNCED DOCTRINE; source-sha256=59e37fd6b3dbab27530822e6956da51bb7ae76b637e3638530f99a8b4db9038d -->
+Four rules. They are one design stance seen four ways: a module means one thing, receives exactly what it needs, in types that cannot lie, and dies rather than guess.
+
+1. **A module means one thing.**
+2. **It receives exactly what it needs.**
+3. **Its types cannot lie.**
+4. **It dies rather than guess.**
+<!-- END SYNCED DOCTRINE -->
