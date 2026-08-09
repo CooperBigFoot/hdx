@@ -180,10 +180,13 @@ Each `basin=<id>/gridded_static/<label>.tif` **MUST** be a multiband TIFF with
 `SamplesPerPixel = N`, where `N >= 1`. Its physical bands are TIFF samples
 `0..N-1`, stored with `PlanarConfiguration = 2` (separate, band-sequential
 sample planes). Physical sample `i` **MUST** self-name through a GDAL metadata
-item written exactly as `<Item sample="i" role="description">FIELD</Item>`.
-Units **MAY** be supplied by the analogous GDAL units item carrying the same
-`sample="i"` index. All samples within one `<label>.tif` **MUST** use the same
-TIFF dtype; this is per-label dtype homogeneity and does not require different
+`Item` whose body is a non-empty field name and whose attribute set includes
+`sample="i"`, `role="description"`, and `name="DESCRIPTION"`. These required
+attributes **MAY** appear in any order; consumers **MUST NOT** depend on their
+serialized order. Units **MAY** be supplied by the analogous GDAL units item
+carrying the same `sample="i"` index. Description and units bodies use GDAL's
+two-stage XML unescaping. All samples within one `<label>.tif` **MUST** use the
+same TIFF dtype; this is per-label dtype homogeneity and does not require different
 labels to share a dtype. The TIFF **MUST** carry one dataset-level `GDAL_NODATA`
 value, which applies to every band; per-band nodata values are **NOT PERMITTED**.
 
@@ -395,10 +398,12 @@ properties. Field meanings and rules:
 
 `gridded_static_channels` is non-derivable declared consumer ABI data. Its array
 order is significant consumer order, independent of physical TIFF sample order.
-Consumers bind each declared name to the self-named TIFF sample and **MUST NOT**
+Consumers bind each declared name to the TIFF sample whose canonical description
+item body, after GDAL's two-stage XML unescaping, equals that name and **MUST NOT**
 treat the array index as a physical sample index. For example, a TIFF physically
 storing samples `[soil_depth, elevation]` may legally declare consumer order
-`"era5": ["elevation", "soil_depth"]` because binding is by sample description.
+`"era5": ["elevation", "soil_depth"]` because binding is by the samples'
+self-names, not their positions.
 This declaration defines and validates shape only; append-only evolution and
 comparison with an earlier manifest are producer-side concerns outside this
 contract step.

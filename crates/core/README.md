@@ -257,7 +257,7 @@ layered on.
   value types ([`CheckId`](src/validate.rs) — the closed set of the 21 §14 ids;
   `CheckStatus` `Ran`/`Skipped`; `CheckResult` `Pass`/`Fail`; `DepthClass`
   `MetadataDeep`/`ByteDeep`; `CheckOutcome`; `ValidationReport`), the pure in-memory rule
-  functions (`check_h1` / `check_h2` / `check_i3` / `check_t1` / `check_g1`; M3/M4 folded
+  functions (`check_h1` / `check_h2` / `check_i3` / `check_t1`; M3/M4 folded
   into the entry gate via `Manifest::from_json`), the cross-file rule functions
   (`check_l1` / `check_l2` / `check_l3` / `check_i1` / `check_i2` / `check_m5` /
   `check_m6` / `check_t2` / `check_t3` / `check_g2` / `check_g3` / `check_geo1`), and the
@@ -268,6 +268,11 @@ layered on.
   `validate_json` boundary, pinned by `schemas/validate.schema.json` + a committed golden
   report. The report carries only id / ran-skip / pass-fail / depth / opaque detail —
   **no derived domain field**.
+
+  Static COG discovery additionally carries one description observation per physical
+  sample (`Canonical`, `LegacyAttributeLess`, or `Absent`). The reader records these
+  facts without a verdict; `check_g1` alone refuses the two noncanonical forms. An
+  absent description contributes no fabricated `Field`.
 
 The committed `schemas/manifest.schema.json` (at the repo root) mirrors the `manifest`
 floor; a `jsonschema` dev-dependency test (`tests/manifest_schema.rs`) asserts the
@@ -309,6 +314,7 @@ Domain terms an agent would not infer from the code alone. Spec section in paren
 | **validate verb** (§10, §14) | The conformance verb (spec §10): run the §14 `MUST` checklist over the shared discovery model and emit a `ValidationReport` + an overall `conformant: bool`. It **fails closed** (a violated `MUST` that ran ⇒ non-conformant) while honestly reporting **which checks ran vs skipped** (the §14 note). Its entry order mirrors `describe` — the §0 `format_version` hard cut and manifest boundary-parse run **before** discovery — and a structural / entry failure is a typed `ValidateError`, distinct from a `conformant: false` verdict. |
 | **CheckId** (§14) | The closed enum of the **21** §14 `MUST` check ids (`M1`–`M6`, `L1`–`L3`, `I1`–`I3`, `H1`–`H2`, `T1`–`T3`, `G1`–`G3`, `Geo1`) — never a string, so a typo cannot mint a non-existent check. `as_str()` yields the stable spec id for the wire shape. |
 | **CheckOutcome** (§14) | One check's recorded result: its `CheckId`, whether it `Ran` or was `Skipped` (an enum, never a bool), its `Pass`/`Fail` result (`Some` iff it ran), its R3 `DepthClass`, and an opaque detail/reason string. Built only through `ran_pass` / `ran_fail` / `skipped`, so a `Skipped` check can never carry a result. **Inert** — no derived domain field. |
+| **static-description observation** (§8/G1) | A per-physical-sample COG fact carrying the zero-based sample index and `Canonical`, `LegacyAttributeLess`, or `Absent` encoding. Discovery owns transport; validation owns the G1 verdict. |
 | **ValidationReport** (§10, §14) | The full report: the per-check `CheckOutcome`s + `conformant`, where `conformant` is computed **by construction** as "**no check that `Ran` has `result == Fail`**" — a `Skipped` check never flips it (fail-closed applies only to a `MUST` that ran). `find(id)` accesses a single outcome. The inert report types carry **no** `serde::Serialize` derive — the validate-local `ValidationReportDto` owns the wire shape (see *validate wire-shape lock*). |
 | **validate wire-shape lock** (§10/§14, arch §7 R4) | The report's JSON wire shape is pinned exactly like `describe`'s R4 mini-contract: a validate-local `#[derive(Serialize)]` DTO layer (`ValidationReportDto` + `CheckOutcomeDto`) defines the shape in one reviewable place, the inert `CheckOutcome`/`ValidationReport` stay serde-free, and `validate_json(path) -> Result<String, ValidateError>` is the JSON boundary. The shape `{checks, conformant}` (each check `{id, status, result, depth, detail}`) is committed to [`schemas/validate.schema.json`](../../schemas/validate.schema.json) (`additionalProperties:false`) and to a golden report (`conformance/goldens/valid-minimal.validate.json`), checked by Rust tests via the `jsonschema` dev-dep + a snapshot equality. Versioned **implicitly by `format_version` only**. The golden makes the §14-note "report which checks ran" requirement a machine-readable artifact. |
 | **R3 depth class** (arch §7 R3) | How deep into the bytes a check reached: `MetadataDeep` (decided from metadata + 1-D index reads only) vs `ByteDeep` (decided from full-axis or realized-value reads, e.g. the per-basin axis-regularity leg). Recorded on every `CheckOutcome` so the report states its enforcement depth (the §14 note). |

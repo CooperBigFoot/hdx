@@ -26,10 +26,10 @@ tool, **not** part of the shipped contract.
 > while preserving reproducibility.
 
 The fixture set covers the full **§14 matrix**: one valid four-quadrant
-baseline and **18 generated invalid trees**, each derived from the baseline by an
+baseline and **20 generated invalid trees**, each derived from the baseline by an
 explicit mutation recipe. Most recipes target one logical mutation; the multi-store
 T3 aggregation fixture deliberately rewrites four attributes across two stores.
-Seventeen are enforceable report/entry-gate negatives with rows in the
+Nineteen are enforceable report/entry-gate negatives with rows in the
 [fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid).
 The remaining tree, `invalid/grid-resolution-mismatch`, is a G3 discovery-error
 negative with no validation golden. The full classification of all 21 §14 ids
@@ -55,7 +55,7 @@ target**. One run:
 2. smoke-imports every pinned dependency (proving the pins resolve);
 3. emits the valid baseline `valid/minimal/` — the **scalar** half then the
    **gridded** half — and **derives every fixture the `mutate.Invalid` enum
-   declares** from it (18 invalid trees under `invalid/<name>/`, including the
+   declares** from it (20 invalid trees under `invalid/<name>/`, including the
    M6 rule-(b) negative `invalid/irregular-time-axis/`);
 4. runs **every** load-bearing self-assertion — including, per derived fixture,
    `assert_matches_declared_mutation_recipe`, which proves the expected changed-file
@@ -114,15 +114,17 @@ conformance/
   invalid/misaligned-shared-label/        # pins G2 — one surgical mutation off the baseline (git-ignored data)
   invalid/divergent-grid-label-set/       # pins H2 — one surgical mutation off the baseline (git-ignored data)
   invalid/grid-resolution-mismatch/       # G3 discovery error; no validation golden (git-ignored data)
+  invalid/attribute-less-static-description/ # pins G1 — readable legacy encoding, validation refuses
+  invalid/absent-static-description/      # pins G1 — readable absence with no fabricated Field
 ```
 
-> **The fixture set covers the full §14 matrix.** The 18 derived fixtures
-> above are exactly one per `mutate.Invalid` variant. Seventeen are the rows in the
+> **The fixture set covers the full §14 matrix.** The 20 derived fixtures
+> above are exactly one per `mutate.Invalid` variant. Nineteen are the rows in the
 > [fixture → one-pinned-check map](#fixture--one-pinned-check-map-every-committedgenerated-invalid)
 > and the [§14 classification matrix](#14-check-id-classification-matrix). The
 > remaining fixture, `grid-resolution-mismatch`, is a G3 discovery error with no
-> validation golden and therefore sits outside the 17-row pinned-check table. A clean
-> `regenerate.sh` emits all 18 trees.
+> validation golden and therefore sits outside the 19-row pinned-check table. A clean
+> `regenerate.sh` emits all 20 trees.
 
 > **One valid-shaped fixture.** `valid/minimal/` is the four-quadrant baseline.
 > Every other derived fixture is a fail-closed negative under `invalid/`. Under
@@ -313,9 +315,8 @@ and that the per-basin label set is homogeneous across basins.
 * **`goldens/valid-multi_grid_multi_static.validate.json` — CORROBORATING-ONLY (NOT
   the M1 proof).** Produced by `hdx-core`'s `validate` verb. It is committed for
   completeness alongside the describe golden, but the validate report is
-  **field-catalog-INSENSITIVE**: the catalog is consumed only by the
-  order-insensitive `check_g1` (which only tests that a PRESENT gridded field
-  self-names with `Some(GridLabel)` — a MISSING field cannot trip it). So the
+  **field-catalog-INSENSITIVE**: `check_g1` receives the catalog alongside independent
+  per-sample static-description observations, so catalog completeness cannot trip it. The
   validate report is **byte-identical pre/post the M1 catalog fix** and is **NOT**
   the completeness signal. The describe golden is the proof; the validate golden
   only corroborates that the fixture is a conformant 0.2 dataset (conformant, no
@@ -396,7 +397,7 @@ generator's `assert_matches_declared_mutation_recipe` self-assertion proves the 
 expected file and value replacements for each variant; for the multi-store T3 fixture
 it proves four serialized attribute replacements across two stores and their
 standalone and consolidated metadata sites. The table
-lists the **17 enforceable negatives** emitted by a clean `regenerate.sh` (a
+lists the **19 enforceable negatives** emitted by a clean `regenerate.sh` (a
 clean `conformant:false` report — or, for
 M2/M3/M4, an entry-gate `Err` — with exactly one §14 check failing), including the
 HDX-0.2 M6 rule-(b) negative `invalid/irregular-time-axis`. The generator emits
@@ -411,6 +412,7 @@ validation golden and is intentionally outside this pinned-check table.
 | **M4** — `created_at` is RFC 3339; `crs`, `cadence` are non-empty strings. | `invalid/empty-cadence/` | entry-gate `Err` | `manifest.json` `cadence`: `"daily"` → `""` (the other five floor fields byte-identical). |
 | **L1** — `scalar_static.parquet` and `outlines.geoparquet` exist at the root. | `invalid/missing-root-rollup/` | `conformant:false` | Delete the root **`outlines.geoparquet`** (the other rollup, `scalar_static.parquet`, is kept). |
 | **L2** — every basin carries its required per-basin artifacts (§4). | `invalid/missing-gridded-dynamic-subtree/` | `conformant:false` | Delete one basin's `gridded_dynamic/` subtree; the dataset still declares gridded·dynamic fields, so that basin's empty `dynamic_artifacts()` fails L2. |
+| **G1** — every physical static sample self-names canonically (§8). | `invalid/attribute-less-static-description/`, `invalid/absent-static-description/` | `conformant:false` | Replace tag 42112 in all three COGs with either a readable attribute-less description or no description item. Discovery records both; G1 refuses them. |
 | **I1** — `basin_id` is a real in-file column in every required artifact (§3). | `invalid/missing-basin-id-column/` | `conformant:false` | Drop the `basin_id` column from one basin's `scalar_dynamic.parquet` (the reader records `has_basin_id=false`, it does **not** error). |
 | **I2** — in-file `basin_id` agrees with the `basin=<id>` folder (§3). | `invalid/basin-id-folder-mismatch/` | `conformant:false` | Rewrite one basin's in-file `basin_id` to a unique foreign value (`9999`) that disagrees with its `basin=<id>` folder. |
 | **H1** — every basin has the identical field schema (§5). | `invalid/ragged-field-schema/` | `conformant:false` | Rename one basin's `scalar_dynamic` data field `streamflow` → `flow` (dtype/quadrant/nullability kept; only the name diverges). |
@@ -427,9 +429,9 @@ validation golden and is intentionally outside this pinned-check table.
 > **The generated negative family is exhaustive.** It spans the entry-gate
 > M2/M3/M4, the I1/I2/H1/T1/L2 parquet/layout negatives, the M5/G2/H2
 > georef/grid-label negatives, four complementary T3 time-encoding negatives, and the M6 rule-(b)
-> regularity negative. **The 17 rows above are the report/entry-gate negatives.**
+> regularity negative. **The 19 generated report/entry-gate negatives are represented above.**
 > A clean `regenerate.sh` emits those plus the G3 discovery-error tree
-> `grid-resolution-mismatch`, for 18 invalid trees total. The full §14 classification matrix — every check id
+> `grid-resolution-mismatch`, for 20 invalid trees total. The full §14 classification matrix — every check id
 > placed in exactly one of three buckets — is the [next section](#14-check-id-classification-matrix).
 > Every invalid is added the same way: add a mutation to the generator and
 > regenerate (never hand-edit a tree).
@@ -448,7 +450,7 @@ set and the `ran:pass`-with-no-isolable-on-disk-negative set. Under HDX 0.2 ther
 are **no** R3 skips left — all 21 checks RUN (T2, M6 rule (b), and L3 read the
 surfaced full per-basin axis + realized columns).
 
-### (a) Enforced, with an on-disk negative — 14 ids
+### (a) Enforced, with an on-disk negative — 15 ids
 
 These checks **run** on every fixture and `ran:fail` on a dedicated on-disk
 negative derived from the baseline by an exact generator-asserted recipe (the
@@ -463,6 +465,7 @@ check `ran:fail`.
 | **M3** | exactly the six floor fields | `invalid/extra-manifest-field/` | `Manifest::from_json` (entry gate) |
 | **M4** | non-empty `crs`/`cadence`, RFC-3339 `created_at` | `invalid/empty-cadence/` | `Manifest::from_json` (entry gate) |
 | **M5** | manifest `crs` == every file's CRS | `invalid/crs-mismatch/` | `check_m5` |
+| **G1** | every static sample has a canonical order-insensitive description item | `invalid/attribute-less-static-description/`, `invalid/absent-static-description/` | `check_g1` |
 | **L1** | both root rollups present | `invalid/missing-root-rollup/` | `check_l1` |
 | **L2** | every basin's required artifacts present | `invalid/missing-gridded-dynamic-subtree/` | `check_l2` |
 | **I1** | `basin_id` column present in every required artifact | `invalid/missing-basin-id-column/` | `check_i1` |
@@ -474,7 +477,7 @@ check `ran:fail`.
 | **G2** | shared grid label ⇒ cell-for-cell alignment | `invalid/misaligned-shared-label/` | `check_g2` |
 | **M6** | rule (b): per-basin axis strictly-increasing + interior-regular | `invalid/irregular-time-axis/` | `check_m6` |
 
-### (b) Enforced, but no isolable on-disk negative — 7 ids
+### (b) Enforced, but no isolable on-disk negative — 6 ids
 
 These checks **run and pass** on the valid fixture (they are real `check_*` rules,
 not skips), but v0.1 cannot construct a fixture that makes **only** this check
@@ -487,13 +490,12 @@ on-disk bytes).
 |---|---|---|
 | **M1** | `manifest.json` existence + valid-JSON + `format_version`-read-first is the §0 entry gate itself; a missing or non-JSON manifest is a structural `Err` (`ValidateError::ManifestUnreadable` / a parse error from `Manifest::from_json`), **not** a `conformant:false` report with M1 `ran:fail` — so there is no fixture that isolates an M1 *report* failure. M1 is the precondition for every later check, not a checkable report row. | `entry_gate_reports_unreadable_manifest_for_missing_manifest_json` (the `Err` form) |
 | **I3** | I3 (`basin_id` unique) **co-trips I2** on any on-disk mutation: a duplicate `basin_id` in a per-basin `scalar_dynamic` necessarily disagrees with that basin's `basin=<id>` folder, so `check_i2` *also* fails — never I3-alone. The other place a duplicate could live — the `scalar_static` rollup — is never read for its `basin_id` *values* (the rollup's per-basin values are not surfaced as I3 input; only the per-basin in-file ids feed `in_file_basin_ids`), so a rollup duplicate yields `conformant:true`. Either way, no fixture isolates I3. | `i3_negative_on_duplicate_positive_on_distinct` (`check_i3` over a hand-built duplicate list ⇒ `ran:fail`) |
-| **G1** | `Field::new` makes a **label-less gridded field unrepresentable** (a gridded `Field` carries `Some(GridLabel)` by construction — see `check_g1`'s doc), so no on-disk tree with a "positional channel axis" (a gridded field that fails to self-name) is constructible: discovery would never build such a `Field`. The rule still runs (the explicit no-positional-channel-axis check), but it cannot be made to fail on disk. | `g1_passes_only_when_every_gridded_field_self_names` (the in-memory falsifiable form) |
 | **G3** | The gridded readers **error `MissingGridGeoref`** the moment a present artifact lacks georeferencing, so an on-disk no-georef tree fails **discovery** as an `Err` (`ValidateError::Discovery`) — it never reaches `build_report` to produce a `G3 ran:fail` report. `check_g3`'s falsifiable form is an empty-CRS `GridInfo`, which discovery can never build. | `data_var_without_grid_mapping_target_returns_missing_grid_georef` (the reader-side `Err`) |
 | **Geo1** | The geoparquet reader **requires** `basin_id`/`delineation`/`geometry` and errors (`MissingGeometryColumn`) otherwise, and reads a single root file (recording `partitioned_by_delineation=false`). So a missing-column or partitioned outlines fails **discovery** as an `Err`, never yielding a `Geo1 ran:fail` report. (An *absent* outlines is an L1 fail; Geo1 then honestly `skipped`.) | covered by the geoparquet-reader error tests + `check_geo1`'s skip path on the L1 fixture (`missing_root_rollup_pins_exactly_l1_and_is_non_conformant`) |
 | **L3** | The builder structurally NaN-fills an absent field's column over the full per-basin axis, so it cannot emit a basin that declares a `scalar_dynamic` yet materializes zero time rows — the absence-is-NaN-not-a-missing-file negative. `check_l3` runs byte-deep (each declared basin must materialize real time rows) and passes on every committed fixture; its fail-path is exercised by the in-memory/zero-row falsifiable form. | `check_l3` runs+passes on the valid fixture; the byte-deep absence-vs-NaN leg is `low3_*` reader-side coverage + the `check_l3` zero-row fail path |
 | **T2** | The builder force-aligns every basin's gridded `time` axis onto the scalar axis, so it structurally cannot emit a scalar-vs-gridded mismatch — the negative needs a deliberate **on-disk corruption** of an otherwise-conformant fixture, not a builder output. `check_t2` runs byte-deep (full i64-micros axis identity) and passes on the valid fixture. | `check_t2_runs_and_fails_on_corrupted_scalar_time_column` (the on-disk corruptor) + `check_t2_runs_and_passes_on_builder_axes` |
 
-> **Bucket arithmetic (the closed 21).** (a) 14 + (b) 7 = **21** — every §14 id
+> **Bucket arithmetic (the closed 21).** (a) 15 + (b) 6 = **21** — every §14 id
 > placed in exactly one bucket, and **all 21 RUN** under HDX 0.2 (no R3 skips
 > remain). The classification is the human-readable twin of the pinned golden test
 > `golden_clearly_reports_which_checks_ran_vs_skipped` in
