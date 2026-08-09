@@ -1725,9 +1725,9 @@ mod tests {
     /// walk-all + deterministic-union catalog they pass GREEN.
     ///
     /// The RED is strictly the describe field list, NOT `validate`: the catalog
-    /// feeds only order-insensitive G1 (`check_g1` only tests that a PRESENT gridded
-    /// field self-names with `Some(GridLabel)` — a MISSING field cannot trip it), so
-    /// validate is field-catalog-insensitive and is asserted here only as a
+    /// feeds G1 alongside the carried per-sample static-description observations;
+    /// catalog completeness is not itself G1's concern, so validate remains
+    /// field-catalog-insensitive and is asserted here only as a
     /// CORROBORATING positive (conformant + no ran:fail + every skip carries a
     /// reason — the `valid_fixture_is_conformant_with_no_ran_fail` shape, NOT
     /// all-RAN). The committed validate golden is corroborating-only, NOT the M1
@@ -1811,8 +1811,8 @@ mod tests {
         // the `valid_fixture_is_conformant_with_no_ran_fail` shape (validate.rs:2050).
         // This fixture runs all 21 checks; the loop still verifies that any future
         // legitimate skip carries a reason. The
-        // catalog is consumed only by order-insensitive G1, so a missing field cannot
-        // trip validate — confirming validate is field-catalog-insensitive.
+        // catalog is consumed by G1 alongside independent static-description
+        // observations, so catalog incompleteness cannot itself trip validate.
         let report = crate::validate::validate(&fixture)
             .expect("validate succeeds on the two-family fixture");
         assert!(
