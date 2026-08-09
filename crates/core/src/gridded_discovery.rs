@@ -11,7 +11,7 @@
 //! **pairs** the two halves without reshaping either, so `describe` and `validate`
 //! consume **one** model.
 //!
-//! `discover_gridded : HDX layout → per-store geometry × fields × time axis × time encoding`.
+//! `discover_gridded : HDX layout → per-store geometry × fields × static-description observations × time axis × time encoding`.
 //!
 //! It walks the basin-first hive and, for each basin with a present `gridded_static`
 //! / `gridded_dynamic` subtree, enumerates the `<label>.tif` / `<label>.zarr`
@@ -78,7 +78,7 @@ use std::path::Path;
 
 use tracing::{debug, info, instrument};
 
-use crate::cog_reader::{CogGrid, read_cog_grid};
+use crate::cog_reader::{CogGrid, StaticDescriptionObservation, read_cog_grid};
 use crate::discovery::{ScalarDiscovery, discover_scalar};
 use crate::error::CoreError;
 use crate::field::Field;
@@ -103,6 +103,7 @@ const ZARR_EXTENSION: &str = "zarr";
 pub struct StaticArtifact {
     grid_label: GridLabel,
     grid_info: GridInfo,
+    description_observations: Vec<StaticDescriptionObservation>,
 }
 
 impl StaticArtifact {
@@ -114,6 +115,11 @@ impl StaticArtifact {
     /// Borrows the per-artifact grid geometry.
     pub fn grid_info(&self) -> &GridInfo {
         &self.grid_info
+    }
+
+    /// Borrows the per-sample description observations recorded by the COG reader.
+    pub fn description_observations(&self) -> &[StaticDescriptionObservation] {
+        &self.description_observations
     }
 }
 
@@ -395,6 +401,7 @@ fn discover_basin_gridded(basin: &BasinDir) -> Result<BasinGridded, CoreError> {
             static_artifacts.push(StaticArtifact {
                 grid_label,
                 grid_info: cog.grid_info().clone(),
+                description_observations: cog.description_observations().to_vec(),
             });
         }
     }
@@ -706,8 +713,8 @@ pub fn discover(path: impl AsRef<Path>) -> Result<Discovery, CoreError> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::cog_reader::CogGrid;
     use crate::cog_reader::test_support::two_sample_tiff;
+    use crate::cog_reader::{CogGrid, StaticDescriptionKind};
     use crate::discovery::ScalarDiscovery;
     use crate::error::CoreError;
     use crate::field::{Dtype, Quadrant};
@@ -905,6 +912,45 @@ mod tests {
         // Every gridded field carries grid_label == era5.
         for field in fields {
             assert_eq!(field.grid_label(), Some(&GridLabel::new("era5")));
+        }
+    }
+
+    #[test]
+    fn static_description_observations_survive_discovery() {
+        for (fixture, expected_legacy, expected_field_count) in [
+            ("valid/minimal", false, 3),
+            ("invalid/attribute-less-static-description", true, 3),
+        ] {
+            let gridded = discover_gridded(conformance(fixture)).expect("tree must discover");
+            assert_eq!(gridded.gridded_fields().len(), expected_field_count);
+            for basin in gridded.per_basin() {
+                let observation = &basin.static_artifacts()[0].description_observations()[0];
+                match observation.kind() {
+                    StaticDescriptionKind::Canonical { field_name } if !expected_legacy => {
+                        assert_eq!(field_name.as_str(), "elevation");
+                    }
+                    StaticDescriptionKind::LegacyAttributeLess { field_name }
+                        if expected_legacy =>
+                    {
+                        assert_eq!(field_name.as_str(), "elevation");
+                    }
+                    other => panic!("unexpected observation {other:?}"),
+                }
+            }
+        }
+
+        let absent = discover_gridded(conformance("invalid/absent-static-description"))
+            .expect("absent descriptions remain discoverable");
+        assert_eq!(
+            absent.gridded_fields().len(),
+            2,
+            "no fabricated static field enters the catalog"
+        );
+        for basin in absent.per_basin() {
+            assert!(matches!(
+                basin.static_artifacts()[0].description_observations()[0].kind(),
+                StaticDescriptionKind::Absent
+            ));
         }
     }
 

@@ -104,7 +104,8 @@
 //!   **structural / entry** failures (an unreadable manifest, the §0 hard cut, an
 //!   undecodable present artifact) so the CLI can map the two to distinct exit codes.
 //!   The report lists all 21 §14 ids: the in-memory checks (M1–M4 via the entry gate;
-//!   H1, H2, I3, T1, G1), cross-file checks (L1, L2, I1, I2, M5, G2, G3), and
+//!   H1, H2, I3, T1), the metadata-deep G1 check over fields plus carried static
+//!   description observations, cross-file checks (L1, L2, I1, I2, M5, G2, G3), and
 //!   byte-deep checks (L3, M6 rule (b), T2) run with pass/fail outcomes. T2 compares
 //!   the full scalar and gridded axes as normalized instants within each basin. T3 is
 //!   the metadata-deep per-store rule that requires the pinned gridded time encoding

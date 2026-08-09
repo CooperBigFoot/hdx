@@ -2,8 +2,10 @@
 //! (spec §7/§8, architecture §1/§3.5).
 //!
 //! This module reads the *shape* of a per-basin Cloud-Optimized GeoTIFF into typed
-//! facts — the gridded·static field catalog plus a [`GridInfo`] — **never** its
-//! scientific pixel raster. It reads **tags only** (architecture §1):
+//! facts — the gridded·static field catalog plus a [`GridInfo`] and per-sample
+//! description observations — **never** its scientific pixel raster. In symbols,
+//! `read_cog_grid : COG tags × GridLabel → GridInfo × Fields × per-sample description observations`.
+//! It reads **tags only** (architecture §1):
 //!
 //! 1. the **indexed sample metadata** from tag `42112` (`GDAL_METADATA`), an ASCII
 //!    `<GDALMetadata>` XML carrying each sample's description (= field name) and units;
@@ -51,8 +53,9 @@
 //! GeoKeyDirectory is parsed by hand (the `tiff` crate surfaces it as a raw `u16`
 //! vector). **No GDAL, no C toolchain, no pixel decode.**
 //!
-//! Every physical sample becomes one ordinary [`Field`] named **exactly** as its
-//! tag-42112 description, with no name special-casing (spec §1/§2). Fields retain
+//! Every physical sample produces one [`StaticDescriptionObservation`]. Samples with
+//! canonical or legacy descriptions also become ordinary [`Field`]s named from the
+//! description; absent descriptions produce no fabricated field. Fields retain
 //! physical sample order. Like the Zarr reader, this is a discovery surface; it
 //! records facts and enforces no spec §14 check.
 //!
@@ -99,8 +102,7 @@ pub enum CogBandSource {
     /// via the pure-Rust `tiff` crate — the **live** path on a conformant fixture,
     /// not silently claimed.
     GdalMetadataTag,
-    /// The band description could not be read from tag `42112` (the tag is absent,
-    /// unreadable, or carries no `role="description"` `<Item>`). Recorded with a
+    /// Tag `42112` itself is absent or unreadable. Recorded with a
     /// stated reason as a byte/format-deep skip — documented, never silently claimed.
     /// The mismatch rule applies: the fix is to regenerate the fixture, never a
     /// reader workaround.
@@ -109,6 +111,48 @@ pub enum CogBandSource {
         /// honest reporting.
         reason: String,
     },
+}
+
+/// The observed tag-42112 description encoding for one physical TIFF sample.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaticDescriptionKind {
+    /// A description with the canonical `name="DESCRIPTION"` attribute.
+    Canonical { field_name: FieldName },
+    /// A readable pre-ET20 description without a `name` attribute.
+    LegacyAttributeLess { field_name: FieldName },
+    /// No description item was present for the sample.
+    Absent,
+}
+
+impl StaticDescriptionKind {
+    /// Borrows the decoded field name when the sample has one.
+    pub fn field_name(&self) -> Option<&FieldName> {
+        match self {
+            Self::Canonical { field_name } | Self::LegacyAttributeLess { field_name } => {
+                Some(field_name)
+            }
+            Self::Absent => None,
+        }
+    }
+}
+
+/// Records one physical sample's description encoding without assigning conformance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticDescriptionObservation {
+    sample_index: usize,
+    kind: StaticDescriptionKind,
+}
+
+impl StaticDescriptionObservation {
+    /// Returns the physical zero-based TIFF sample index.
+    pub fn sample_index(&self) -> usize {
+        self.sample_index
+    }
+
+    /// Borrows the observed description kind.
+    pub fn kind(&self) -> &StaticDescriptionKind {
+        &self.kind
+    }
 }
 
 /// The discovered facts of one `gridded_static/<label>.tif` COG (spec §7/§8).
@@ -125,6 +169,7 @@ pub struct CogGrid {
     grid_info: GridInfo,
     fields: Vec<Field>,
     band_source: CogBandSource,
+    description_observations: Vec<StaticDescriptionObservation>,
 }
 
 impl CogGrid {
@@ -142,13 +187,17 @@ impl CogGrid {
     pub fn band_source(&self) -> &CogBandSource {
         &self.band_source
     }
+
+    /// Borrows all per-sample description observations in physical sample order.
+    pub fn description_observations(&self) -> &[StaticDescriptionObservation] {
+        &self.description_observations
+    }
 }
 
 /// One sample's band description + units parsed from tag-42112 metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GdalBandMetadata {
-    /// The `role="description"` `<Item>` value (= the field name).
-    description: String,
+    observation: StaticDescriptionObservation,
     /// The `name="units"` `<Item>` value (= the units), if present.
     units: Option<String>,
 }
@@ -160,12 +209,43 @@ fn item_attribute<'a>(open_tag: &'a str, name: &str) -> Option<&'a str> {
     value.find('"').map(|end| &value[..end])
 }
 
+fn xml_unescape_once(value: &str) -> Result<String, String> {
+    let mut decoded = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        decoded.push_str(&rest[..start]);
+        let entity = &rest[start..];
+        let end = entity
+            .find(';')
+            .ok_or_else(|| format!("malformed XML entity in {value:?}"))?;
+        let replacement = match &entity[..=end] {
+            "&amp;" => '&',
+            "&lt;" => '<',
+            "&gt;" => '>',
+            "&quot;" => '"',
+            "&apos;" => '\'',
+            unknown => return Err(format!("unknown XML entity {unknown:?}")),
+        };
+        decoded.push(replacement);
+        rest = &entity[end + 1..];
+    }
+    decoded.push_str(rest);
+    Ok(decoded)
+}
+
+fn gdal_xml_unescape_twice(value: &str) -> Result<String, String> {
+    xml_unescape_once(&xml_unescape_once(value)?)
+}
+
 /// Parses every indexed description and units item in tag 42112.
+///
+/// Description items bind only through an explicit, in-range `sample` attribute;
+/// unlike units items, a missing sample never defaults to sample zero.
 fn parse_gdal_metadata(
     xml: &str,
     samples_per_pixel: usize,
 ) -> Result<Vec<GdalBandMetadata>, String> {
-    let mut descriptions = vec![Vec::<String>::new(); samples_per_pixel];
+    let mut descriptions = vec![Vec::<(Option<String>, String)>::new(); samples_per_pixel];
     let mut units = vec![Vec::<String>::new(); samples_per_pixel];
     let mut rest = xml;
     while let Some(start) = rest.find("<Item") {
@@ -179,10 +259,29 @@ fn parse_gdal_metadata(
             .find("</Item>")
             .ok_or_else(|| "tag 42112 has an unterminated <Item> body".to_string())?;
         let value = body[..end].trim().to_string();
-        let is_description = item_attribute(open_tag, "role") == Some("description");
-        let is_units = item_attribute(open_tag, "name") == Some("units");
-        if is_description || is_units {
-            let sample_index = match item_attribute(open_tag, "sample") {
+        let role = item_attribute(open_tag, "role");
+        let name = item_attribute(open_tag, "name");
+        let is_description = role == Some("description");
+        let is_units = name == Some("units");
+        if role == Some("description") && !matches!(name, None | Some("DESCRIPTION")) {
+            return Err(format!(
+                "tag 42112 has contradictory description name attribute {name:?}"
+            ));
+        }
+        let raw_sample = item_attribute(open_tag, "sample");
+        if let (true, Some(raw)) = (is_description, raw_sample) {
+            let sample_index = raw
+                .parse::<usize>()
+                .map_err(|_| format!("tag 42112 has malformed sample index {raw:?}"))?;
+            if sample_index >= samples_per_pixel {
+                return Err(format!(
+                    "tag 42112 item sample index {sample_index} is out of range for {samples_per_pixel} samples"
+                ));
+            }
+            descriptions[sample_index].push((name.map(str::to_string), value.clone()));
+        }
+        if is_units {
+            let sample_index = match raw_sample {
                 None => 0,
                 Some(raw) => raw
                     .parse::<usize>()
@@ -193,12 +292,7 @@ fn parse_gdal_metadata(
                     "tag 42112 item sample index {sample_index} is out of range for {samples_per_pixel} samples"
                 ));
             }
-            if is_description {
-                descriptions[sample_index].push(value.clone());
-            }
-            if is_units {
-                units[sample_index].push(value);
-            }
+            units[sample_index].push(value);
         }
         rest = &body[end + "</Item>".len()..];
     }
@@ -208,13 +302,46 @@ fn parse_gdal_metadata(
         .zip(units)
         .enumerate()
         .map(|(sample_index, (descriptions, units))| {
-            let description = match descriptions.as_slice() {
-                [] => {
-                    return Err(format!(
-                        "tag 42112 sample {sample_index} is missing description"
-                    ));
+            let (observation, canonical) = match descriptions.as_slice() {
+                [] => (
+                    StaticDescriptionObservation {
+                        sample_index,
+                        kind: StaticDescriptionKind::Absent,
+                    },
+                    false,
+                ),
+                [(name, description)]
+                    if name.as_deref() == Some("DESCRIPTION") && description.is_empty() =>
+                {
+                    (
+                        StaticDescriptionObservation {
+                            sample_index,
+                            kind: StaticDescriptionKind::Absent,
+                        },
+                        false,
+                    )
                 }
-                [description] => description.clone(),
+                [(name, description)] => {
+                    let canonical = name.as_deref() == Some("DESCRIPTION");
+                    let field_name = if canonical {
+                        gdal_xml_unescape_twice(description)?
+                    } else {
+                        description.clone()
+                    };
+                    let kind = if canonical {
+                        StaticDescriptionKind::Canonical {
+                            field_name: FieldName::new(field_name),
+                        }
+                    } else {
+                        StaticDescriptionKind::LegacyAttributeLess {
+                            field_name: FieldName::new(field_name),
+                        }
+                    };
+                    (
+                        StaticDescriptionObservation { sample_index, kind },
+                        canonical,
+                    )
+                }
                 _ => {
                     return Err(format!(
                         "tag 42112 sample {sample_index} has duplicate descriptions"
@@ -223,6 +350,7 @@ fn parse_gdal_metadata(
             };
             let units = match units.as_slice() {
                 [] => None,
+                [units] if canonical => Some(gdal_xml_unescape_twice(units)?),
                 [units] => Some(units.clone()),
                 _ => {
                     return Err(format!(
@@ -230,7 +358,7 @@ fn parse_gdal_metadata(
                     ));
                 }
             };
-            Ok(GdalBandMetadata { description, units })
+            Ok(GdalBandMetadata { observation, units })
         })
         .collect()
 }
@@ -697,24 +825,29 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
         }
     };
 
+    let description_observations = metadata
+        .iter()
+        .map(|metadata| metadata.observation.clone())
+        .collect::<Vec<_>>();
     let fields: Vec<Field> = metadata
         .into_iter()
         .zip(dtypes)
-        .enumerate()
-        .map(|(sample_index, (metadata, dtype))| {
+        .filter_map(|(metadata, dtype)| {
+            let field_name = metadata.observation.kind.field_name()?.clone();
+            let sample_index = metadata.observation.sample_index;
             debug!(
                 sample_index,
-                band = %metadata.description,
+                band = %field_name.as_str(),
                 "read indexed band metadata from tag 42112 GDAL_METADATA"
             );
-            Field::new(
-                FieldName::new(metadata.description),
+            Some(Field::new(
+                field_name,
                 Quadrant::GriddedStatic,
                 dtype,
                 Units::new(metadata.units),
                 None,
                 Some(grid_label.clone()),
-            )
+            ))
         })
         .collect::<Result<_, _>>()?;
 
@@ -731,6 +864,7 @@ pub fn read_cog_grid(path: impl AsRef<Path>, grid_label: GridLabel) -> Result<Co
         grid_info,
         fields,
         band_source,
+        description_observations,
     })
 }
 
@@ -886,7 +1020,7 @@ pub(crate) mod test_support {
         two_sample_tiff_variant(
             vec![32, 32],
             Some(sample_formats.to_vec()),
-            b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item><Item sample=\"0\" name=\"units\">m</Item><Item sample=\"1\" role=\"description\">soil_depth</Item><Item sample=\"1\" name=\"units\">cm</Item></GDALMetadata>\0".to_vec(),
+            b"<GDALMetadata><Item name=\"DESCRIPTION\" sample=\"0\" role=\"description\">elevation</Item><Item sample=\"0\" name=\"units\">m</Item><Item name=\"DESCRIPTION\" sample=\"1\" role=\"description\">soil_depth</Item><Item sample=\"1\" name=\"units\">cm</Item></GDALMetadata>\0".to_vec(),
         )
     }
 
@@ -930,7 +1064,10 @@ mod tests {
         TiffValue, build_tiff, build_tiff_full, two_sample_tiff, two_sample_tiff_variant,
         write_temp,
     };
-    use crate::cog_reader::{CogBandSource, read_cog_grid};
+    use crate::cog_reader::{
+        CogBandSource, StaticDescriptionKind, gdal_xml_unescape_twice, parse_gdal_metadata,
+        read_cog_grid,
+    };
     use crate::error::CoreError;
     use crate::field::{Dtype, Quadrant};
     use crate::newtypes::{Crs, GridLabel};
@@ -968,6 +1105,105 @@ mod tests {
             &CogBandSource::GdalMetadataTag,
             "pure-Rust read is live, not silently claimed"
         );
+        assert!(matches!(
+            grid.description_observations()[0].kind(),
+            StaticDescriptionKind::Canonical { field_name } if field_name.as_str() == "elevation"
+        ));
+    }
+
+    #[test]
+    fn canonical_description_attribute_order_is_irrelevant() {
+        for xml in [
+            r#"<GDALMetadata><Item name="DESCRIPTION" sample="0" role="description">elevation</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#,
+            r#"<GDALMetadata><Item sample="0" name="DESCRIPTION" role="description">elevation</Item><Item sample="0" name="units">m</Item></GDALMetadata>"#,
+        ] {
+            let [metadata] = parse_gdal_metadata(xml, 1)
+                .expect("both canonical producer attribute orders must parse")
+                .try_into()
+                .expect("one sample");
+            assert!(matches!(
+                metadata.observation.kind(),
+                StaticDescriptionKind::Canonical { field_name } if field_name.as_str() == "elevation"
+            ));
+            assert_eq!(metadata.units.as_deref(), Some("m"));
+        }
+    }
+
+    #[test]
+    fn description_without_explicit_sample_is_absent_for_sample_zero() {
+        let [metadata] = parse_gdal_metadata(
+            r#"<GDALMetadata><Item name="DESCRIPTION" role="description">elevation</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#,
+            1,
+        )
+        .expect("a sample-less description remains a refusable read observation")
+        .try_into()
+        .expect("one sample");
+
+        assert!(matches!(
+            metadata.observation.kind(),
+            StaticDescriptionKind::Absent
+        ));
+        assert_eq!(metadata.observation.sample_index(), 0);
+    }
+
+    #[test]
+    fn empty_canonical_description_body_is_absent_for_sample_zero() {
+        for body in ["", " \n\t "] {
+            let xml = format!(
+                r#"<GDALMetadata><Item name="DESCRIPTION" sample="0" role="description">{body}</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#
+            );
+            let [metadata] = parse_gdal_metadata(&xml, 1)
+                .expect("an empty description remains a refusable read observation")
+                .try_into()
+                .expect("one sample");
+
+            assert!(matches!(
+                metadata.observation.kind(),
+                StaticDescriptionKind::Absent
+            ));
+            assert_eq!(metadata.observation.sample_index(), 0);
+            assert_eq!(metadata.units.as_deref(), Some("m"));
+        }
+    }
+
+    #[test]
+    fn canonical_gdal_xml_values_are_unescaped_exactly_twice() {
+        let [metadata] = parse_gdal_metadata(
+            r#"<GDALMetadata><Item name="DESCRIPTION" sample="0" role="description">a&amp;amp;b</Item><Item name="units" sample="0">m&amp;amp;s</Item></GDALMetadata>"#,
+            1,
+        )
+        .expect("canonical metadata must parse")
+        .try_into()
+        .expect("one sample");
+        assert!(matches!(
+            metadata.observation.kind(),
+            StaticDescriptionKind::Canonical { field_name } if field_name.as_str() == "a&b"
+        ));
+        assert_eq!(metadata.units.as_deref(), Some("m&s"));
+        assert_eq!(
+            gdal_xml_unescape_twice("&amp;lt;&amp;gt;&amp;quot;&amp;apos;"),
+            Ok("<>\"'".to_string())
+        );
+        assert!(gdal_xml_unescape_twice("&bogus;").is_err());
+    }
+
+    #[test]
+    fn legacy_attribute_less_description_remains_readable_and_verbatim() {
+        let bytes = two_sample_tiff_variant(
+            vec![32, 32],
+            Some(vec![3, 3]),
+            b"<GDALMetadata><Item sample=\"0\" role=\"description\">a&amp;b</Item><Item sample=\"0\" name=\"units\">m&amp;s</Item><Item sample=\"1\" role=\"description\">dem</Item></GDALMetadata>\0".to_vec(),
+        );
+        let path = write_temp("legacy-description", &bytes);
+        let grid = read_cog_grid(&path, GridLabel::new("era5")).expect("legacy read succeeds");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(grid.fields()[0].name().as_str(), "a&amp;b");
+        assert_eq!(grid.fields()[0].units().as_deref(), Some("m&amp;s"));
+        assert_eq!(grid.fields()[1].name().as_str(), "dem");
+        assert!(matches!(
+            grid.description_observations()[1].kind(),
+            StaticDescriptionKind::LegacyAttributeLess { field_name } if field_name.as_str() == "dem"
+        ));
     }
 
     #[test]
@@ -1198,15 +1434,27 @@ mod tests {
     }
 
     #[test]
-    fn every_sample_requires_one_description() {
-        assert_cog_read_detail(
-            two_sample_tiff_variant(
+    fn absent_sample_description_is_recorded_without_fabricating_a_field() {
+        let path = write_temp(
+            "absent-description",
+            &two_sample_tiff_variant(
                 vec![32, 32],
                 Some(vec![3, 3]),
-                b"<GDALMetadata><Item sample=\"0\" role=\"description\">elevation</Item></GDALMetadata>\0".to_vec(),
+                b"<GDALMetadata><Item name=\"DESCRIPTION\" sample=\"0\" role=\"description\">elevation</Item></GDALMetadata>\0".to_vec(),
             ),
-            &["sample 1", "description"],
         );
+        let grid = read_cog_grid(&path, GridLabel::new("era5")).expect("absence is readable");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(grid.fields().len(), 1);
+        assert_eq!(grid.fields()[0].name().as_str(), "elevation");
+        assert!(matches!(
+            grid.description_observations()[0].kind(),
+            StaticDescriptionKind::Canonical { .. }
+        ));
+        assert!(matches!(
+            grid.description_observations()[1].kind(),
+            StaticDescriptionKind::Absent
+        ));
     }
 
     #[test]
@@ -1226,7 +1474,7 @@ mod tests {
         let bytes = two_sample_tiff_variant(
             vec![8, 8],
             None,
-            b"<GDALMetadata><Item role=\"description\">mask_a</Item><Item sample=\"1\" role=\"description\">mask_b</Item></GDALMetadata>\0".to_vec(),
+            b"<GDALMetadata><Item sample=\"0\" role=\"description\">mask_a</Item><Item sample=\"1\" role=\"description\">mask_b</Item></GDALMetadata>\0".to_vec(),
         );
         let path = write_temp("default-sample-format", &bytes);
         let result = read_cog_grid(&path, GridLabel::new("era5"));
@@ -1260,22 +1508,15 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_units_and_unindexed_sample_zero_description_are_rejected() {
-        for (metadata, fragments) in [
-            (
+    fn duplicate_units_are_rejected() {
+        assert_cog_read_detail(
+            two_sample_tiff_variant(
+                vec![32, 32],
+                Some(vec![3, 3]),
                 b"<GDALMetadata><Item sample=\"0\" role=\"description\">a</Item><Item sample=\"0\" name=\"units\">m</Item><Item sample=\"0\" name=\"units\">cm</Item><Item sample=\"1\" role=\"description\">b</Item></GDALMetadata>\0".to_vec(),
-                &["sample 0", "duplicate units"] as &[&str],
             ),
-            (
-                b"<GDALMetadata><Item role=\"description\">a</Item><Item sample=\"0\" role=\"description\">duplicate</Item><Item sample=\"1\" role=\"description\">b</Item></GDALMetadata>\0".to_vec(),
-                &["sample 0", "duplicate descriptions"],
-            ),
-        ] {
-            assert_cog_read_detail(
-                two_sample_tiff_variant(vec![32, 32], Some(vec![3, 3]), metadata),
-                fragments,
-            );
-        }
+            &["sample 0", "duplicate units"],
+        );
     }
 
     // --- Synthetic TIFF builders (test-only) ------------------------------------

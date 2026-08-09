@@ -67,6 +67,7 @@ use std::path::Path;
 use serde::Serialize;
 use tracing::{debug, info, instrument};
 
+use crate::cog_reader::StaticDescriptionKind;
 use crate::discovery::BasinScalar;
 use crate::error::ValidateError;
 use crate::field::{Field, Quadrant};
@@ -673,21 +674,16 @@ pub fn check_t1(per_basin_time: &[(&BasinId, Option<&TimeColumn>)]) -> CheckOutc
 
 /// Checks G1 — every gridded field self-names; no positional channel axis (spec §8/§14 G1).
 ///
-/// G1 verifies the catalog is built so that **one artifact = one grid** and every gridded
-/// field carries its own grid label (the CF variable / COG band description *is* the field
-/// name). [`Field::new`] already makes a label-less gridded field unrepresentable, so the
-/// **in-memory-falsifiable form** of G1 is: feed the rule a field list and confirm it
-/// `ran:pass` **iff every gridded field self-names** (carries `Some(GridLabel)`);
-/// a gridded field whose label is absent ⇒ `ran:fail`. Because the invariant holds by
-/// construction, a conformant catalog always passes — but the rule is the explicit check
-/// that no gridded field was admitted without its label (no positional channel axis).
-/// R3: `MetadataDeep`.
+/// G1 verifies that **one artifact = one grid**, every admitted gridded field carries
+/// its own grid label, and every physical static sample has a canonical description.
+/// Discovery records legacy and absent description encodings without deciding
+/// conformance; this rule refuses those on-disk, metadata-deep forms.
 ///
 /// [`Field::new`]: crate::field::Field::new
 ///
-/// Input: the unified field catalog (the gridded entries are the ones tested).
-#[instrument(skip(fields))]
-pub fn check_g1(fields: &[&Field]) -> CheckOutcome {
+/// Input: the unified field catalog and per-basin gridded artifacts.
+#[instrument(skip(fields, per_basin))]
+pub fn check_g1(fields: &[&Field], per_basin: &[&BasinGridded]) -> CheckOutcome {
     use crate::field::Shape;
 
     for field in fields {
@@ -704,6 +700,28 @@ pub fn check_g1(fields: &[&Field]) -> CheckOutcome {
                     field.name().as_str()
                 ),
             );
+        }
+    }
+    for basin in per_basin {
+        for artifact in basin.static_artifacts() {
+            for observation in artifact.description_observations() {
+                let detail = match observation.kind() {
+                    StaticDescriptionKind::Canonical { .. } => continue,
+                    StaticDescriptionKind::LegacyAttributeLess { .. } => format!(
+                        "basin {:?} artifact {:?} sample {} uses an attribute-less description; expected name=\"DESCRIPTION\"",
+                        basin.basin_id_folder().as_str(),
+                        format!("gridded_static/{}.tif", artifact.grid_label().as_str()),
+                        observation.sample_index(),
+                    ),
+                    StaticDescriptionKind::Absent => format!(
+                        "basin {:?} artifact {:?} sample {} has no description; expected name=\"DESCRIPTION\"",
+                        basin.basin_id_folder().as_str(),
+                        format!("gridded_static/{}.tif", artifact.grid_label().as_str()),
+                        observation.sample_index(),
+                    ),
+                };
+                return CheckOutcome::ran_fail(CheckId::G1, DepthClass::MetadataDeep, detail);
+            }
         }
     }
     CheckOutcome::ran_pass(CheckId::G1, DepthClass::MetadataDeep)
@@ -1544,7 +1562,8 @@ fn build_report(discovery: &Discovery, manifest: &Manifest) -> ValidationReport 
     let t1 = check_t1(&per_basin_time);
 
     let all_fields = discovery.fields();
-    let g1 = check_g1(&all_fields);
+    let per_basin = discovery.gridded().per_basin().iter().collect::<Vec<_>>();
+    let g1 = check_g1(&all_fields, &per_basin);
 
     // The cross-file / cross-basin checks. L1's outlines leg is geometry-conditional:
     // the manifest's `format_version` decides whether an absent `outlines.geoparquet` is
@@ -2008,7 +2027,7 @@ mod tests {
         let scalar = scalar_field("streamflow", Dtype::F64);
         let gridded = gridded_field("era5_precipitation", Dtype::F32, "era5");
         let fields = vec![&scalar, &gridded];
-        let outcome = check_g1(&fields);
+        let outcome = check_g1(&fields, &[]);
         assert_eq!(outcome.status(), CheckStatus::Ran);
         assert_eq!(outcome.result(), Some(CheckResult::Pass));
         assert_eq!(outcome.depth(), DepthClass::MetadataDeep);
@@ -3091,6 +3110,16 @@ mod tests {
         // H1); only the name diverges (dtype/quadrant kept) ⇒ check_h1 ran:fail. T1/I1/I2/
         // I3 stay pass (time/basin_id unchanged) — confirmed H1-only.
         assert_pins_exactly("invalid/ragged-field-schema", CheckId::H1);
+    }
+
+    #[test]
+    fn g1_attribute_less_static_description_pins_exactly_g1() {
+        assert_pins_exactly("invalid/attribute-less-static-description", CheckId::G1);
+    }
+
+    #[test]
+    fn g1_absent_static_description_pins_exactly_g1() {
+        assert_pins_exactly("invalid/absent-static-description", CheckId::G1);
     }
 
     #[test]

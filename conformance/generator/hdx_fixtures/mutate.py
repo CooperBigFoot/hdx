@@ -98,6 +98,7 @@ harness it merely emits bytes a reader will later read (spec §10 / architecture
 
 import json
 import shutil
+import struct
 from enum import Enum
 from pathlib import Path
 
@@ -118,6 +119,17 @@ from hdx_fixtures.grids import (
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS
 from hdx_fixtures.scalar import BASINS, DYNAMIC_FIELD, TIME_TYPE, basin_dir
+
+ATTRIBUTE_LESS_STATIC_DESCRIPTION_XML = (
+    b'<GDALMetadata><Item name="units" sample="0">m</Item><Item sample="0" '
+    b'role="description">elevation</Item></GDALMetadata>'
+)
+ABSENT_STATIC_DESCRIPTION_XML = (
+    b'<GDALMetadata><Item name="units" sample="0">m</Item></GDALMetadata>'
+)
+STATIC_DESCRIPTION_COG_PATHS = {
+    f"basin={basin.basin_id}/gridded_static/era5.tif" for basin in BASINS
+}
 
 # The mutated format_version for the wrong-format-version invalid. Any value the
 # reader does not implement is rejected outright by M2 (the §0 hard cut). "9.9" is a
@@ -293,6 +305,8 @@ class Invalid(Enum):
     # Bucket-A G3 reader error: a well-formed signed declaration disagrees with
     # the unchanged CF longitude witnesses. Discovery fails; there is no golden.
     GRID_RESOLUTION_MISMATCH = "grid-resolution-mismatch"
+    ATTRIBUTE_LESS_STATIC_DESCRIPTION = "attribute-less-static-description"
+    ABSENT_STATIC_DESCRIPTION = "absent-static-description"
     # MS8-S2 georef/grid-label negatives. Each is a clean ``conformant:false``
     # report with exactly one §14 check ``ran:fail`` (every other check
     # pass-or-skip), derived by exactly one surgical mutation off the baseline:
@@ -365,6 +379,11 @@ class Invalid(Enum):
             return "L2"
         if self is Invalid.GRID_RESOLUTION_MISMATCH:
             return "G3"
+        if self in {
+            Invalid.ATTRIBUTE_LESS_STATIC_DESCRIPTION,
+            Invalid.ABSENT_STATIC_DESCRIPTION,
+        }:
+            return "G1"
         if self is Invalid.CRS_MISMATCH:
             return "M5"
         if self is Invalid.MISALIGNED_SHARED_LABEL:
@@ -861,6 +880,75 @@ def _mutate_multi_store_time_encodings(target_root: Path) -> None:
         _mutate_time_encoding_site(target_root, store, attribute, value)
 
 
+def _classic_le_gdal_metadata_region(data: bytes) -> tuple[int, int, int]:
+    """Return `(entry_offset, payload_offset, count)` for tag 42112."""
+    if len(data) < 8 or data[:2] != b"II" or struct.unpack_from("<H", data, 2)[0] != 42:
+        raise ValueError("expected a classic little-endian TIFF header")
+    ifd_offset = struct.unpack_from("<I", data, 4)[0]
+    if ifd_offset + 2 > len(data):
+        raise ValueError("first IFD offset is out of range")
+    entry_count = struct.unpack_from("<H", data, ifd_offset)[0]
+    matches: list[tuple[int, int, int]] = []
+    for index in range(entry_count):
+        entry_offset = ifd_offset + 2 + index * 12
+        if entry_offset + 12 > len(data):
+            raise ValueError("first IFD entry is truncated")
+        tag, field_type, count, payload_offset = struct.unpack_from(
+            "<HHII", data, entry_offset
+        )
+        if tag == 42112:
+            if field_type != 2:
+                raise ValueError("tag 42112 must have TIFF ASCII type 2")
+            if count <= 4:
+                raise ValueError("tag 42112 must use an out-of-line payload")
+            if payload_offset + count > len(data):
+                raise ValueError("tag 42112 payload is out of range")
+            matches.append((entry_offset, payload_offset, count))
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one tag 42112 entry, found {len(matches)}")
+    entry_offset, payload_offset, count = matches[0]
+    payload = data[payload_offset : payload_offset + count]
+    if not payload.endswith(b"\0") or payload.count(b"\0") != 1:
+        raise ValueError("tag 42112 must contain one NUL-terminated allocation")
+    document = payload[:-1].strip()
+    if not document.startswith(b"<GDALMetadata>") or not document.endswith(
+        b"</GDALMetadata>"
+    ):
+        raise ValueError("tag 42112 is not one GDALMetadata document")
+    return entry_offset, payload_offset, count
+
+
+def _replace_gdal_metadata(path: Path, replacement_xml: bytes) -> None:
+    """Replace tag 42112 in place while preserving its allocation and file length."""
+    original = path.read_bytes()
+    entry_offset, payload_offset, allocation = _classic_le_gdal_metadata_region(original)
+    replacement = replacement_xml + b"\0"
+    if len(replacement) > allocation:
+        raise ValueError(
+            f"{path}: replacement needs {len(replacement)} bytes, allocation is {allocation}"
+        )
+    mutated = bytearray(original)
+    mutated[payload_offset : payload_offset + allocation] = replacement.ljust(allocation, b"\0")
+    struct.pack_into("<I", mutated, entry_offset + 4, len(replacement))
+    if len(mutated) != len(original):
+        raise AssertionError("TIFF metadata replacement changed file length")
+    path.write_bytes(mutated)
+
+
+def _mutate_static_descriptions(target_root: Path, replacement_xml: bytes) -> None:
+    """Replace tag 42112 in exactly the three minimal-baseline static COGs."""
+    paths = {
+        path.relative_to(target_root).as_posix()
+        for path in target_root.glob("basin=*/gridded_static/*.tif")
+    }
+    if paths != STATIC_DESCRIPTION_COG_PATHS:
+        raise AssertionError(
+            f"minimal static COG paths {sorted(paths)} != {sorted(STATIC_DESCRIPTION_COG_PATHS)}"
+        )
+    for relative in sorted(paths):
+        _replace_gdal_metadata(target_root / relative, replacement_xml)
+
+
 def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Path:
     """Derive one invalid tree by applying its declared bounded mutation recipe.
 
@@ -907,6 +995,10 @@ def derive_invalid(baseline_root: Path, repo_root: Path, invalid: Invalid) -> Pa
         _mutate_divergent_grid_label_set(target_root)
     elif invalid is Invalid.GRID_RESOLUTION_MISMATCH:
         _mutate_grid_resolution_mismatch(target_root)
+    elif invalid is Invalid.ATTRIBUTE_LESS_STATIC_DESCRIPTION:
+        _mutate_static_descriptions(target_root, ATTRIBUTE_LESS_STATIC_DESCRIPTION_XML)
+    elif invalid is Invalid.ABSENT_STATIC_DESCRIPTION:
+        _mutate_static_descriptions(target_root, ABSENT_STATIC_DESCRIPTION_XML)
     elif invalid is Invalid.IRREGULAR_TIME_AXIS:
         _mutate_irregular_time_axis(target_root)
     else:

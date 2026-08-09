@@ -44,6 +44,8 @@ from hdx_fixtures.grids import (
 )
 from hdx_fixtures.manifest import MANIFEST_FIELDS, build_manifest
 from hdx_fixtures.mutate import (
+    ABSENT_STATIC_DESCRIPTION_XML,
+    ATTRIBUTE_LESS_STATIC_DESCRIPTION_XML,
     CRS_MISMATCH_VALUE,
     EMPTY_CADENCE,
     EXTRA_MANIFEST_FIELD,
@@ -64,8 +66,10 @@ from hdx_fixtures.mutate import (
     MISSING_ROOT_ROLLUP,
     MULTI_STORE_TIME_ENCODING_MUTATIONS,
     WRONG_FORMAT_VERSION,
+    STATIC_DESCRIPTION_COG_PATHS,
     Invalid,
     _MUTATED_BASIN,
+    _classic_le_gdal_metadata_region,
 )
 from hdx_fixtures.outlines import DELINEATION_ALT, DELINEATION_PRIMARY
 from hdx_fixtures.scalar import (
@@ -1636,6 +1640,70 @@ def assert_matches_declared_mutation_recipe(
             f"basin's gridded_dynamic subtree must leave the rest byte-identical "
             f"(LOW-2)",
         )
+    elif invalid in {
+        Invalid.ATTRIBUTE_LESS_STATIC_DESCRIPTION,
+        Invalid.ABSENT_STATIC_DESCRIPTION,
+    }:
+        _require(
+            not removed,
+            f"{invalid_root}: static-description mutation removed files {sorted(removed)}",
+        )
+        changed = _changed_files(baseline_root, invalid_root)
+        _require(
+            changed == STATIC_DESCRIPTION_COG_PATHS,
+            f"{invalid_root}: changed files {sorted(changed)} != the three static COGs "
+            f"{sorted(STATIC_DESCRIPTION_COG_PATHS)}",
+        )
+        expected_xml = (
+            ATTRIBUTE_LESS_STATIC_DESCRIPTION_XML
+            if invalid is Invalid.ATTRIBUTE_LESS_STATIC_DESCRIPTION
+            else ABSENT_STATIC_DESCRIPTION_XML
+        )
+        for relative in sorted(STATIC_DESCRIPTION_COG_PATHS):
+            baseline = (baseline_root / relative).read_bytes()
+            mutated = (invalid_root / relative).read_bytes()
+            _require(
+                len(mutated) == len(baseline),
+                f"{invalid_root / relative}: TIFF length changed",
+            )
+            base_entry, base_payload, allocation = _classic_le_gdal_metadata_region(
+                baseline
+            )
+            inv_entry, inv_payload, count = _classic_le_gdal_metadata_region(mutated)
+            _require(
+                (base_entry, base_payload) == (inv_entry, inv_payload),
+                f"{invalid_root / relative}: tag 42112 entry/payload moved",
+            )
+            expected_payload = expected_xml + b"\0"
+            _require(
+                count == len(expected_payload)
+                and mutated[inv_payload : inv_payload + count] == expected_payload,
+                f"{invalid_root / relative}: tag 42112 count/body differs from recipe",
+            )
+            _require(
+                mutated[inv_payload + count : inv_payload + allocation]
+                == bytes(allocation - count),
+                f"{invalid_root / relative}: unused tag 42112 allocation is not zero-filled",
+            )
+            base_masked = bytearray(baseline)
+            inv_masked = bytearray(mutated)
+            for masked in (base_masked, inv_masked):
+                masked[base_entry + 4 : base_entry + 8] = b"\0" * 4
+                masked[base_payload : base_payload + allocation] = bytes(allocation)
+            _require(
+                inv_masked == base_masked,
+                f"{invalid_root / relative}: bytes differ outside tag 42112 payload/count",
+            )
+            if invalid is Invalid.ATTRIBUTE_LESS_STATIC_DESCRIPTION:
+                _require(
+                    b'name="DESCRIPTION"' not in expected_payload,
+                    "legacy payload unexpectedly contains canonical DESCRIPTION name",
+                )
+            else:
+                _require(
+                    b'role="description"' not in expected_payload,
+                    "absent payload unexpectedly contains a description item",
+                )
     elif invalid is Invalid.GRID_RESOLUTION_MISMATCH:
         _require(
             not removed,

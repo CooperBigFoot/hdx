@@ -70,6 +70,57 @@ fn set_consolidated_time_encoding(store: &Path, units: &str, calendar: &str) {
     .expect("write copied root zarr metadata");
 }
 
+fn replace_gdal_metadata(path: &Path, replacement_xml: &[u8]) {
+    let original = fs::read(path).expect("read copied TIFF");
+    assert_eq!(&original[..2], b"II", "classic little-endian TIFF");
+    assert_eq!(u16::from_le_bytes([original[2], original[3]]), 42);
+    let ifd_offset = u32::from_le_bytes(original[4..8].try_into().expect("IFD offset")) as usize;
+    let entry_count = u16::from_le_bytes(
+        original[ifd_offset..ifd_offset + 2]
+            .try_into()
+            .expect("IFD entry count"),
+    ) as usize;
+    let entry_offset = (0..entry_count)
+        .map(|index| ifd_offset + 2 + index * 12)
+        .find(|offset| {
+            u16::from_le_bytes(original[*offset..*offset + 2].try_into().expect("TIFF tag"))
+                == 42112
+        })
+        .expect("one tag 42112 entry");
+    assert_eq!(
+        u16::from_le_bytes(
+            original[entry_offset + 2..entry_offset + 4]
+                .try_into()
+                .expect("TIFF field type"),
+        ),
+        2,
+        "tag 42112 uses ASCII"
+    );
+    let allocation = u32::from_le_bytes(
+        original[entry_offset + 4..entry_offset + 8]
+            .try_into()
+            .expect("TIFF ASCII count"),
+    ) as usize;
+    let payload_offset = u32::from_le_bytes(
+        original[entry_offset + 8..entry_offset + 12]
+            .try_into()
+            .expect("TIFF payload offset"),
+    ) as usize;
+    let mut replacement = replacement_xml.to_vec();
+    replacement.push(0);
+    assert!(
+        replacement.len() <= allocation,
+        "replacement fits allocation"
+    );
+
+    let mut mutated = original;
+    mutated[payload_offset..payload_offset + allocation].fill(0);
+    mutated[payload_offset..payload_offset + replacement.len()].copy_from_slice(&replacement);
+    mutated[entry_offset + 4..entry_offset + 8]
+        .copy_from_slice(&(replacement.len() as u32).to_le_bytes());
+    fs::write(path, mutated).expect("write patched TIFF");
+}
+
 /// Run the built `hdx` bin with the given args and return captured stdout bytes,
 /// asserting the process did not fail to launch.
 fn run_hdx(args: &[&str]) -> Vec<u8> {
@@ -201,7 +252,8 @@ fn validate_emits_report_object_with_conformant_key() {
 //   0 = describe ok OR validate conformant:true
 //   1 = validate conformant:false (a violated MUST that RAN — a report, not an error)
 //   2 = structural / entry error (bad args, unreadable/nonexistent path, malformed
-//       manifest, the §0 hard cut) — NEVER softened into a conformant:false report.
+//       metadata or manifest, the §0 hard cut). Decodable metadata violations such
+//       as legacy/absent static descriptions remain exit-1 reports.
 
 /// `describe` of the conformant fixture → exit 0, stdout a JSON object.
 #[test]
@@ -224,6 +276,104 @@ fn validate_valid_minimal_exits_zero_conformant_true() {
         value.get("conformant").and_then(Value::as_bool),
         Some(true),
         "the conformant fixture reports conformant: true"
+    );
+}
+
+#[test]
+fn validate_ignores_unrelated_dataset_description_metadata() {
+    let root = copy_fixture_to_temp("conformance/valid/minimal", "dataset-description");
+    let metadata = br#"<GDALMetadata><Item name="DESCRIPTION">a scene</Item><Item name="DESCRIPTION" sample="0" role="description">elevation</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#;
+    for basin_id in ["0001", "0002", "0003"] {
+        replace_gdal_metadata(
+            &root.join(format!("basin={basin_id}/gridded_static/era5.tif")),
+            metadata,
+        );
+    }
+
+    let root_arg = root
+        .to_str()
+        .expect("temporary fixture path is valid UTF-8");
+    let (code, stdout) = run_hdx_full(&["validate", root_arg]);
+    fs::remove_dir_all(&root).expect("remove copied fixture");
+
+    assert_eq!(
+        code, 0,
+        "ordinary dataset metadata must not make the COG unreadable"
+    );
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(report["conformant"], true);
+    let g1 = report["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["id"] == "G1"))
+        .expect("report contains G1");
+    assert_eq!(g1["status"], "ran");
+    assert_eq!(g1["result"], "pass");
+}
+
+#[test]
+fn validate_sample_less_static_description_exits_one_with_g1_report() {
+    let root = copy_fixture_to_temp("conformance/valid/minimal", "sample-less-description");
+    let metadata = br#"<GDALMetadata><Item name="DESCRIPTION" role="description">elevation</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#;
+    for basin_id in ["0001", "0002", "0003"] {
+        replace_gdal_metadata(
+            &root.join(format!("basin={basin_id}/gridded_static/era5.tif")),
+            metadata,
+        );
+    }
+
+    let root_arg = root
+        .to_str()
+        .expect("temporary fixture path is valid UTF-8");
+    let (code, stdout) = run_hdx_full(&["validate", root_arg]);
+    fs::remove_dir_all(&root).expect("remove copied fixture");
+
+    assert_eq!(code, 1, "a sample-less description must be refusable");
+    assert!(!stdout.is_empty(), "exit 1 must carry a JSON report");
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(report["conformant"], false);
+    let g1 = report["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["id"] == "G1"))
+        .expect("report contains G1");
+    assert_eq!(g1["status"], "ran");
+    assert_eq!(g1["result"], "fail");
+    assert_eq!(
+        g1["detail"],
+        "basin \"0001\" artifact \"gridded_static/era5.tif\" sample 0 has no description; expected name=\"DESCRIPTION\""
+    );
+}
+
+#[test]
+fn validate_empty_static_description_exits_one_with_g1_report() {
+    let root = copy_fixture_to_temp("conformance/valid/minimal", "empty-description");
+    let metadata = br#"<GDALMetadata><Item name="DESCRIPTION" sample="0" role="description">
+</Item><Item name="units" sample="0">m</Item></GDALMetadata>"#;
+    for basin_id in ["0001", "0002", "0003"] {
+        replace_gdal_metadata(
+            &root.join(format!("basin={basin_id}/gridded_static/era5.tif")),
+            metadata,
+        );
+    }
+
+    let root_arg = root
+        .to_str()
+        .expect("temporary fixture path is valid UTF-8");
+    let (code, stdout) = run_hdx_full(&["validate", root_arg]);
+    fs::remove_dir_all(&root).expect("remove copied fixture");
+
+    assert_eq!(code, 1, "an empty description must be refusable");
+    assert!(!stdout.is_empty(), "exit 1 must carry a JSON report");
+    let report: Value = serde_json::from_slice(&stdout).expect("validate stdout is valid JSON");
+    assert_eq!(report["conformant"], false);
+    let g1 = report["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["id"] == "G1"))
+        .expect("report contains G1");
+    assert_eq!(g1["status"], "ran");
+    assert_eq!(g1["result"], "fail");
+    assert_eq!(
+        g1["detail"],
+        "basin \"0001\" artifact \"gridded_static/era5.tif\" sample 0 has no description; expected name=\"DESCRIPTION\""
     );
 }
 
@@ -427,6 +577,43 @@ fn validate_grid_resolution_mismatch_exits_two_no_report_on_stdout() {
         stdout.is_empty(),
         "an exit-2 reader error emits no report JSON on stdout, got: {}",
         String::from_utf8_lossy(&stdout)
+    );
+}
+
+fn assert_static_description_g1_report(fixture_name: &str, expected_detail: &str) {
+    let (code, stdout) = run_hdx_full(&["validate", &fixture_arg(fixture_name)]);
+    assert_eq!(code, 1, "decodable G1 violation must exit 1, not exit 2");
+    assert!(
+        !stdout.is_empty(),
+        "exit-1 validation must emit a JSON report"
+    );
+    let value: Value = serde_json::from_slice(&stdout).expect("stdout is valid JSON");
+    assert_eq!(
+        value.get("conformant").and_then(Value::as_bool),
+        Some(false)
+    );
+    let g1 = value["checks"]
+        .as_array()
+        .and_then(|checks| checks.iter().find(|check| check["id"] == "G1"))
+        .expect("report contains G1");
+    assert_eq!(g1["status"], "ran");
+    assert_eq!(g1["result"], "fail");
+    assert_eq!(g1["detail"], expected_detail);
+}
+
+#[test]
+fn validate_attribute_less_static_description_exits_one_with_g1_report() {
+    assert_static_description_g1_report(
+        "conformance/invalid/attribute-less-static-description",
+        "basin \"0001\" artifact \"gridded_static/era5.tif\" sample 0 uses an attribute-less description; expected name=\"DESCRIPTION\"",
+    );
+}
+
+#[test]
+fn validate_absent_static_description_exits_one_with_g1_report() {
+    assert_static_description_g1_report(
+        "conformance/invalid/absent-static-description",
+        "basin \"0001\" artifact \"gridded_static/era5.tif\" sample 0 has no description; expected name=\"DESCRIPTION\"",
     );
 }
 
